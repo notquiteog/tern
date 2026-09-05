@@ -102,16 +102,27 @@ Users upload a **public key**. From that point:
 
 - **Export bundles** (Settings → Security → Export) can be encrypted to the
   key on the way out, so a data export on a shared machine is safe.
+- **The private key never reaches the server.** It is generated or imported
+  in the browser, unlocked with a passphrase, and kept in that browser's
+  IndexedDB. Everything that needs it (decrypting, signing) happens there.
 - **Outgoing mail** to recipients whose public key is known (uploaded per
-  contact, or looked up over WKD and keys.openpgp.org) is encrypted and,
-  if the user has stored a private key, signed. Recipients without a key
-  get plaintext, with a clear indicator in the composer.
-- **Incoming PGP mail** is decrypted **in the browser** with the user's
-  private key, which never leaves the device: it is unlocked from a
-  passphrase and kept in IndexedDB. Such messages are stored in the cache
-  as received (ciphertext), so search, rules and AI do not see them; the
-  thread view shows a lock and decrypts on open. Sync still threads them by
-  headers.
+  contact, or looked up over WKD and keys.openpgp.org) is encrypted, and
+  signed **in the browser at compose time**: the server receives finished
+  bytes. "Send later" stores those bytes in the outbox and submits them when
+  due. A copy is always encrypted to the user's own key too, so the Sent
+  folder stays readable. Recipients without a key get plaintext, with a
+  clear indicator in the composer.
+- **Automated sends** (sequences, responders, campaigns) can be encrypted to
+  a recipient's public key, since that needs only public material, but
+  **cannot be signed**: nobody's browser is present when the scheduler runs.
+  They go out encrypted and unsigned, and the sequence settings say so. A
+  server-held *signing subkey* would close that gap at the price of a
+  private key on the server; if ever offered, it is a separate, clearly
+  labelled opt-in, not part of this design.
+- **Incoming PGP mail** is decrypted in the browser. Such messages are
+  stored in the cache as received (ciphertext), so search, rules and AI do
+  not see them; the thread view shows a lock and decrypts on open. Sync
+  still threads them by headers.
 - **Fallback for people without keys**: nothing changes for them. There is
   no sensible way to "encrypt to the username"; the at-rest layer is what
   protects their copy.
