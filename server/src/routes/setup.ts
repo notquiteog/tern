@@ -7,6 +7,7 @@ import { parse, z } from '../util/validate.js';
 import { conflict } from '../errors.js';
 import { recommendModel } from '../ai/models.js';
 import { authSettings } from './users.js';
+import { stalwartEnabled } from '../services/stalwart.js';
 
 export const setupRouter = Router();
 
@@ -23,7 +24,7 @@ setupRouter.get('/status', async (_req, res) => {
     version: config.version,
     appUrl: config.appUrl,
     aiEnabled: config.aiEnabled,
-    stalwart: config.stalwartUrl ? { url: config.stalwartUrl, host: config.stalwartHost } : null,
+    stalwart: config.stalwartUrl ? { url: config.stalwartUrl, host: config.stalwartHost, domain: config.stalwartDomain, provisioning: stalwartEnabled() } : null,
     recommendedModel: recommendModel(config.totalMemBytes).model,
     totalMemGiB: Math.round((config.totalMemBytes / 1024 ** 3) * 10) / 10,
   });

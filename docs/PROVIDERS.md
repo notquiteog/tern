@@ -57,6 +57,13 @@ Everything below is outside the box and cannot be automated by the installer.
 5. **Warm up.** Twenty to thirty sends a day for the first two weeks, then
    raise the cap gradually.
 
+### Creating more mailboxes
+
+Settings → **Mail server** (admins) creates mailboxes, generates passwords,
+and connects them to Tern users or creates the user in the same step. The
+DNS records for the domain are shown there too. The same is available as
+`./bin/tern cli add-mailbox --address sam@team.example.com --user sam`.
+
 ### Connecting the mailbox to Tern
 
 Settings → Accounts → Add account → **Stalwart (this server)**. The session

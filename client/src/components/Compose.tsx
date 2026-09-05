@@ -83,9 +83,15 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
       } catch (e) { toast.error(e); }
     }
   }
-  function insertTemplate(t: any) {
-    if (t.subject && !subject) setSubject(t.subject);
-    editor.current?.insertHtml(t.body_html);
+  // Templates are rendered for the first recipient (their contact fields,
+  // fallbacks, conditionals, one variation) before landing in the editor.
+  async function insertTemplate(t: any) {
+    try {
+      const r = await api.post<any>('/api/templates/preview', { subject: t.subject, body_html: t.body_html, contactEmail: to[0]?.email ?? null, accountId, seed: Math.floor(Math.random() * 1e6) });
+      if (r.subject && !subject) setSubject(r.subject);
+      editor.current?.insertHtml(r.html);
+      if (!to[0]?.email && (t.fields?.length ?? 0) > 0) toast.toast('Rendered with sample values; add the recipient first to use their details');
+    } catch (e) { toast.error(e); }
     setDirty(true);
   }
   const recipientEmail = to[0]?.email;
@@ -137,7 +143,7 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
           {templates.length > 0 && (
             <Menu trigger={(open) => <IconButton label="Insert template" onClick={open}><FileText size={17} /></IconButton>} width={280}>
-              {(c) => <>{templates.map((t) => <MenuItem key={t.id} onClick={() => { insertTemplate(t); c(); }}><span className="truncate">{t.name}</span></MenuItem>)}</>}
+              {(c) => <>{templates.map((t) => <MenuItem key={t.id} onClick={() => { void insertTemplate(t); c(); }}><span className="col" style={{ gap: 0, minWidth: 0 }}><span className="truncate">{t.starred ? '★ ' : ''}{t.name}</span><span className="small faint truncate">{t.category}{t.subject ? ` · ${t.subject}` : ''}</span></span></MenuItem>)}</>}
             </Menu>
           )}
           <Button variant="ai" size="sm" icon={<Sparkles size={14} />} onClick={() => setAi((v) => !v)} className={ai ? 'active' : ''}>Draft with AI</Button>

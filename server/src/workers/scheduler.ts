@@ -200,6 +200,8 @@ async function runEnrollment(enr: any): Promise<void> {
     sequenceId: seq.id,
     stepId: step.id,
     enrollmentId: enr.id,
+    includeSignature: rendered.includeSignature,
+    templateId: rendered.templateId,
     inReplyTo: threaded ? enr.last_message_id : null,
     references: threaded ? [enr.last_message_id] : [],
     unsubscribeFooter: seq.unsubscribe_footer,
@@ -220,19 +222,21 @@ async function runEnrollment(enr: any): Promise<void> {
   }
 }
 
-export async function renderStep(acc: AccountRow, seq: any, step: StepRow, contact: any, enr?: any): Promise<{ subject: string; html: string; brief: string }> {
-  let subjectTpl = step.subject, bodyTpl = step.body_html, brief = '';
+export async function renderStep(acc: AccountRow, seq: any, step: StepRow, contact: any, enr?: any): Promise<{ subject: string; html: string; brief: string; includeSignature: boolean; templateId: number | null }> {
+  let subjectTpl = step.subject, bodyTpl = step.body_html, brief = '', includeSignature = true, templateId: number | null = null;
   if (step.template_id) {
     const t = await one<any>('SELECT * FROM templates WHERE id=$1', [step.template_id]);
-    if (t) { subjectTpl = subjectTpl || t.subject; bodyTpl = bodyTpl || t.body_html; brief = t.ai_brief ?? ''; }
+    if (t) { subjectTpl = subjectTpl || t.subject; bodyTpl = bodyTpl || t.body_html; brief = t.ai_brief ?? ''; includeSignature = t.include_signature !== false; templateId = t.id; }
   }
   const ctx = contactContext(contact, {
     sender_name: acc.name,
     sender_email: acc.email,
     sender_first_name: acc.name.split(' ')[0],
+    sender_tz: acc.send_window?.tz,
     unsubscribe_url: contact.id ? unsubscribeUrl(seq.user_id, contact.id, acc.id) : '',
   });
-  return { subject: renderText(subjectTpl ?? '', ctx), html: renderHtml(bodyTpl ?? '', ctx), brief: renderText(brief, ctx) };
+  const seed = enr?.id ? Number(enr.id) * 7919 + Number(step.id) : undefined;
+  return { subject: renderText(subjectTpl ?? '', ctx, seed), html: renderHtml(bodyTpl ?? '', ctx, seed), brief: renderText(brief, ctx, seed), includeSignature, templateId };
 }
 
 async function personalize(acc: AccountRow, step: StepRow, contact: any, rendered: { subject: string; html: string; brief: string }): Promise<{ subject: string; html: string; model: string }> {

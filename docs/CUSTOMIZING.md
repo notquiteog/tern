@@ -92,6 +92,21 @@ Settings → Accounts → Edit → Identity → **Writing voice**: a short note 
 how that mailbox writes. It is added to every generation for that account,
 so two people sharing a Tern install can sound like themselves.
 
+## Mailboxes on the bundled mail server
+
+Settings → **Mail server** (admins, only when the installer set up Stalwart)
+lists the mailboxes on the server and the DNS records for the domain, and
+creates new mailboxes: choose the address and domain, a display name, and a
+password (or let one be generated and shown once). The same step can connect
+the mailbox to your own Tern account, to another user, or create a brand new
+Tern login for the person, so onboarding someone is one form. Passwords can
+be reset from the same page, which also updates the connected Tern account.
+Deleting a mailbox destroys its mail on the server.
+
+Headless: `./bin/tern cli add-mailbox --address sam@team.example.com --name "Sam" --user sam`.
+
+Fastmail has no provisioning API; create users in Fastmail's own settings.
+
 ## Registration and invites
 
 Settings → Users (admins):
@@ -102,18 +117,47 @@ Settings → Users (admins):
 - **Open registration**: off by default. When on, the sign-in page shows
   "Create an account" and new users get the role you choose.
 
-## Merge fields
+## Templates and merge fields
 
-Available everywhere a template or step body is written:
+Templates → **Library** offers 25 starter templates (cold and warm intros,
+follow-ups, break-up, customer check-in, upsell, win-back, feedback,
+testimonial and referral asks, event invitation, meeting confirmation,
+reschedule, thank-you, onboarding, product update, invoice reminder,
+partnership, reactivation, holiday greeting, and reply templates). Copies
+are yours to edit; square brackets mark the sentences you fill in.
 
-`{{first_name}}` `{{last_name}}` `{{full_name}}` `{{email}}` `{{company}}`
-`{{title}}` `{{phone}}` `{{website}}` `{{domain}}` `{{sender_name}}`
-`{{sender_first_name}}` `{{sender_email}}` `{{today}}` `{{weekday}}`
-`{{unsubscribe_url}}` plus any custom field from the contact
-(`{{city}}`, `{{plan}}`, ...).
+Every template has a name, category, description, subject, body, an AI
+brief, "append signature" and "star" options. Cards show validation
+problems, fields used and how often it was sent. Export and import as JSON
+to move templates between installs or share them.
 
-Fallbacks: `{{first_name|there}}` renders "there" when the field is empty.
-Values are HTML-escaped in bodies.
+The template language, usable in subjects, bodies and sequence steps:
+
+| Syntax | Result |
+|---|---|
+| `{{first_name}}` | the field, or empty |
+| `{{first_name\|there}}` | the field, or the fallback |
+| `{{company:possessive}}` | a filter; chain with `{{name:first:capitalize}}` |
+| `{{#if company}} at {{company}}{{/if}}` | kept only when the field has a value |
+| `{{#unless phone}}What number works?{{/unless}}` | kept only when it is empty |
+| `{Hi\|Hello\|Hey} {{first_name}}` | one option chosen per email |
+
+Filters: `upper`, `lower`, `capitalize`, `title`, `trim`, `first`, `last`,
+`possessive`, `initials`, `domain`.
+
+Built-in fields: `first_name` `last_name` `full_name` `name` `email`
+`company` `title` `phone` `website` `domain` `sender_name`
+`sender_first_name` `sender_email` `greeting` (good morning/afternoon/evening
+in the contact's or account's timezone) `today` `weekday` `month` `year`
+`unsubscribe_url`, plus every custom field on the contact (`{{city}}`,
+`{{plan}}`), including columns kept at CSV import. Values are HTML-escaped in
+bodies.
+
+**Preview** renders with a sample contact or any contact by address, flags
+fields that have no value for them, and can shuffle the variations. **Send a
+test to myself** delivers the rendered template to one of your own
+accounts. In the composer, inserting a template renders it for the first
+recipient; if there is no recipient yet, sample values are used.
 
 ## The AI assistant
 

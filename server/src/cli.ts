@@ -52,6 +52,35 @@ async function main(): Promise<void> {
       console.log('two-factor disabled');
       break;
     }
+    case 'add-mailbox': {
+      // tern-cli add-mailbox --address sam@team.example.com [--password P] [--name "Sam"] [--user alice]
+      const sw = await import('./services/stalwart.js');
+      const { connectAccount, encryptSecret } = await import('./services/accounts.js');
+      const { config } = await import('./config.js');
+      const address = arg('address')?.toLowerCase();
+      if (!address?.includes('@')) throw new Error('usage: add-mailbox --address user@domain [--password P] [--name N] [--user tern-username]');
+      const [local, domainName] = address.split('@');
+      const domains = await sw.listDomains();
+      const domain = domains.find((d) => d.name === domainName);
+      if (!domain) throw new Error(`domain ${domainName} is not on the mail server (have: ${domains.map((d) => d.name).join(', ')})`);
+      const password = arg('password') ?? sw.generateMailboxPassword();
+      const mailbox = await sw.createMailbox({ localPart: local, domainId: domain.id, password, displayName: arg('name') ?? '' });
+      console.log(`created mailbox ${mailbox.email}`);
+      if (!arg('password')) console.log(`password: ${password}`);
+      const username = arg('user')?.toLowerCase();
+      if (username) {
+        const u = await query<{ id: number }>('SELECT id FROM users WHERE username=$1', [username]);
+        if (!u.length) throw new Error(`no Tern user ${username}`);
+        const rows = await query<any>(
+          `INSERT INTO accounts (user_id, name, email, provider, session_url, auth_type, auth_user, auth_secret_enc, pin_origin) VALUES ($1,$2,$3,'stalwart',$4,'basic',$3,$5,true)
+           ON CONFLICT (user_id, email) DO UPDATE SET auth_secret_enc=EXCLUDED.auth_secret_enc, api_url=NULL RETURNING *`,
+          [u[0].id, arg('name') ?? local, mailbox.email, `${config.stalwartUrl}/.well-known/jmap`, encryptSecret(password)],
+        );
+        await connectAccount(rows[0]);
+        console.log(`connected to Tern user ${username}; it will sync when the server is running`);
+      }
+      break;
+    }
     case 'list-users': {
       const rows = await query('SELECT id, username, display_name, role, disabled, totp_enabled, last_login_at FROM users ORDER BY id');
       console.table(rows);
@@ -63,7 +92,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | stats');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | stats');
   }
   await pool.end();
 }

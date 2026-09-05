@@ -24,7 +24,9 @@ Nothing leaves your server except the mail itself.
 **Outreach**
 - Contacts with CSV import (column mapping, dedupe, custom merge fields,
   tags, consent source), a suppression list, and a per-contact timeline.
-- Templates with merge fields and fallbacks: `{{first_name|there}}`.
+- Templates: a 25-piece starter library, merge fields with fallbacks,
+  filters, conditionals and variations, validation, contact-aware preview,
+  test-send, import and export.
 - Sequences: email and wait steps, same-thread follow-ups, automatic stop on
   reply, bounce detection, one-click unsubscribe with `List-Unsubscribe`.
 - Per-account sending policy: daily cap, send window in a timezone, and a
@@ -52,7 +54,9 @@ Nothing leaves your server except the mail itself.
   session management, audit log. Registration is by invite link, or open
   self-registration if an admin turns it on. No email-based password reset
   by design.
-- Optional Stalwart mail server on the same box, bootstrapped by the installer.
+- Optional Stalwart mail server on the same box, bootstrapped by the
+  installer, with mailbox creation, password resets and DNS records inside
+  Tern's settings.
 
 ## Install
 

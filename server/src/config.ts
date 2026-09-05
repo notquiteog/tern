@@ -56,6 +56,10 @@ export const config = {
   // in the add-account form fills the session URL in automatically.
   stalwartUrl: env('STALWART_URL', '').replace(/\/+$/, ''),
   stalwartHost: env('STALWART_HOST', ''),
+  stalwartDomain: env('STALWART_DOMAIN', ''),
+  // Admin credentials written by install.sh; presence turns on mailbox provisioning.
+  stalwartAdminUser: env('STALWART_ADMIN_USER', ''),
+  stalwartAdminPassword: env('STALWART_ADMIN_PASSWORD', ''),
   clientDist: env('CLIENT_DIST', ''),
   logLevel: env('LOG_LEVEL', 'info'),
   totalMemBytes: os.totalmem(),

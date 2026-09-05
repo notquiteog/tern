@@ -90,7 +90,8 @@ authRouter.post('/logout', async (req, res) => {
 
 authRouter.get('/me', requireAuth, async (req, res) => {
   const accounts = await query<{ n: number }>('SELECT count(*)::int AS n FROM accounts WHERE user_id=$1', [req.user!.id]);
-  res.json({ user: publicUser(req.user!), accountCount: accounts[0]?.n ?? 0, version: config.version });
+  const { stalwartEnabled } = await import('../services/stalwart.js');
+  res.json({ user: publicUser(req.user!), accountCount: accounts[0]?.n ?? 0, version: config.version, stalwartProvisioning: stalwartEnabled() && req.user!.role === 'admin' });
 });
 
 authRouter.put('/prefs', requireAuth, async (req, res) => {

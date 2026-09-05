@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, Info, ExternalLink } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, Info, ExternalLink, Server, Copy, KeySquare } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useToast } from '../state/toast';
@@ -14,13 +14,14 @@ import { useLocalStorage } from '../lib/hooks';
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, stalwartProvisioning } = useAuth();
   const tabs = [['accounts', 'Accounts', <Mail size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['security', 'Security', <Shield size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['general', 'General', <SettingsIcon size={15} />]] as const;
   return (
     <div className="page">
       <div className="tabs">
         {tabs.map(([k, l, i]) => <NavLink key={k} to={`/settings/${k}`} className={({ isActive }) => cls(isActive && 'active')}>{i}{l}</NavLink>)}
         {user!.role === 'admin' && <NavLink to="/settings/users" className={({ isActive }) => cls(isActive && 'active')}><Users size={15} />Users</NavLink>}
+        {stalwartProvisioning && <NavLink to="/settings/mailserver" className={({ isActive }) => cls(isActive && 'active')}><Server size={15} />Mail server</NavLink>}
       </div>
       <Routes>
         <Route path="accounts" element={<AccountsSettings />} />
@@ -29,6 +30,7 @@ export default function SettingsPage() {
         <Route path="appearance" element={<AppearanceSettings />} />
         <Route path="general" element={<GeneralSettings />} />
         <Route path="users" element={<UsersSettings />} />
+        <Route path="mailserver" element={<MailServerSettings />} />
         <Route path="*" element={<Navigate to="/settings/accounts" replace />} />
       </Routes>
     </div>
@@ -137,7 +139,7 @@ function AddAccount({ onClose }: { onClose: () => void }) {
         <>
           <Segmented value={provider} onChange={setProvider} options={[{ value: 'fastmail', label: 'Fastmail' }, { value: 'stalwart', label: local ? 'Stalwart (this server)' : 'Stalwart' }, { value: 'jmap', label: 'Other JMAP' }]} />
           <div className="mt-16">
-            {help && <Callout>{help}{provider === 'stalwart' && local && <> The bundled Stalwart's admin panel is at <a href={`https://${local.host}/admin`} target="_blank" rel="noreferrer">https://{local.host}/admin <ExternalLink size={11} /></a>; create a domain and an account there first.</>}</Callout>}
+            {help && <Callout>{help}{provider === 'stalwart' && local && <> Admins can create mailboxes on the bundled server under Settings → Mail server, which also connects them here in one step.</>}</Callout>}
             {provider !== 'fastmail' && <Field label="Session URL" hint="Usually https://your-mail-host/.well-known/jmap" className="mt-16"><Input value={sessionUrl} onChange={(e) => setSessionUrl(e.target.value)} placeholder="https://mail.example.com/.well-known/jmap" /></Field>}
             {provider === 'jmap' && <Field label="Authentication"><Select value={authType} onChange={(e) => setAuthType(e.target.value as any)}><option value="basic">Username and password (HTTP Basic)</option><option value="bearer">Bearer token</option></Select></Field>}
             <div className="form-row mt-16">
@@ -515,6 +517,105 @@ function UsersSettings() {
         <Field label="New password"><Input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} autoComplete="new-password" /></Field>
       </Modal>
       <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete @${del?.username}?`} message="Their connected accounts, contacts, sequences and drafts are deleted with them." confirmLabel="Delete user" onConfirm={async () => { await api.del(`/api/users/${del.id}`); invalidate(); }} />
+    </div>
+  );
+}
+
+
+// ---------------- Mail server (bundled Stalwart) ----------------
+
+function MailServerSettings() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { user } = useAuth();
+  const { data, isLoading, refetch } = useQuery({ queryKey: ['stalwart'], queryFn: () => api.get<any>('/api/stalwart') });
+  const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => api.get<{ users: any[] }>('/api/users').then((r) => r.users) });
+  const [create, setCreate] = useState(false);
+  const [f, setF] = useState({ localPart: '', domainId: '', displayName: '', password: '', connect: 'me' as 'none' | 'me' | 'user' | 'new', userId: '' as number | '', newUser: { username: '', password: '', displayName: '', role: 'member' as 'member' | 'admin' } });
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [del, setDel] = useState<any>(null);
+  const [reset, setReset] = useState<any>(null);
+  useEffect(() => { if (data?.domains?.length && !f.domainId) setF((x) => ({ ...x, domainId: (data.domains.find((d: any) => d.name === data.domain) ?? data.domains[0]).id })); }, [data, f.domainId]);
+  const refresh = () => { refetch(); qc.invalidateQueries({ queryKey: ['accounts'] }); qc.invalidateQueries({ queryKey: ['users'] }); };
+  async function createMailbox() {
+    setBusy(true);
+    try {
+      const body: any = { localPart: f.localPart, domainId: f.domainId, displayName: f.displayName, password: f.password || undefined, connect: f.connect };
+      if (f.connect === 'user') body.userId = Number(f.userId);
+      if (f.connect === 'new') body.newUser = { ...f.newUser, displayName: f.newUser.displayName || f.displayName || f.newUser.username };
+      const r = await api.post<any>('/api/stalwart/mailboxes', body);
+      setResult(r); setCreate(false); refresh();
+      setF({ localPart: '', domainId: f.domainId, displayName: '', password: '', connect: 'me', userId: '', newUser: { username: '', password: '', displayName: '', role: 'member' } });
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  if (isLoading || !data) return <Spinner />;
+  if (!data.enabled) return <Callout>The bundled mail server is not enabled on this install. Re-run <code>sudo ./install.sh</code> and answer yes to "Run a Stalwart mail server here?".</Callout>;
+  const domainName = (id: string) => data.domains.find((d: any) => d.id === id)?.name ?? '';
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <PageHeader title="Mail server" sub={`Stalwart at ${data.host}${data.domain ? ` · ${data.domain}` : ''}`} actions={<><a className="btn" href={data.adminUrl ?? '#'} target="_blank" rel="noreferrer"><ExternalLink size={15} />Stalwart admin</a><Button variant="primary" icon={<Plus size={15} />} onClick={() => setCreate(true)} disabled={!data.reachable}>Create mailbox</Button></>} />
+      {!data.reachable && <Callout kind="danger">The mail server is not answering: {data.error}. Check <code>./bin/tern logs stalwart</code>.</Callout>}
+      {result && (
+        <Callout kind="success">
+          <div className="strong">Mailbox {result.mailbox.email} created</div>
+          {result.password && <div className="mt-8">Password: <code>{result.password}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(result.password); toast.success('Copied'); }}>Copy</Button><div className="small muted">Shown once. Tern keeps it encrypted for the connected account; give it to the person for their mail app.</div></div>}
+          {result.user && <div className="mt-8">Tern login created: <b>@{result.user.username}</b></div>}
+          {result.account && <div className="mt-8 small">Connected as a Tern account; the first sync is running.</div>}
+          {result.connectError && <div className="mt-8 small" style={{ color: 'var(--danger)' }}>Mailbox created but connecting it failed: {result.connectError}</div>}
+          <Button size="sm" variant="ghost" className="mt-8" onClick={() => setResult(null)}>Dismiss</Button>
+        </Callout>
+      )}
+      <div className="card mt-16 mb-16">
+        <div className="card-title"><h2>Mailboxes</h2><span className="small muted">{data.mailboxes.length} on the server</span></div>
+        {!data.mailboxes.length ? <div className="small muted">No mailboxes yet.</div> : (
+          <table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
+            {data.mailboxes.map((m: any) => <tr key={m.id}>
+              <td className="strong">{m.email}{m.aliases?.length ? <div className="small muted">aliases: {m.aliases.join(', ')}</div> : null}</td>
+              <td className="muted">{m.description ?? ''}</td>
+              <td>{m.connections.length ? m.connections.map((c: any) => <Badge key={c.accountId} kind="success">@{c.username}</Badge>) : <span className="faint small">not connected</span>}</td>
+              <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
+                {!m.connections.some((c: any) => c.userId === user!.id) && <Button size="sm" onClick={() => { setF((x) => ({ ...x, localPart: m.name, displayName: m.description ?? '' })); toast.toast('To connect an existing mailbox you need its password: use Settings → Accounts → Add account → Stalwart (this server), or reset the password here.'); }}>Connect</Button>}
+                <Button size="sm" icon={<KeySquare size={13} />} onClick={() => setReset(m)}>Reset password</Button>
+                <IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton>
+              </div></td>
+            </tr>)}
+          </tbody></table>
+        )}
+      </div>
+      <div className="card">
+        <div className="card-title"><h2>DNS records for {data.domain || domainName(f.domainId)}</h2><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(data.dns); toast.success('Copied'); }}>Copy</Button></div>
+        <p className="small muted">Publish these at your DNS provider, plus an <code>A</code> record for <code>{data.host}</code> and reverse DNS on the server IP pointing back to it. They are generated by Stalwart and include the current DKIM keys.</p>
+        <pre className="mono small pre" style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>{data.dns || 'Not available yet.'}</pre>
+      </div>
+
+      <Modal open={create} onClose={() => setCreate(false)} title="Create mailbox" size="wide" footer={<><Button onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!f.localPart || !f.domainId || (f.connect === 'new' && (!f.newUser.username || f.newUser.password.length < 10)) || (f.connect === 'user' && !f.userId)} onClick={createMailbox}>Create</Button></>}>
+        <div className="form-row">
+          <Field label="Address"><div className="row"><Input value={f.localPart} onChange={(e) => setF({ ...f, localPart: e.target.value.toLowerCase().replace(/[^a-z0-9._+-]/g, '') })} placeholder="sam" style={{ maxWidth: 180 }} /><span className="muted">@</span><Select value={f.domainId} onChange={(e) => setF({ ...f, domainId: e.target.value })}>{data.domains.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></div></Field>
+          <Field label="Display name"><Input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} placeholder="Sam Rivera" /></Field>
+        </div>
+        <Field label="Mailbox password" hint="Leave blank to generate a strong one; it is shown once after creation."><Input type="text" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder="generated" autoComplete="off" /></Field>
+        <Field label="Connect it to Tern">
+          <Select value={f.connect} onChange={(e) => setF({ ...f, connect: e.target.value as any })}>
+            <option value="me">My own account (sign-in @{user!.username})</option>
+            <option value="user">An existing user</option>
+            <option value="new">A new person: create their Tern login too</option>
+            <option value="none">Do not connect (mail app only)</option>
+          </Select>
+        </Field>
+        {f.connect === 'user' && <Field label="User"><Select value={f.userId} onChange={(e) => setF({ ...f, userId: Number(e.target.value) })}><option value="">— choose —</option>{(users ?? []).map((u) => <option key={u.id} value={u.id}>{u.display_name} (@{u.username})</option>)}</Select></Field>}
+        {f.connect === 'new' && (
+          <div className="form-row">
+            <Field label="Tern username"><Input value={f.newUser.username} onChange={(e) => setF({ ...f, newUser: { ...f.newUser, username: e.target.value } })} placeholder={f.localPart || 'sam'} /></Field>
+            <Field label="Tern password" hint="At least 10 characters; they can change it later."><Input type="text" value={f.newUser.password} onChange={(e) => setF({ ...f, newUser: { ...f.newUser, password: e.target.value } })} autoComplete="off" /></Field>
+            <Field label="Role"><Select value={f.newUser.role} onChange={(e) => setF({ ...f, newUser: { ...f.newUser, role: e.target.value as any } })}><option value="member">Member</option><option value="admin">Admin</option></Select></Field>
+          </div>
+        )}
+      </Modal>
+      <Modal open={Boolean(reset)} onClose={() => setReset(null)} title={`Reset password for ${reset?.email}`} footer={<><Button onClick={() => setReset(null)}>Cancel</Button><Button variant="primary" onClick={async () => { try { const r = await api.post<any>(`/api/stalwart/mailboxes/${reset.id}/password`, {}); setReset(null); setResult({ mailbox: reset, password: r.password, account: r.updatedAccounts ? { id: 0 } : null, user: null }); refresh(); } catch (e) { toast.error(e); } }}>Generate new password</Button></>}>
+        <p className="muted">A new password is generated and shown once. Tern accounts using this mailbox are updated automatically; mail apps on phones and laptops need the new password.</p>
+      </Modal>
+      <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete mailbox ${del?.email}?`} message="All mail in it is destroyed on the server and any Tern account connected to it is removed. This cannot be undone." confirmLabel="Delete mailbox" onConfirm={async () => { await api.del(`/api/stalwart/mailboxes/${del.id}`); refresh(); toast.success('Mailbox deleted'); }} />
     </div>
   );
 }

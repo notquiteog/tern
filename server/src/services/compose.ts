@@ -25,6 +25,7 @@ export interface ComposeInput {
   includeSignature?: boolean;
   kind: 'compose' | 'reply' | 'forward' | 'scheduled' | 'sequence' | 'auto_reply';
   responderId?: number | null;
+  templateId?: number | null;
   contactId?: number | null;
   sequenceId?: number | null;
   stepId?: number | null;
@@ -125,20 +126,21 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   } catch (e) {
     const msg = (e as Error).message;
     await query(
-      `INSERT INTO send_log (user_id, account_id, contact_id, sequence_id, step_id, enrollment_id, to_email, subject, kind, status, error, responder_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'failed',$10,$11)`,
-      [acc.user_id, acc.id, input.contactId ?? null, input.sequenceId ?? null, input.stepId ?? null, input.enrollmentId ?? null, primary, input.subject ?? '', input.kind, msg.slice(0, 500), input.responderId ?? null],
+      `INSERT INTO send_log (user_id, account_id, contact_id, sequence_id, step_id, enrollment_id, to_email, subject, kind, status, error, responder_id, template_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'failed',$10,$11,$12)`,
+      [acc.user_id, acc.id, input.contactId ?? null, input.sequenceId ?? null, input.stepId ?? null, input.enrollmentId ?? null, primary, input.subject ?? '', input.kind, msg.slice(0, 500), input.responderId ?? null, input.templateId ?? null],
     );
     publish({ type: 'send', userId: acc.user_id, accountId: acc.id, contactId: input.contactId ?? null, ok: false, subject: input.subject, error: msg });
     throw e;
   }
 
   const rows = await query<SendLogRow>(
-    `INSERT INTO send_log (user_id, account_id, contact_id, sequence_id, step_id, enrollment_id, message_id, jmap_email_id, thread_id, to_email, subject, kind, status, responder_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'sent',$13) RETURNING *`,
-    [acc.user_id, acc.id, input.contactId ?? null, input.sequenceId ?? null, input.stepId ?? null, input.enrollmentId ?? null, outcome.messageId, outcome.jmapEmailId, outcome.threadId, primary, input.subject ?? '', input.kind, input.responderId ?? null],
+    `INSERT INTO send_log (user_id, account_id, contact_id, sequence_id, step_id, enrollment_id, message_id, jmap_email_id, thread_id, to_email, subject, kind, status, responder_id, template_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'sent',$13,$14) RETURNING *`,
+    [acc.user_id, acc.id, input.contactId ?? null, input.sequenceId ?? null, input.stepId ?? null, input.enrollmentId ?? null, outcome.messageId, outcome.jmapEmailId, outcome.threadId, primary, input.subject ?? '', input.kind, input.responderId ?? null, input.templateId ?? null],
   );
   const log = rows[0];
+  if (input.templateId) await query('UPDATE templates SET use_count = use_count + 1 WHERE id=$1', [input.templateId]);
 
   // Housekeeping: uploads are single-use, contacts remember the touch, the
   // sent copy is pulled back so the thread view shows it right away.

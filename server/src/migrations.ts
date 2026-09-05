@@ -440,4 +440,15 @@ ALTER TABLE send_log DROP CONSTRAINT IF EXISTS send_log_kind_check;
 ALTER TABLE send_log ADD CONSTRAINT send_log_kind_check CHECK (kind IN ('sequence','compose','reply','forward','scheduled','auto_reply'));
 `,
   },
+  {
+    id: '20260905_0003_template_options',
+    up: `
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS include_signature BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS starred BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS library_key TEXT;
+ALTER TABLE templates ADD COLUMN IF NOT EXISTS use_count INT NOT NULL DEFAULT 0;
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS template_id BIGINT REFERENCES templates(id) ON DELETE SET NULL;
+`,
+  },
 ];
