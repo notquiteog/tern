@@ -9,6 +9,7 @@ import { syncManager } from '../workers/syncManager.js';
 import { composeAndSend } from '../services/compose.js';
 import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
+import { brandDomains } from '../services/brand.js';
 
 export const mailRouter = Router();
 mailRouter.use(requireAuth);
@@ -101,10 +102,12 @@ mailRouter.get('/threads', async (req, res) => {
   );
   const me = req.user!;
   const myEmails = new Set(accounts.map((a) => a.email.toLowerCase()));
+  const brands = await brandDomains();
   res.json({
     threads: rows.map((r) => {
       const fromEmail = String(r.latest?.from?.[0]?.email ?? '').toLowerCase();
-      const avatarUrl = r.avatar?.id ? `/api/avatars/contact/${r.avatar.id}?v=${r.avatar.v}` : myEmails.has(fromEmail) && me.avatar_updated_at ? `/api/avatars/user/${me.id}?v=${new Date(me.avatar_updated_at).getTime()}` : null;
+      const fromDomain = fromEmail.split('@')[1] ?? '';
+      const avatarUrl = r.avatar?.id ? `/api/avatars/contact/${r.avatar.id}?v=${r.avatar.v}` : myEmails.has(fromEmail) && me.avatar_updated_at ? `/api/avatars/user/${me.id}?v=${new Date(me.avatar_updated_at).getTime()}` : brands.has(fromDomain) ? `/bimi/${fromDomain}.svg?v=${brands.get(fromDomain)}` : null;
       const { avatar: _a, ...rest } = r;
       return { ...rest, key: `${r.account_id}:${r.thread_id}`, avatar_url: avatarUrl };
     }),
@@ -130,7 +133,11 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   const photos = await query<{ email: string; id: number; v: number }>(`SELECT lower(email) AS email, id, (extract(epoch FROM avatar_updated_at) * 1000)::bigint AS v FROM contacts WHERE user_id=$1 AND avatar_updated_at IS NOT NULL AND lower(email) = ANY($2)`, [req.user!.id, senders]);
   const photoMap = new Map(photos.map((p) => [p.email, `/api/avatars/contact/${p.id}?v=${p.v}`]));
   if (req.user!.avatar_updated_at) photoMap.set(acc.email.toLowerCase(), `/api/avatars/user/${req.user!.id}?v=${new Date(req.user!.avatar_updated_at).getTime()}`);
-  for (const m of messages) (m as any).avatar_url = photoMap.get(m.from_email) ?? null;
+  const brands = await brandDomains();
+  for (const m of messages) {
+    const d = String(m.from_email ?? '').split('@')[1] ?? '';
+    (m as any).avatar_url = photoMap.get(m.from_email) ?? (brands.has(d) ? `/bimi/${d}.svg?v=${brands.get(d)}` : null);
+  }
   const mailboxes = await query<any>('SELECT jmap_id, name, role, color FROM mailboxes WHERE account_id=$1', [acc.id]);
   const contact = await one<any>(
     `SELECT c.id, c.email, c.first_name, c.last_name, c.company, c.title, c.status, c.tags, c.notes, c.fields, c.last_replied_at, c.last_contacted_at, (CASE WHEN c.avatar_updated_at IS NULL THEN NULL ELSE (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint END) AS avatar_version FROM contacts c WHERE c.user_id=$1 AND (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1) OR lower(c.email) = ANY($4)) ORDER BY (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1)) DESC LIMIT 1`,

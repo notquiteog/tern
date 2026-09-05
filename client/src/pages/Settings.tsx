@@ -7,7 +7,7 @@ import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
-import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
+import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle, Tabs } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
 import { getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
@@ -605,12 +605,22 @@ function UsersSettings() {
 
 // ---------------- Mail server (bundled Stalwart) ----------------
 
+const STATUS_KIND: Record<string, any> = { ok: 'success', missing: 'danger', mismatch: 'warning', error: 'danger', skipped: undefined };
+const STATUS_LABEL: Record<string, string> = { ok: 'found', missing: 'missing', mismatch: 'differs', error: 'error', skipped: 'skipped' };
+const GROUP_TITLES: Record<string, [string, string]> = {
+  required: ['Required', 'Without these, mail is rejected or lands in spam.'],
+  recommended: ['Encryption in transit', 'MTA-STS and TLS-RPT: other servers refuse to deliver to you over plain text, and tell you when they could not connect securely.'],
+  brand: ['Brand logo', 'BIMI shows your logo beside your messages in clients that support it.'],
+  clients: ['Mail apps', 'Lets Thunderbird, Apple Mail, Outlook and phones configure themselves from just the address.'],
+};
+
 function MailServerSettings() {
   const qc = useQueryClient();
   const toast = useToast();
   const { user } = useAuth();
   const { data, isLoading, refetch } = useQuery({ queryKey: ['stalwart'], queryFn: () => api.get<any>('/api/stalwart') });
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => api.get<{ users: any[] }>('/api/users').then((r) => r.users) });
+  const [tab, setTab] = useState<'setup' | 'mailboxes' | 'brand' | 'admin'>('setup');
   const [create, setCreate] = useState(false);
   const [f, setF] = useState({ localPart: '', domainId: '', displayName: '', password: '', connect: 'me' as 'none' | 'me' | 'user' | 'new', userId: '' as number | '', newUser: { username: '', password: '', displayName: '', role: 'member' as 'member' | 'admin' } });
   const [busy, setBusy] = useState(false);
@@ -618,7 +628,7 @@ function MailServerSettings() {
   const [del, setDel] = useState<any>(null);
   const [reset, setReset] = useState<any>(null);
   useEffect(() => { if (data?.domains?.length && !f.domainId) setF((x) => ({ ...x, domainId: (data.domains.find((d: any) => d.name === data.domain) ?? data.domains[0]).id })); }, [data, f.domainId]);
-  const refresh = () => { refetch(); qc.invalidateQueries({ queryKey: ['accounts'] }); qc.invalidateQueries({ queryKey: ['users'] }); };
+  const refresh = () => { refetch(); qc.invalidateQueries({ queryKey: ['accounts'] }); qc.invalidateQueries({ queryKey: ['users'] }); qc.invalidateQueries({ queryKey: ['dns'] }); };
   async function createMailbox() {
     setBusy(true);
     try {
@@ -632,11 +642,11 @@ function MailServerSettings() {
   }
   if (isLoading || !data) return <Spinner />;
   if (!data.enabled) return <Callout>The bundled mail server is not enabled on this install. Re-run <code>sudo ./install.sh</code> and answer yes to "Run a Stalwart mail server here?".</Callout>;
-  const domainName = (id: string) => data.domains.find((d: any) => d.id === id)?.name ?? '';
   return (
-    <div style={{ maxWidth: 900 }}>
-      <PageHeader title="Mail server" sub={`Stalwart at ${data.host}${data.domain ? ` · ${data.domain}` : ''}`} actions={<><a className="btn" href={data.adminUrl ?? '#'} target="_blank" rel="noreferrer"><ExternalLink size={15} />Stalwart admin</a><Button variant="primary" icon={<Plus size={15} />} onClick={() => setCreate(true)} disabled={!data.reachable}>Create mailbox</Button></>} />
+    <div style={{ maxWidth: 980 }}>
+      <PageHeader title="Mail server" sub={`Stalwart at ${data.host}${data.domain ? ` · ${data.domain}` : ''}`} actions={<><a className="btn" href={data.adminUrl ?? '#'} target="_blank" rel="noreferrer"><ExternalLink size={15} />Stalwart admin</a><Button variant="primary" icon={<Plus size={15} />} onClick={() => { setTab('mailboxes'); setCreate(true); }} disabled={!data.reachable}>Create mailbox</Button></>} />
       {!data.reachable && <Callout kind="danger">The mail server is not answering: {data.error}. Check <code>./bin/tern logs stalwart</code>.</Callout>}
+      <Tabs value={tab} onChange={setTab} tabs={[{ value: 'setup', label: 'DNS setup' }, { value: 'mailboxes', label: <>Mailboxes <Badge>{data.mailboxes.length}</Badge></> }, { value: 'brand', label: 'Brand logo' }, { value: 'admin', label: 'Admin access' }]} />
       {result && (
         <Callout kind="success">
           <div className="strong">Mailbox {result.mailbox.email} created</div>
@@ -647,28 +657,27 @@ function MailServerSettings() {
           <Button size="sm" variant="ghost" className="mt-8" onClick={() => setResult(null)}>Dismiss</Button>
         </Callout>
       )}
-      <div className="card mt-16 mb-16">
-        <div className="card-title"><h2>Mailboxes</h2><span className="small muted">{data.mailboxes.length} on the server</span></div>
-        {!data.mailboxes.length ? <div className="small muted">No mailboxes yet.</div> : (
-          <div className="table-wrap"><table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
-            {data.mailboxes.map((m: any) => <tr key={m.id}>
-              <td className="strong">{m.email}{m.aliases?.length ? <div className="small muted">aliases: {m.aliases.join(', ')}</div> : null}</td>
-              <td className="muted">{m.description ?? ''}</td>
-              <td>{m.connections.length ? m.connections.map((c: any) => <Badge key={c.accountId} kind="success">@{c.username}</Badge>) : <span className="faint small">not connected</span>}</td>
-              <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-                {!m.connections.some((c: any) => c.userId === user!.id) && <Button size="sm" onClick={() => { setF((x) => ({ ...x, localPart: m.name, displayName: m.description ?? '' })); toast.toast('To connect an existing mailbox you need its password: use Settings → Accounts → Add account → Stalwart (this server), or reset the password here.'); }}>Connect</Button>}
-                <Button size="sm" icon={<KeySquare size={13} />} onClick={() => setReset(m)}>Reset password</Button>
-                <IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton>
-              </div></td>
-            </tr>)}
-          </tbody></table></div>
-        )}
-      </div>
-      <div className="card">
-        <div className="card-title"><h2>DNS records for {data.domain || domainName(f.domainId)}</h2><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(data.dns); toast.success('Copied'); }}>Copy</Button></div>
-        <p className="small muted">Publish these at your DNS provider, plus an <code>A</code> record for <code>{data.host}</code> and reverse DNS on the server IP pointing back to it. They are generated by Stalwart and include the current DKIM keys.</p>
-        <pre className="mono small pre" style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>{data.dns || 'Not available yet.'}</pre>
-      </div>
+      {tab === 'setup' && <DnsSetup data={data} />}
+      {tab === 'brand' && <BrandLogo domain={data.domain} />}
+      {tab === 'admin' && <AdminAccess />}
+      {tab === 'mailboxes' && (
+        <div className="card">
+          <div className="card-title"><h2>Mailboxes</h2><span className="small muted">{data.mailboxes.length} on the server</span></div>
+          {!data.mailboxes.length ? <div className="small muted">No mailboxes yet. Create one with the button above; it can also create the person's Tern login and connect the two.</div> : (
+            <div className="table-wrap"><table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
+              {data.mailboxes.map((m: any) => <tr key={m.id}>
+                <td className="strong">{m.email}{m.aliases?.length ? <div className="small muted">aliases: {m.aliases.join(', ')}</div> : null}</td>
+                <td className="muted">{m.description ?? ''}</td>
+                <td>{m.connections.length ? m.connections.map((c: any) => <Badge key={c.accountId} kind="success">@{c.username}</Badge>) : <span className="faint small">not connected</span>}</td>
+                <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
+                  <Button size="sm" icon={<KeySquare size={13} />} onClick={() => setReset(m)}>Reset password</Button>
+                  <IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton>
+                </div></td>
+              </tr>)}
+            </tbody></table></div>
+          )}
+        </div>
+      )}
 
       <Modal open={create} onClose={() => setCreate(false)} title="Create mailbox" size="wide" footer={<><Button onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!f.localPart || !f.domainId || (f.connect === 'new' && (!f.newUser.username || f.newUser.password.length < 10)) || (f.connect === 'user' && !f.userId)} onClick={createMailbox}>Create</Button></>}>
         <div className="form-row">
@@ -697,6 +706,169 @@ function MailServerSettings() {
         <p className="muted">A new password is generated and shown once. Tern accounts using this mailbox are updated automatically; mail apps on phones and laptops need the new password.</p>
       </Modal>
       <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete mailbox ${del?.email}?`} message="All mail in it is destroyed on the server and any Tern account connected to it is removed. This cannot be undone." confirmLabel="Delete mailbox" onConfirm={async () => { await api.del(`/api/stalwart/mailboxes/${del.id}`); refresh(); toast.success('Mailbox deleted'); }} />
+    </div>
+  );
+}
+
+function recordValue(r: any): string {
+  if (r.type === 'MX') return `${r.priority} ${r.value}`;
+  if (r.type === 'SRV') return `${r.srv.priority} ${r.srv.weight} ${r.srv.port} ${r.value}`;
+  return r.value;
+}
+
+function DnsSetup({ data }: { data: any }) {
+  const toast = useToast();
+  const { data: dns, isLoading, refetch } = useQuery({ queryKey: ['dns'], queryFn: () => api.get<any>('/api/stalwart/dns'), enabled: data.reachable });
+  const { data: sts, refetch: refetchSts } = useQuery({ queryKey: ['mta-sts'], queryFn: () => api.get<{ mode: string }>('/api/stalwart/mta-sts'), enabled: data.reachable });
+  const [checks, setChecks] = useState<Record<string, any>>({});
+  const [outbound, setOutbound] = useState<any>(null);
+  const [checking, setChecking] = useState(false);
+  const [summary, setSummary] = useState<any>(null);
+  const [showClients, setShowClients] = useState(false);
+  async function check(port25 = true) {
+    setChecking(true);
+    try {
+      const r = await api.post<any>('/api/stalwart/dns/check', { port25 });
+      setChecks(Object.fromEntries(r.results.map((x: any) => [x.id, x]))); setOutbound(r.outbound); setSummary(r.summary);
+    } catch (e) { toast.error(e); } finally { setChecking(false); }
+  }
+  if (!data.reachable) return null;
+  if (isLoading || !dns) return <Spinner />;
+  const groups = ['required', 'recommended', 'brand', 'clients'].filter((g) => dns.records.some((r: any) => r.group === g));
+  const copy = (t: string) => { navigator.clipboard?.writeText(t); toast.success('Copied'); };
+  return (
+    <div className="col gap-16">
+      <Callout>
+        <div className="strong mb-8">Trusted mail in five steps</div>
+        <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>At your <b>hosting provider</b>, set the reverse DNS of <code>{dns.serverIp ?? 'the server IP'}</code> to <code>{dns.mailHost}</code>.</li>
+          <li>At your <b>DNS host</b> (where {dns.domain} is managed), add the records below. Use the copy buttons; long values are fine to paste as one piece. If Cloudflare proxies your DNS, turn the proxy off for these names.</li>
+          <li>Press <b>Check DNS</b>. Every record shows found, missing or differs, with what the resolver saw.</li>
+          <li>Once the required rows are green, send a message to a Gmail address and open "Show original": SPF, DKIM and DMARC should say PASS.</li>
+          <li>Add a brand logo (next tab) so your mail carries it, and switch MTA-STS to enforce once its two records are green.</li>
+        </ol>
+        <div className="small muted mt-8">Full explanations for every record: docs/DNS.md in the repository.</div>
+      </Callout>
+      <div className="row wrap">
+        <Button variant="primary" icon={<RefreshCw size={15} className={checking ? 'spin' : ''} />} loading={checking} onClick={() => check(true)}>Check DNS</Button>
+        <Button icon={<Copy size={15} />} onClick={() => copy(dns.zone)}>Copy all as zone file</Button>
+        <Button icon={<RefreshCw size={15} />} variant="ghost" onClick={() => refetch()}>Reload from server</Button>
+        {summary && <span className={cls('small', summary.requiredOk ? 'strong' : 'muted')} style={{ color: summary.requiredOk ? 'var(--success)' : undefined }}>{summary.requiredOk ? 'All required records are in place.' : `${summary.ok} of ${summary.checked} records found.`}</span>}
+      </div>
+      {outbound && <Callout kind={outbound.ok ? 'success' : 'warning'}>{outbound.note}{!outbound.ok && ' Ask the provider to open it, or configure a relay host in the Stalwart admin panel under Delivery → Routes.'}</Callout>}
+      {groups.map((g) => (g !== 'clients' || showClients) && (
+        <div key={g} className="card">
+          <div className="card-title"><h2>{GROUP_TITLES[g][0]}</h2><span className="small muted">{GROUP_TITLES[g][1]}</span></div>
+          <div className="table-wrap"><table className="table"><thead><tr><th style={{ width: 70 }}>Type</th><th>Name</th><th>Value</th><th style={{ width: 90 }}>Status</th><th /></tr></thead><tbody>
+            {dns.records.filter((r: any) => r.group === g).map((r: any) => {
+              const c = checks[r.id];
+              return (
+                <tr key={r.id}>
+                  <td><Badge>{r.type}</Badge></td>
+                  <td className="mono small" style={{ maxWidth: 260, wordBreak: 'break-all' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{r.purpose}</div>}</td>
+                  <td className="mono small" style={{ maxWidth: 360, wordBreak: 'break-all' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</td>
+                  <td>{c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>}</td>
+                  <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></div></td>
+                </tr>
+              );
+            })}
+          </tbody></table></div>
+          {g === 'recommended' && sts && (
+            <div className="row mt-16 wrap">
+              <span className="small strong">MTA-STS mode:</span>
+              <div className="segmented">{['testing', 'enforce', 'disable'].map((m) => <button key={m} className={sts.mode === m ? 'active' : ''} onClick={() => api.post('/api/stalwart/mta-sts', { mode: m }).then(() => { refetchSts(); toast.success(`MTA-STS set to ${m}`); }).catch((e) => toast.error(e))}>{m}</button>)}</div>
+              <span className="small muted">Keep testing until the two MTA-STS records are green, then enforce. The policy file is served at https://mta-sts.{dns.domain}/.well-known/mta-sts.txt through Caddy.</span>
+            </div>
+          )}
+        </div>
+      ))}
+      <div className="row"><Button variant="ghost" size="sm" onClick={() => setShowClients((v) => !v)}>{showClients ? 'Hide' : 'Show'} the mail-app autoconfig records ({dns.records.filter((r: any) => r.group === 'clients').length})</Button></div>
+    </div>
+  );
+}
+
+function BrandLogo({ domain }: { domain: string }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const { data, refetch } = useQuery({ queryKey: ['brand', domain], queryFn: () => api.get<{ brand: any }>(`/api/brand/${domain}`), enabled: Boolean(domain) });
+  const [initials, setInitials] = useState('');
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('#ffffff');
+  const [bg, setBg] = useState('#4f6df5');
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (data?.brand) { setInitials(data.brand.initials || ''); setName(data.brand.name || ''); setColor(data.brand.color); setBg(data.brand.bg); } else if (domain) { setInitials(domain.slice(0, 2).toUpperCase()); setName(domain); } }, [data, domain]);
+  const brand = data?.brand;
+  const done = () => { refetch(); qc.invalidateQueries({ queryKey: ['dns'] }); qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['thread'] }); };
+  async function generate() {
+    setBusy(true);
+    try { await api.put(`/api/brand/${domain}`, { name, initials, color, bg }); done(); toast.success('Default logo generated'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function upload(f: File) {
+    setBusy(true);
+    try { await api.upload(`/api/brand/${domain}`, await f.text(), 'image/svg+xml'); done(); toast.success('Logo uploaded'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  if (!domain) return <Callout>No mail domain yet.</Callout>;
+  return (
+    <div className="col gap-16">
+      <Callout>Your logo appears beside messages from <b>@{domain}</b> inside Tern right away, and in mail clients that support <b>BIMI</b> once the DNS record from the setup tab is published and DMARC is at quarantine or reject. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also require a paid Verified Mark Certificate.</Callout>
+      <div className="card">
+        <div className="card-title"><h2>Current logo</h2>{brand && <span className="small muted">{Math.round(brand.size / 1024 * 10) / 10} KB · updated {fmtRelative(brand.updated_at)}</span>}</div>
+        <div className="row gap-16 wrap" style={{ alignItems: 'center' }}>
+          <div style={{ width: 96, height: 96, borderRadius: 20, overflow: 'hidden', background: 'var(--bg-sunken)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--glow-soft)' }}>{brand ? <img src={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} alt="Brand logo" style={{ width: '100%', height: '100%' }} /> : <span className="faint small">none</span>}</div>
+          <div className="col gap-4">
+            {brand ? <div className="small">Hosted at <code>{brand.url}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.url); toast.success('Copied'); }}>Copy</Button></div> : <div className="small muted">No logo yet. Upload an SVG or generate a default avatar below.</div>}
+            <div className="row gap-4"><Button size="sm" icon={<Upload size={13} />} loading={busy} onClick={() => input.current?.click()}>Upload SVG</Button>{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
+            <div className="help-text">Square SVG, no scripts, no external references, under 32 KB (the BIMI "Tiny PS" profile). Tern checks and adjusts the file.</div>
+            <input ref={input} type="file" accept=".svg,image/svg+xml" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void upload(f); }} />
+          </div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-title"><h2>Generate a default avatar</h2></div>
+        <div className="row gap-16 wrap" style={{ alignItems: 'flex-end' }}>
+          <Field label="Initials"><Input value={initials} maxLength={3} onChange={(e) => setInitials(e.target.value.toUpperCase())} style={{ width: 90 }} /></Field>
+          <Field label="Company name"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Background"><input type="color" value={bg} onChange={(e) => setBg(e.target.value)} style={{ width: 48, height: 36, border: 0, background: 'none' }} /></Field>
+          <Field label="Text"><input type="color" value={color} onChange={(e) => setColor(e.target.value)} style={{ width: 48, height: 36, border: 0, background: 'none' }} /></Field>
+          <div style={{ width: 64, height: 64, borderRadius: 14, background: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 22, marginBottom: 14 }}>{initials || '?'}</div>
+          <Button variant="primary" loading={busy} disabled={!initials} onClick={generate} style={{ marginBottom: 14 }}>Generate and use</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminAccess() {
+  const toast = useToast();
+  const [creds, setCreds] = useState<any>(null);
+  const [show, setShow] = useState(false);
+  async function reveal() { try { setCreds(await api.get('/api/stalwart/admin-access')); setShow(true); } catch (e) { toast.error(e); } }
+  return (
+    <div className="col gap-16" style={{ maxWidth: 700 }}>
+      <Callout>Two logins run the mail system. <b>Tern admins</b> (this app) create mailboxes, set DNS and brand, and manage users. The <b>Stalwart admin</b> is the mail server's own panel for everything else: domains, aliases, relay hosts, spam rules, queues and logs. The installer created both; the Stalwart one is kept in <code>.env</code> and shown here on request.</Callout>
+      <div className="card">
+        <div className="card-title"><h2>Stalwart admin panel</h2></div>
+        {!show ? <Button icon={<KeyRound size={15} />} onClick={reveal}>Show admin login</Button> : (
+          <dl className="kv">
+            <dt>Panel</dt><dd>{creds.url ? <a href={creds.url} target="_blank" rel="noreferrer">{creds.url} <ExternalLink size={11} /></a> : creds.localUrl}</dd>
+            <dt>Username</dt><dd><code>{creds.username}</code></dd>
+            <dt>Password</dt><dd><code>{creds.password}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(creds.password); toast.success('Copied'); }}>Copy</Button></dd>
+          </dl>
+        )}
+        <div className="help-text mt-8">Viewing this is written to the audit log. Change the password in the Stalwart panel and update <code>STALWART_ADMIN_PASSWORD</code> in <code>.env</code> afterwards, then <code>./bin/tern up</code>.</div>
+      </div>
+      <div className="card">
+        <div className="card-title"><h2>What to do where</h2></div>
+        <dl className="kv">
+          <dt>Mailboxes</dt><dd>Here, under Mailboxes (also creates the Tern login).</dd>
+          <dt>DNS and logo</dt><dd>Here, under DNS setup and Brand logo.</dd>
+          <dt>Aliases, extra domains</dt><dd>Stalwart panel → Directory.</dd>
+          <dt>Relay through SES/Mailgun</dt><dd>Stalwart panel → Delivery → Routes → Relay host.</dd>
+          <dt>Spam filter, quotas</dt><dd>Stalwart panel → Spam filter, Storage.</dd>
+          <dt>Queue and logs</dt><dd>Stalwart panel → Queue, or <code>./bin/tern logs stalwart</code>.</dd>
+        </dl>
+      </div>
     </div>
   );
 }

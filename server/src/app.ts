@@ -23,6 +23,7 @@ import { publicRouter } from './routes/public.js';
 import { respondersRouter } from './routes/responders.js';
 import { stalwartRouter } from './routes/stalwart.js';
 import { avatarsRouter } from './routes/avatars.js';
+import { brandRouter, bimiRouter } from './routes/brand.js';
 
 const log = logger('http');
 
@@ -40,7 +41,18 @@ export function createApp(): express.Express {
   });
 
   app.use('/u', express.urlencoded({ extended: false }), publicRouter);
+  app.use('/bimi', bimiRouter);
   app.get('/healthz', (_req, res) => { res.json({ ok: true, version: config.version }); });
+  // Caddy asks here before issuing an on-demand certificate, so only names
+  // that belong to this install get certificates.
+  app.get('/api/caddy/ask', (req, res) => {
+    const d = String(req.query.domain ?? '').toLowerCase();
+    const allowed = new Set<string>();
+    if (config.webHost) allowed.add(config.webHost.toLowerCase());
+    if (config.stalwartHost) allowed.add(config.stalwartHost.toLowerCase());
+    if (config.stalwartDomain) for (const p of ['mta-sts', 'autoconfig', 'autodiscover', 'ua-auto-config']) allowed.add(`${p}.${config.stalwartDomain.toLowerCase()}`);
+    res.status(allowed.has(d) ? 200 : 404).end();
+  });
 
   app.use('/api', express.json({ limit: '4mb' }), attachUser, csrfGuard);
   app.use('/api/setup', setupRouter);
@@ -56,6 +68,7 @@ export function createApp(): express.Express {
   app.use('/api/responders', respondersRouter);
   app.use('/api/stalwart', stalwartRouter);
   app.use('/api/avatars', avatarsRouter);
+  app.use('/api/brand', brandRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/events', eventsRouter);

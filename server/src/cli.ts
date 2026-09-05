@@ -81,6 +81,34 @@ async function main(): Promise<void> {
       }
       break;
     }
+    case 'dns-check': {
+      // tern-cli dns-check [--port25]   prints every record with its live status
+      const sw = await import('./services/stalwart.js');
+      const { buildRecords, checkAll, checkOutbound25, detectServerIp } = await import('./services/dnsCheck.js');
+      const { getBrand } = await import('./services/brand.js');
+      const { config } = await import('./config.js');
+      if (!sw.stalwartEnabled()) throw new Error('the bundled mail server is not enabled');
+      const domains = await sw.listDomains();
+      const primary = domains.find((d) => d.name === config.stalwartDomain) ?? domains[0];
+      if (!primary) throw new Error('no domain on the mail server');
+      const brand = await getBrand(primary.name);
+      const records = buildRecords({ zone: await sw.dnsZone(primary.id), domain: primary.name, mailHost: config.stalwartHost, serverIp: detectServerIp(), bimiUrl: brand ? `${config.appUrl}/bimi/${primary.name}.svg` : null });
+      const results = await checkAll(records, detectServerIp());
+      const icon: Record<string, string> = { ok: 'OK ', missing: 'MISSING', mismatch: 'DIFFERS', error: 'ERROR', skipped: 'SKIP' };
+      for (const r of records) {
+        const c = results.find((x) => x.id === r.id)!;
+        const val = r.type === 'MX' ? `${r.priority} ${r.value}` : r.type === 'SRV' ? `${r.srv!.priority} ${r.srv!.weight} ${r.srv!.port} ${r.value}` : r.value;
+        console.log(`${icon[c.status].padEnd(8)} ${r.group.padEnd(12)} ${r.type.padEnd(6)} ${r.name}`);
+        console.log(`         want: ${val.length > 110 ? val.slice(0, 107) + '...' : val}`);
+        if (c.found.length && c.status !== 'ok') console.log(`         found: ${c.found.join(' | ').slice(0, 160)}`);
+        if (c.note) console.log(`         note: ${c.note}`);
+      }
+      if (process.argv.includes('--port25')) { const o = await checkOutbound25(); console.log(`\n${o.ok ? 'OK ' : 'FAIL'}     outbound port 25: ${o.note}`); }
+      const required = records.filter((r) => r.group === 'required');
+      const bad = required.filter((r) => results.find((x) => x.id === r.id)?.status !== 'ok');
+      console.log(bad.length ? `\n${bad.length} required record(s) still missing or wrong.` : '\nAll required records are in place.');
+      break;
+    }
     case 'list-users': {
       const rows = await query('SELECT id, username, display_name, role, disabled, totp_enabled, last_login_at FROM users ORDER BY id');
       console.table(rows);
@@ -92,7 +120,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | stats');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | dns-check | stats');
   }
   await pool.end();
 }

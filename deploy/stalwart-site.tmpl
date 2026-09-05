@@ -6,3 +6,12 @@ https://${STALWART_HOST} {
 		flush_interval -1
 	}
 }
+
+# MTA-STS policy and mail-app autoconfig for the mail domain. Certificates
+# are fetched on first request once the DNS names point here.
+https://mta-sts.${STALWART_DOMAIN}, https://autoconfig.${STALWART_DOMAIN}, https://autodiscover.${STALWART_DOMAIN}, https://ua-auto-config.${STALWART_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy stalwart:8080
+}

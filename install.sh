@@ -189,6 +189,9 @@ if [ "$STALWART_ENABLED" = 1 ]; then
   ask STALWART_DOMAIN "Primary mail domain (the part after @)" "${STALWART_DOMAIN:-${WEB_HOST#*.}}"
   ask STALWART_HOST "Mail server hostname (A record + reverse DNS point here)" "${STALWART_HOST:-mx1.$STALWART_DOMAIN}"
   [ "$STALWART_HOST" != "$WEB_HOST" ] || die "The mail hostname must differ from the web app hostname."
+  DETECTED_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | head -1)"
+  [ -z "$DETECTED_IP" ] && DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  ask SERVER_IP "This server's public IPv4 (used to verify the A and reverse DNS records)" "${SERVER_IP:-$DETECTED_IP}"
   STALWART_HTTP_PORT="${STALWART_HTTP_PORT:-8080}"
   STALWART_ADMIN_USER="${STALWART_ADMIN_USER:-}"
   STALWART_ADMIN_PASSWORD="${STALWART_ADMIN_PASSWORD:-}"
@@ -256,6 +259,7 @@ STALWART_ADMIN_PASSWORD=$STALWART_ADMIN_PASSWORD
 STALWART_RECOVERY_ADMIN=${STALWART_RECOVERY_ADMIN:-}
 STALWART_RECOVERY_MODE=
 STALWART_FIRST_USER=${STALWART_FIRST_USER:-}
+SERVER_IP=${SERVER_IP:-}
 EOF
 umask 022
 ok ".env written (mode 600)"
@@ -263,13 +267,18 @@ ok ".env written (mode 600)"
 # Caddyfile from template: substitute ${VAR} for a known list, nothing else.
 render() {
   local content; content="$(cat "$1")"
-  for v in ACME_EMAIL SITE_ADDRESS CADDY_GLOBAL STALWART_SITE STALWART_HOST INSTALL_DIR; do
+  for v in ACME_EMAIL SITE_ADDRESS CADDY_GLOBAL STALWART_SITE STALWART_HOST STALWART_DOMAIN INSTALL_DIR; do
     content="${content//\$\{$v\}/${!v:-}}"
   done
   printf '%s\n' "$content"
 }
 CADDY_GLOBAL=""
 if [ -z "$WEB_HOST" ]; then CADDY_GLOBAL="auto_https off"; fi
+# Extra names for the mail domain (MTA-STS policy, client autoconfig) get
+# certificates on demand, after the app confirms the name belongs here.
+if [ "$STALWART_ENABLED" = 1 ]; then CADDY_GLOBAL="on_demand_tls {
+		ask http://app:3080/api/caddy/ask
+	}"; fi
 STALWART_SITE=""
 if [ "$STALWART_ENABLED" = 1 ]; then STALWART_SITE="$(render deploy/stalwart-site.tmpl)"; fi
 mkdir -p deploy/generated
@@ -385,12 +394,19 @@ if [ "$STALWART_ENABLED" = 1 ]; then
     say "  First mailbox:  $STALWART_FIRST_USER@$STALWART_DOMAIN / $STALWART_FIRST_PASSWORD"
     say "                  ${D}Add it in Tern: Settings → Accounts → Add account → Stalwart (this server).${N}"
   fi
-  if [ -n "$STALWART_DNS" ]; then
-    say ""
-    say "  ${B}DNS records to publish for $STALWART_DOMAIN${N} (also in the admin panel under Domains → DNS):"
-    printf '%s\n' "$STALWART_DNS" | sed 's/^/    /'
-    say "    $STALWART_HOST.   IN A   <this server's IPv4>     and reverse DNS for that IP → $STALWART_HOST"
-  fi
+  say ""
+  say "  ${B}Mail server admin login${N}   https://$STALWART_HOST/admin"
+  say "     user: $STALWART_ADMIN_USER   password: $STALWART_ADMIN_PASSWORD"
+  say "     ${D}Also under Settings → Mail server → Admin access in Tern (admins only), and kept in .env.${N}"
+  say ""
+  say "  ${B}DNS walkthrough for $STALWART_DOMAIN${N}   (full guide: docs/DNS.md)"
+  say "  1. At your hosting provider, set reverse DNS of ${SERVER_IP:-<server IP>} to $STALWART_HOST."
+  say "  2. At your DNS host, add an A record:  $STALWART_HOST → ${SERVER_IP:-<server IP>}"
+  say "  3. Add the records the mail server generated (MX, SPF, two DKIM keys, DMARC, MTA-STS, TLS-RPT, mail-app autoconfig):"
+  if [ -n "$STALWART_DNS" ]; then printf '%s\n' "$STALWART_DNS" | sed 's/^/       /'; fi
+  say "  4. Brand logo (BIMI): upload an SVG or generate an avatar under Settings → Mail server → Brand logo; its record appears in DNS setup."
+  say "  5. Verify: Settings → Mail server → Check DNS, or   ./bin/tern dns-check --port25"
+  say "  6. When the MTA-STS rows are green, switch MTA-STS to enforce on the same page."
 fi
 say ""
 say "  Next:  open the web app, then Settings → Accounts → Add account (Fastmail token, Stalwart, or any JMAP server)."

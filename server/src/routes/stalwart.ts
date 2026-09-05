@@ -12,6 +12,9 @@ import { connectAccount, encryptSecret, type AccountRow } from '../services/acco
 import { hashPassword } from '../crypto.js';
 import { syncManager } from '../workers/syncManager.js';
 import { jmapErrorMessage } from '../jmap/client.js';
+import { buildRecords, checkAll, checkOutbound25, detectServerIp, type DnsRecord } from '../services/dnsCheck.js';
+import { getBrand } from '../services/brand.js';
+import { bimiUrlFor } from './brand.js';
 
 export const stalwartRouter = Router();
 stalwartRouter.use(requireAuth);
@@ -115,4 +118,55 @@ stalwartRouter.delete('/mailboxes/:id', requireAdmin, async (req, res) => {
   for (const a of accounts) syncManager.remove(a.id);
   await query(`INSERT INTO audit_log (user_id, action, target) VALUES ($1,'stalwart.mailbox_deleted',$2)`, [req.user!.id, m.email]);
   res.json({ ok: true, removedAccounts: accounts.length });
+});
+
+
+// ---------- Guided DNS setup ----------
+
+async function expectedRecords(): Promise<{ domain: string; mailHost: string; records: DnsRecord[]; serverIp: string | null; bimiUrl: string | null }> {
+  const domains = await sw.listDomains();
+  const primary = domains.find((d) => d.name === config.stalwartDomain) ?? domains[0];
+  if (!primary) throw badRequest('The mail server has no domain yet');
+  const zone = await sw.dnsZone(primary.id);
+  const brand = await getBrand(primary.name);
+  const bimiUrl = brand ? bimiUrlFor(primary.name) : null;
+  const serverIp = detectServerIp();
+  return { domain: primary.name, mailHost: config.stalwartHost, records: buildRecords({ zone, domain: primary.name, mailHost: config.stalwartHost, serverIp, bimiUrl }), serverIp, bimiUrl };
+}
+
+stalwartRouter.get('/dns', requireAdmin, async (_req, res) => {
+  const r = await expectedRecords();
+  res.json({ ...r, zone: r.records.filter((x) => x.type !== 'PTR').map((x) => x.type === 'A' ? `${x.name}.\tIN\tA\t${x.value}` : x.type === 'MX' ? `${x.name}.\tIN\tMX\t${x.priority} ${x.value}.` : x.type === 'SRV' ? `${x.name}.\tIN\tSRV\t${x.srv!.priority} ${x.srv!.weight} ${x.srv!.port} ${x.value}.` : x.type === 'CNAME' ? `${x.name}.\tIN\tCNAME\t${x.value}.` : `${x.name}.\tIN\tTXT\t"${x.value.replace(/"/g, '\\"')}"`).join('\n') });
+});
+
+// Live verification from this server's resolver. Optional `records` lets
+// the UI re-check a single edited record; `port25` adds the outbound test.
+stalwartRouter.post('/dns/check', requireAdmin, async (req, res) => {
+  const b = parse(z.object({ ids: z.array(z.string()).optional(), port25: z.boolean().default(false) }), req.body ?? {});
+  const r = await expectedRecords();
+  const targets = b.ids?.length ? r.records.filter((x) => b.ids!.includes(x.id)) : r.records;
+  const results = await checkAll(targets, r.serverIp);
+  const outbound = b.port25 ? await checkOutbound25() : null;
+  const required = r.records.filter((x) => x.group === 'required');
+  const okCount = results.filter((x) => x.status === 'ok').length;
+  const requiredOk = required.every((x) => results.find((y) => y.id === x.id)?.status === 'ok');
+  res.json({ results, outbound, summary: { checked: results.length, ok: okCount, requiredOk } });
+});
+
+const mtaStsSchema = z.object({ mode: z.enum(['enforce', 'testing', 'disable']) });
+stalwartRouter.post('/mta-sts', requireAdmin, async (req, res) => {
+  const { mode } = parse(mtaStsSchema, req.body);
+  await sw.setMtaStsMode(mode);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'stalwart.mta_sts',$2)`, [req.user!.id, JSON.stringify({ mode })]);
+  res.json({ ok: true, mode });
+});
+stalwartRouter.get('/mta-sts', requireAdmin, async (_req, res) => {
+  res.json({ mode: await sw.getMtaStsMode() });
+});
+
+// The admin login for the mail server's own panel. Only admins, only on
+// request, and audit-logged: it is the master key to the mail system.
+stalwartRouter.get('/admin-access', requireAdmin, async (req, res) => {
+  await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'stalwart.admin_credentials_viewed')`, [req.user!.id]);
+  res.json({ url: config.stalwartHost ? `https://${config.stalwartHost}/admin` : null, localUrl: 'http://127.0.0.1:8080/admin (over an SSH tunnel)', username: config.stalwartAdminUser, password: config.stalwartAdminPassword });
 });

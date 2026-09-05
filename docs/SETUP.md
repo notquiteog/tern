@@ -38,7 +38,10 @@ Every question shows its default in brackets; press Enter to accept. The install
 7. **Build and start.** Builds the app image, starts Postgres, the app, Ollama and Caddy, creates the admin user, downloads the model, and bootstraps Stalwart if enabled.
 8. **Boot.** Installs a systemd unit so the stack starts after a reboot.
 
-It ends with the URL, credentials, and, for Stalwart, the DNS records to publish.
+It ends with the URL and credentials. With Stalwart enabled it also prints the
+mail server's admin login and a numbered DNS walkthrough; the same guide with
+live verification is in the app under Settings → Mail server, and
+[DNS.md](DNS.md) explains every record.
 
 Run `sudo ./install.sh` again to change anything. It re-reads `.env`, offers each previous answer as the default, and only restarts what changed.
 

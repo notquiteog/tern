@@ -47,11 +47,11 @@ Everything below is outside the box and cannot be automated by the installer.
 2. **Reverse DNS.** Set the server IP's PTR record to the mail hostname in
    your provider's panel. Gmail rejects mail from hosts whose forward and
    reverse names disagree. Check with `dig -x <ip>` and `dig <mail host>`.
-3. **Publish the DNS records** the installer printed. They are also in the
-   Stalwart admin panel under Domains → your domain → DNS records. You
-   need at least: an `A` record for the mail host, `MX` for the domain, the
-   `TXT` SPF record, the DKIM `TXT` records, and a `_dmarc` `TXT`. Start DMARC
-   at `p=none`, move to `p=reject` after a week of clean reports.
+3. **Publish the DNS records.** Settings → Mail server lists every record
+   with a purpose and a live check, and [DNS.md](DNS.md) walks through them:
+   the `A` record and reverse DNS for the mail host, `MX`, SPF, two DKIM
+   keys, DMARC, then MTA-STS and TLS-RPT for encryption, BIMI for a brand
+   logo, and the autoconfig records for mail apps.
 4. **A clean IP.** Check the address on Spamhaus, UCEPROTECT and MXToolbox
    before the first send; reprovision the VPS if it is listed.
 5. **Warm up.** Twenty to thirty sends a day for the first two weeks, then

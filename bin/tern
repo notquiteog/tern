@@ -3,6 +3,7 @@
 #   ./bin/tern up | down | restart [service] | ps | logs [service] | build
 #   ./bin/tern cli <args>            run tern-cli inside the app container
 #   ./bin/tern pull-model <name>     download an Ollama model
+#   ./bin/tern dns-check [--port25]  verify the mail domain's DNS records from this box
 #   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
 #   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
 #   ./bin/tern backup [dir]          dump the database and the .env into a dated tarball
@@ -30,6 +31,7 @@ case "$cmd" in
   compose)   compose "$@" ;;
   cli)       compose exec -T app tern-cli "$@" ;;
   pull-model) compose exec -T ollama ollama pull "${1:?model name}" ;;
+  dns-check) compose exec -T app tern-cli dns-check "$@" ;;
   update)    exec "$ROOT/update.sh" "$@" ;;
   stalwart-api)
     [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled." >&2; exit 1; }

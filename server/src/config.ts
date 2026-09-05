@@ -60,6 +60,9 @@ export const config = {
   // Admin credentials written by install.sh; presence turns on mailbox provisioning.
   stalwartAdminUser: env('STALWART_ADMIN_USER', ''),
   stalwartAdminPassword: env('STALWART_ADMIN_PASSWORD', ''),
+  // Public IPv4 of this box, written by install.sh; used for DNS verification.
+  serverIp: env('SERVER_IP', ''),
+  webHost: env('WEB_HOST', ''),
   clientDist: env('CLIENT_DIST', ''),
   logLevel: env('LOG_LEVEL', 'info'),
   totalMemBytes: os.totalmem(),

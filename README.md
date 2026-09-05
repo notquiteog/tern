@@ -58,8 +58,9 @@ Nothing leaves your server except the mail itself.
   self-registration if an admin turns it on. No email-based password reset
   by design.
 - Optional Stalwart mail server on the same box, bootstrapped by the
-  installer, with mailbox creation, password resets and DNS records inside
-  Tern's settings.
+  installer, with mailbox creation, password resets, a guided DNS setup with
+  live verification (A, reverse DNS, MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT,
+  autoconfig), BIMI brand logo hosting, and the admin login inside Tern.
 
 ## Install
 
@@ -82,7 +83,8 @@ Then open the web app and go to **Settings → Accounts → Add account**.
 ## Documentation
 
 - [docs/SETUP.md](docs/SETUP.md): first run, step by step, and what each installer question means.
-- [docs/PROVIDERS.md](docs/PROVIDERS.md): connecting Fastmail, Stalwart (bundled or elsewhere), other JMAP servers; DNS records; port 25 and reverse DNS.
+- [docs/PROVIDERS.md](docs/PROVIDERS.md): connecting Fastmail, Stalwart (bundled or elsewhere), other JMAP servers; port 25 and reverse DNS.
+- [docs/DNS.md](docs/DNS.md): every DNS record for trusted mail, MTA-STS, BIMI logos, and how to verify them.
 - [docs/CUSTOMIZING.md](docs/CUSTOMIZING.md): sending policy, sequences, AI models, rules, theming, environment variables.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it is built.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): logs, common errors, recovery.

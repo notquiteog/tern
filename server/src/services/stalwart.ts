@@ -85,3 +85,12 @@ export function generateMailboxPassword(): string {
   const num = String(Math.floor(1000 + Math.random() * 9000));
   return `${pick()}-${pick()}-${pick()}-${num}`;
 }
+
+export async function getMtaStsMode(): Promise<string> {
+  const [[, r]] = await call([['x:MtaSts/get', {}, 'c1']]);
+  return String(r.list?.[0]?.mode ?? 'testing').toLowerCase();
+}
+export async function setMtaStsMode(mode: 'enforce' | 'testing' | 'disable'): Promise<void> {
+  const [[, r]] = await call([['x:MtaSts/set', { update: { singleton: { mode } } }, 'c1']]);
+  if (r.notUpdated?.singleton) throw new Error(r.notUpdated.singleton.description ?? 'Could not change the MTA-STS mode');
+}

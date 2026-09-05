@@ -463,4 +463,19 @@ ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS contacts_email_lower_idx ON contacts (user_id, lower(email));
 `,
   },
+  {
+    id: '20260905_0005_brands',
+    up: `
+CREATE TABLE IF NOT EXISTS brands (
+  domain TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  svg TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '#ffffff',
+  bg TEXT NOT NULL DEFAULT '#4f6df5',
+  initials TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL
+);
+`,
+  },
 ];
