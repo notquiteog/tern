@@ -8,7 +8,9 @@ import { fitToBimi, BIMI_MAX_BYTES } from '../services/svgTiny.js';
 import { config } from '../config.js';
 
 export const brandRouter = Router();
-brandRouter.use(requireAuth);
+// Brand logos belong to the mail domain, which only admins manage. The logo
+// itself is public under /bimi; thread lists reference that, not this API.
+brandRouter.use(requireAuth, requireAdmin);
 
 const domainParam = (v: string) => {
   const d = String(v).toLowerCase().replace(/\.svg$/, '');

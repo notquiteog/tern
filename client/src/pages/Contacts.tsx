@@ -9,6 +9,7 @@ import { useContactTags, useSequences } from '../lib/queries';
 import { useDebounced } from '../lib/hooks';
 import { Avatar, Badge, Button, Confirm, Drawer, Empty, Field, IconButton, Input, Menu, MenuItem, Modal, PageHeader, Select, Spinner, Textarea, Callout } from '../components/ui';
 import { AvatarUploader } from './Settings';
+import { DataTable } from '../components/DataTable';
 import { fmtDate, fmtDateTime, fmtNumber, plural } from '../lib/format';
 
 const STATUS_KIND: Record<string, any> = { active: 'success', replied: 'accent', unsubscribed: 'danger', bounced: 'danger', do_not_contact: 'danger' };
@@ -44,7 +45,6 @@ export default function ContactsPage() {
   async function bulk(action: string, extra: Record<string, unknown> = {}) {
     try { await api.post('/api/contacts/bulk', { ids: [...selected], action, ...extra }); invalidate(); setSelected(new Set()); toast.success('Done'); } catch (e) { toast.error(e); }
   }
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
   return (
     <div className="page">
@@ -56,7 +56,7 @@ export default function ContactsPage() {
           <Button variant="primary" icon={<Plus size={15} />} onClick={() => setEditing('new')}>New contact</Button>
         </>} />
       <div className="list-toolbar">
-        <div className="search" style={{ maxWidth: 360, height: 36 }}><Search size={15} className="faint" /><input value={q} onChange={(e) => { setQ(e.target.value); setParam('q', e.target.value); }} placeholder="Search name, email, company" /></div>
+        <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => { setQ(e.target.value); setParam('q', e.target.value); }} placeholder="Search name, email, company" /></div>
         <Select value={tag} onChange={(e) => setParam('tag', e.target.value)} style={{ width: 180 }}><option value="">All tags</option>{tags.map((t) => <option key={t.tag} value={t.tag}>{t.tag} ({t.n})</option>)}</Select>
         <Select value={status} onChange={(e) => setParam('status', e.target.value)} style={{ width: 170 }}><option value="">Any status</option><option value="active">Active</option><option value="replied">Replied</option><option value="unsubscribed">Unsubscribed</option><option value="bounced">Bounced</option><option value="do_not_contact">Do not contact</option></Select>
         {selected.size > 0 && (
@@ -74,21 +74,18 @@ export default function ContactsPage() {
         <Empty icon={<Filter size={24} />} title={dq || tag || status ? 'No matching contacts' : 'No contacts yet'} action={!dq && !tag && !status ? <Button variant="primary" icon={<Upload size={15} />} onClick={() => setImportOpen(true)}>Import a CSV</Button> : undefined}>{dq || tag || status ? 'Adjust the filters.' : 'Import a customer list or add people one at a time. Every contact carries merge fields for personalised sequences.'}</Empty>
       ) : (
         <>
-          <div className="table-wrap"><table className="table"><thead><tr><th style={{ width: 36 }}><input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th><th>Name</th><th>Email</th><th>Company</th><th>Tags</th><th>Status</th><th>Last contact</th><th>Replied</th><th /></tr></thead><tbody>
-            {rows.map((c) => (
-              <tr key={c.id} className={selected.has(c.id) ? 'selected clickable' : 'clickable'} onClick={() => nav(`/contacts/${c.id}`)}>
-                <td onClick={(e) => e.stopPropagation()}><input type="checkbox" className="checkbox" checked={selected.has(c.id)} onChange={() => setSelected((s) => { const n = new Set(s); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; })} /></td>
-                <td><div className="row"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="sm" src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} /><span className="strong">{[c.first_name, c.last_name].filter(Boolean).join(' ') || <span className="faint">—</span>}</span></div></td>
-                <td className="muted">{c.email}</td>
-                <td className="muted">{c.company}{c.title ? <span className="faint"> · {c.title}</span> : ''}</td>
-                <td><div className="row wrap gap-4">{(c.tags ?? []).slice(0, 3).map((t: string) => <span key={t} className="tag">{t}</span>)}{c.tags?.length > 3 && <span className="small faint">+{c.tags.length - 3}</span>}</div></td>
-                <td><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{c.active_enrollments > 0 && <span className="small faint"> · {c.active_enrollments} seq</span>}</td>
-                <td className="small muted">{fmtDate(c.last_contacted_at)}</td>
-                <td className="small muted">{fmtDate(c.last_replied_at)}</td>
-                <td onClick={(e) => e.stopPropagation()}><div className="row gap-4"><IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton><IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton></div></td>
-              </tr>
-            ))}
-          </tbody></table></div>
+          <DataTable rows={rows} rowKey={(c) => c.id} onRowClick={(c) => nav(`/contacts/${c.id}`)} minWidth={820}
+            selection={{ selected, id: (c) => c.id, onToggle: (c) => setSelected((s) => { const n = new Set(s); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; }), onToggleAll: (all) => setSelected(all ? new Set(rows.map((r) => r.id)) : new Set()) }}
+            columns={[
+              { key: 'name', header: 'Name', primary: true, cell: (c) => <div className="row"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="sm" src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} /><span className="strong">{[c.first_name, c.last_name].filter(Boolean).join(' ') || <span className="faint">{c.email}</span>}</span></div> },
+              { key: 'email', header: 'Email', secondary: true, className: 'muted', cell: (c) => c.email },
+              { key: 'company', header: 'Company', className: 'muted', cell: (c) => c.company ? <>{c.company}{c.title ? <span className="faint"> · {c.title}</span> : ''}</> : null },
+              { key: 'tags', header: 'Tags', cell: (c) => (c.tags ?? []).length ? <div className="row wrap gap-4">{(c.tags ?? []).slice(0, 3).map((t: string) => <span key={t} className="tag">{t}</span>)}{c.tags?.length > 3 && <span className="small faint">+{c.tags.length - 3}</span>}</div> : null },
+              { key: 'status', header: 'Status', cell: (c) => <><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{c.active_enrollments > 0 && <span className="small faint"> · {c.active_enrollments} seq</span>}</> },
+              { key: 'last', header: 'Last contact', className: 'small muted', nowrap: true, cell: (c) => fmtDate(c.last_contacted_at) },
+              { key: 'replied', header: 'Replied', className: 'small muted', nowrap: true, cell: (c) => fmtDate(c.last_replied_at) },
+              { key: 'act', actions: true, cell: (c) => <><IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton><IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton></> },
+            ]} />
           <div className="row mt-16" style={{ justifyContent: 'flex-end' }}><span className="small muted">{(page - 1) * size + 1}–{Math.min(total, page * size)} of {fmtNumber(total)}</span><IconButton label="Previous" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton><IconButton label="Next" disabled={page * size >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton></div>
         </>
       )}
@@ -305,10 +302,13 @@ function SuppressionsModal({ open, onClose }: { open: boolean; onClose: () => vo
       <Callout>Addresses here are never sent to by a sequence, even if they are re-imported. Unsubscribes, bounces and "stop" replies land here automatically.</Callout>
       <Field label="Add addresses" className="mt-16"><div className="row"><Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="one per line, or comma separated" style={{ minHeight: 60 }} /><Button onClick={add}>Add</Button></div></Field>
       <div style={{ maxHeight: 360, overflow: 'auto' }}>
-        <table className="table"><thead><tr><th>Email</th><th>Reason</th><th>Source</th><th>Added</th><th /></tr></thead><tbody>
-          {(data?.suppressions ?? []).map((s) => <tr key={s.id}><td>{s.email}</td><td><Badge>{s.reason.replace('_', ' ')}</Badge></td><td className="small muted">{s.source}</td><td className="small muted">{fmtDate(s.created_at)}</td><td><IconButton label="Remove" className="btn-sm" onClick={() => api.del(`/api/contacts/suppressions/${s.id}`).then(() => { qc.invalidateQueries({ queryKey: ['suppressions'] }); qc.invalidateQueries({ queryKey: ['contacts'] }); })}><X size={14} /></IconButton></td></tr>)}
-          {!data?.suppressions?.length && <tr><td colSpan={5} className="faint">Empty</td></tr>}
-        </tbody></table>
+        {!data?.suppressions?.length ? <div className="faint small">Empty</div> : <DataTable rows={data.suppressions} rowKey={(s) => s.id} minWidth={520} cardSize="sm" columns={[
+          { key: 'email', header: 'Email', primary: true, cell: (s) => s.email },
+          { key: 'reason', header: 'Reason', cell: (s) => <Badge>{s.reason.replace('_', ' ')}</Badge> },
+          { key: 'source', header: 'Source', className: 'small muted', cell: (s) => s.source },
+          { key: 'added', header: 'Added', className: 'small muted', nowrap: true, cell: (s) => fmtDate(s.created_at) },
+          { key: 'act', actions: true, cell: (s) => <IconButton label="Remove" className="btn-sm" onClick={() => api.del(`/api/contacts/suppressions/${s.id}`).then(() => { qc.invalidateQueries({ queryKey: ['suppressions'] }); qc.invalidateQueries({ queryKey: ['contacts'] }); })}><X size={14} /></IconButton> },
+        ]} />}
       </div>
     </Modal>
   );

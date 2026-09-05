@@ -17,7 +17,7 @@ browser ──HTTPS──▶ Caddy ──▶ app (Express + workers) ──▶ P
 | Area | Files | Notes |
 |---|---|---|
 | HTTP | `app.ts`, `routes/*` | Express 5. JSON API under `/api`, SSE at `/api/events`, public unsubscribe at `/u/:token`, static client with SPA fallback. Every mutating call needs the `X-Requested-With: tern` header (CSRF). |
-| Auth | `auth.ts`, `routes/auth.ts`, `crypto.ts` | Server-side sessions in Postgres, scrypt passwords, TOTP with recovery codes, login throttling. Mailbox credentials are AES-256-GCM encrypted with `ENCRYPTION_KEY`. |
+| Auth | `auth.ts`, `routes/auth.ts`, `crypto.ts`, `pow.ts` | Server-side sessions in Postgres, scrypt passwords, TOTP with recovery codes, login throttling. Sign-in, registration and setup require a proof of work: a signed, single-use SHA-256 challenge bound to the form and username, whose difficulty rises with recent failures for that username and with the global request rate (15 to 22 leading zero bits). Mailbox credentials are AES-256-GCM encrypted with `ENCRYPTION_KEY`. |
 | JMAP | `jmap/client.ts`, `jmap/sync.ts`, `jmap/actions.ts`, `jmap/send.ts` | A small RFC 8620/8621 client. Sync is Email/changes-driven with a full resync fallback; actions patch keywords and mailbox membership; sending builds raw MIME once (nodemailer's stream transport) and submits it with Email/import + EmailSubmission/set, or SMTP as a fallback. |
 | Workers | `workers/syncManager.ts`, `workers/scheduler.ts` | One runner per account holds a push (EventSource) connection and a poll timer. The scheduler ticks every 20 s for sequence steps, scheduled sends and snoozes, claiming rows with guarded conditional updates. |
 | Outreach | `services/compose.ts`, `services/sending.ts`, `services/automation.ts`, `services/merge.ts` | Every outgoing message goes through `composeAndSend`, which logs to `send_log`. `reserveSendSlot` enforces cap, window and jitter. Automation runs on new mail: reply and bounce matching, contact linking, "stop" handling, rules. |
@@ -48,7 +48,9 @@ address appearing in the report body.
 
 React 19, react-router, TanStack Query, no CSS framework. `styles/app.css`
 holds the design tokens and every component style; light and dark share
-token names. Server events invalidate query keys so views update without
+token names. `components/DataTable.tsx` renders every list as a table on
+wide screens and as a stack of cards on phones; `lib/powSolver.ts` is the
+sign-in proof-of-work solver, run in a Web Worker (`lib/pow.worker.ts`). Server events invalidate query keys so views update without
 polling. HTML mail renders in a sandboxed iframe with a CSP that blocks remote
 resources until the reader allows them; DOMPurify strips scripts and forms.
 

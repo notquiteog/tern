@@ -48,6 +48,69 @@ accountsRouter.get('/', async (req, res) => {
   res.json({ accounts: rows.map((a) => ({ ...publicAccount(a), push: syncManager.status(a.id) })) });
 });
 
+// What a desktop or phone mail app needs to open the same mailboxes: IMAP,
+// SMTP and JMAP endpoints per connected account. Nothing secret is returned;
+// the password is the one the person already uses for the mailbox.
+export interface ClientSettings {
+  accountId: number; name: string; email: string; provider: string; color: string;
+  imap: { host: string; port: number; security: 'SSL/TLS' | 'STARTTLS'; username: string; guessed: boolean } | null;
+  smtp: { host: string; port: number; security: 'SSL/TLS' | 'STARTTLS'; username: string; guessed: boolean; alt?: { port: number; security: 'SSL/TLS' | 'STARTTLS' } } | null;
+  jmap: { sessionUrl: string; username: string } | null;
+  password: 'mailbox' | 'app_password' | 'token';
+  autoconfig: boolean;
+  notes: string[];
+}
+export function clientSettingsFor(a: AccountRow): ClientSettings {
+  const email = a.email.toLowerCase();
+  const domain = email.split('@')[1] ?? '';
+  let sessionHost = '';
+  try { sessionHost = new URL(a.session_url).hostname; } catch { /* stored URLs are validated */ }
+  const base = { accountId: a.id, name: a.name, email: a.email, provider: a.provider, color: a.color };
+  if (a.provider === 'fastmail') {
+    return {
+      ...base,
+      imap: { host: 'imap.fastmail.com', port: 993, security: 'SSL/TLS', username: email, guessed: false },
+      smtp: { host: 'smtp.fastmail.com', port: 465, security: 'SSL/TLS', username: email, guessed: false, alt: { port: 587, security: 'STARTTLS' } },
+      jmap: { sessionUrl: 'https://api.fastmail.com/jmap/session', username: email },
+      password: 'app_password',
+      autoconfig: true,
+      notes: ['Fastmail mail apps sign in with an app password, not your account password and not the API token Tern uses. Create one at Fastmail → Settings → Privacy & Security → Integrations → New app password, with access to Mail.', 'Most apps recognise Fastmail from the address alone and fill the servers in for you.'],
+    };
+  }
+  if (a.provider === 'stalwart') {
+    // The stored session URL may be the internal compose-network address; the public host is what the app needs.
+    const internal = config.stalwartUrl && a.session_url.startsWith(config.stalwartUrl);
+    const host = internal && config.stalwartHost ? config.stalwartHost : sessionHost || config.stalwartHost;
+    const onThisServer = Boolean(internal || (config.stalwartHost && sessionHost === config.stalwartHost));
+    return {
+      ...base,
+      imap: { host, port: 993, security: 'SSL/TLS', username: email, guessed: false },
+      smtp: { host, port: 465, security: 'SSL/TLS', username: email, guessed: false, alt: { port: 587, security: 'STARTTLS' } },
+      jmap: { sessionUrl: `https://${host}/.well-known/jmap`, username: email },
+      password: 'mailbox',
+      autoconfig: onThisServer && Boolean(config.stalwartDomain) && domain === config.stalwartDomain.toLowerCase(),
+      notes: onThisServer
+        ? ['Use the mailbox password that was set when the address was created. If you no longer have it, an admin can issue a new one under Settings → Mail server → Mailboxes; Tern updates itself, mail apps need the new password.', 'The user name is the full address.']
+        : ['Sign in with the full address and the mailbox password (or an app password created in Stalwart).'],
+    };
+  }
+  const guess = sessionHost || (domain ? `mail.${domain}` : '');
+  return {
+    ...base,
+    imap: guess ? { host: guess, port: 993, security: 'SSL/TLS', username: a.auth_user || email, guessed: true } : null,
+    smtp: guess ? { host: guess, port: 465, security: 'SSL/TLS', username: a.auth_user || email, guessed: true, alt: { port: 587, security: 'STARTTLS' } } : null,
+    jmap: { sessionUrl: a.session_url, username: a.auth_user || email },
+    password: a.auth_type === 'bearer' ? 'token' : 'mailbox',
+    autoconfig: false,
+    notes: ['The IMAP and SMTP hosts are a guess based on the JMAP server; confirm them with the provider. The JMAP session URL is exact.'],
+  };
+}
+
+accountsRouter.get('/client-settings', async (req, res) => {
+  const rows = await listAccounts(req.user!.id);
+  res.json({ accounts: rows.map(clientSettingsFor) });
+});
+
 // Verify credentials without saving anything.
 accountsRouter.post('/test', async (req, res) => {
   const c = parse(credsSchema, req.body);

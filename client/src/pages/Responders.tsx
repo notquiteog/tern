@@ -7,6 +7,7 @@ import { useAccounts, useAiStatus } from '../lib/queries';
 import { Badge, Button, Callout, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle } from '../components/ui';
 import { ConditionsEditor, type Condition } from '../components/Conditions';
 import { fmtRelative } from '../lib/format';
+import { DataTable } from '../components/DataTable';
 
 const MODE_LABEL: Record<string, string> = { draft: 'Draft a reply', review: 'Queue for review', send: 'Send automatically' };
 const MODE_KIND: Record<string, any> = { draft: undefined, review: 'warning', send: 'danger' };
@@ -37,7 +38,7 @@ export default function RespondersPage() {
       <div className="col gap-12">
         {responders.map((r) => (
           <div key={r.id} className="card" style={{ padding: '12px 16px' }}>
-            <div className="row" style={{ alignItems: 'flex-start' }}>
+            <div className="row wrap" style={{ alignItems: 'flex-start' }}>
               <Toggle checked={r.enabled} onChange={() => toggle(r)} />
               <div className="flex-1">
                 <div className="row wrap gap-4"><span className="strong">{r.name}</span><Badge kind={MODE_KIND[r.mode]} dot>{MODE_LABEL[r.mode]}</Badge>{r.account_email ? <Badge>{r.account_email}</Badge> : <Badge>all accounts</Badge>}{!r.enabled && <Badge>off</Badge>}</div>
@@ -57,7 +58,12 @@ export default function RespondersPage() {
       {jobs.length > 0 && (
         <div className="card mt-24">
           <div className="card-title"><h2>Recent activity</h2></div>
-          <div className="table-wrap"><table className="table"><tbody>{jobs.map((j) => <tr key={j.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtRelative(j.created_at)}</td><td className="small">{responders.find((r) => String(r.id) === String(j.responder_id))?.name ?? `responder ${j.responder_id}`}</td><td><Badge kind={j.status === 'failed' ? 'danger' : j.status === 'done' ? 'success' : 'accent'}>{j.status}</Badge></td><td className="small muted">{j.result ?? j.error ?? ''}</td></tr>)}</tbody></table></div>
+          <DataTable rows={jobs} rowKey={(j) => j.id} cardSize="sm" dense columns={[
+            { key: 'when', header: 'When', className: 'small muted', nowrap: true, cell: (j) => fmtRelative(j.created_at) },
+            { key: 'resp', header: 'Responder', primary: true, className: 'small', cell: (j) => responders.find((r) => String(r.id) === String(j.responder_id))?.name ?? `responder ${j.responder_id}` },
+            { key: 'status', header: 'Status', cell: (j) => <Badge kind={j.status === 'failed' ? 'danger' : j.status === 'done' ? 'success' : 'accent'}>{j.status}</Badge> },
+            { key: 'result', header: 'Result', secondary: true, className: 'small muted', cell: (j) => j.result ?? j.error ?? '' },
+          ]} />
         </div>
       )}
       {editing && <ResponderEditor responder={editing} onClose={() => setEditing(null)} onSaved={invalidate} />}

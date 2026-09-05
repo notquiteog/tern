@@ -9,6 +9,7 @@ import { Badge, Button, Callout, Confirm, Field, IconButton, Input, Modal, Selec
 import { Editor, type EditorHandle } from '../components/Editor';
 import { MERGE_FIELDS } from './Templates';
 import { fmtDateTime, fmtDuration, plural } from '../lib/format';
+import { DataTable } from '../components/DataTable';
 
 interface Step { id?: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean }
 
@@ -68,7 +69,7 @@ export default function SequenceEditorPage() {
             <span>· {Number(st.active ?? 0) + Number(st.waiting_review ?? 0)} in progress, {st.replied ?? 0} replied, {st.finished ?? 0} finished</span>
           </div>
         </div>
-        <div className="row gap-4 wrap">
+        <div className="row gap-4 wrap seq-actions">
           <Button icon={<Eye size={15} />} onClick={doPreview}>Preview</Button>
           <Button icon={<UserPlus size={15} />} onClick={() => setEnrollOpen(true)}>Enroll contacts</Button>
           {seq.status === 'active' ? <Button icon={<Pause size={15} />} onClick={() => setStatus('paused')}>Pause</Button> : <Button variant="primary" icon={<Play size={15} />} onClick={() => setStatus('active')} disabled={!seq.account_id || !emailSteps}>Activate</Button>}
@@ -215,22 +216,21 @@ function Enrollments({ sid }: { sid: number }) {
         <div className="row gap-4 ml-auto"><Button size="sm" icon={<Pause size={13} />} onClick={() => bulk('pause')}>Pause all</Button><Button size="sm" icon={<Play size={13} />} onClick={() => bulk('resume')}>Resume paused</Button><Button size="sm" variant="ghost" icon={<X size={13} />} onClick={() => { if (confirm('Remove finished, replied, bounced and unsubscribed enrollments from the list?')) void bulk('remove'); }}>Clear finished</Button></div>
       </div>
       {isLoading ? <Spinner /> : !rows.length ? <div className="empty"><Users size={22} /><h3>No enrollments{status ? ' with this status' : ''}</h3></div> : (
-        <div className="table-wrap"><table className="table"><thead><tr><th>Contact</th><th>Status</th><th>Step</th><th>Next send</th><th>Sent</th><th>Updated</th><th /></tr></thead><tbody>
-          {rows.map((e: any) => <tr key={e.id}>
-            <td><div className="strong">{[e.first_name, e.last_name].filter(Boolean).join(' ') || e.email}</div><div className="small muted">{e.email}{e.company ? ` · ${e.company}` : ''}</div></td>
-            <td><Badge kind={KIND[e.status]}>{e.status.replace('_', ' ')}</Badge>{e.error && <div className="small" style={{ color: 'var(--danger)' }}>{e.error}</div>}</td>
-            <td>{e.current_step + 1}</td>
-            <td className="small muted">{e.status === 'active' && e.next_run_at ? fmtDateTime(e.next_run_at) : '—'}</td>
-            <td>{e.sent_count}</td>
-            <td className="small muted">{fmtDateTime(e.updated_at)}</td>
-            <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-              {e.status === 'active' && <IconButton label="Pause" className="btn-sm" onClick={() => act(e.id, 'pause')}><Pause size={14} /></IconButton>}
-              {['paused', 'error'].includes(e.status) && <IconButton label="Resume" className="btn-sm" onClick={() => act(e.id, 'retry')}><RotateCcw size={14} /></IconButton>}
-              {e.status === 'active' && <IconButton label="Skip this step" className="btn-sm" onClick={() => act(e.id, 'skip')}><SkipForward size={14} /></IconButton>}
-              <IconButton label="Remove" className="btn-sm" onClick={() => act(e.id, 'remove')}><X size={14} /></IconButton>
-            </div></td>
-          </tr>)}
-        </tbody></table></div>
+        <DataTable rows={rows} rowKey={(e: any) => e.id} minWidth={760} columns={[
+          { key: 'contact', header: 'Contact', primary: true, cell: (e: any) => [e.first_name, e.last_name].filter(Boolean).join(' ') || e.email },
+          { key: 'email', secondary: true, className: 'small muted', cell: (e: any) => `${e.email}${e.company ? ` · ${e.company}` : ''}` },
+          { key: 'status', header: 'Status', cell: (e: any) => <><Badge kind={KIND[e.status]}>{e.status.replace('_', ' ')}</Badge>{e.error && <div className="small" style={{ color: 'var(--danger)' }}>{e.error}</div>}</> },
+          { key: 'step', header: 'Step', cell: (e: any) => e.current_step + 1 },
+          { key: 'next', header: 'Next send', className: 'small muted', nowrap: true, cell: (e: any) => e.status === 'active' && e.next_run_at ? fmtDateTime(e.next_run_at) : '—' },
+          { key: 'sent', header: 'Sent', cell: (e: any) => e.sent_count },
+          { key: 'updated', header: 'Updated', className: 'small muted', nowrap: true, cell: (e: any) => fmtDateTime(e.updated_at) },
+          { key: 'act', actions: true, cell: (e: any) => <>
+            {e.status === 'active' && <IconButton label="Pause" className="btn-sm" onClick={() => act(e.id, 'pause')}><Pause size={14} /></IconButton>}
+            {['paused', 'error'].includes(e.status) && <IconButton label="Resume" className="btn-sm" onClick={() => act(e.id, 'retry')}><RotateCcw size={14} /></IconButton>}
+            {e.status === 'active' && <IconButton label="Skip this step" className="btn-sm" onClick={() => act(e.id, 'skip')}><SkipForward size={14} /></IconButton>}
+            <IconButton label="Remove" className="btn-sm" onClick={() => act(e.id, 'remove')}><X size={14} /></IconButton>
+          </> },
+        ]} />
       )}
       {data && data.total > data.size && <div className="row mt-8" style={{ justifyContent: 'flex-end' }}><Button size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button><span className="small muted">page {page}</span><Button size="sm" disabled={page * data.size >= data.total} onClick={() => setPage(page + 1)}>Next</Button></div>}
     </div>

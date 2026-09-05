@@ -8,8 +8,9 @@ import { appSettings } from '../services/compose.js';
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
 
-settingsRouter.get('/', async (_req, res) => {
-  res.json({ app: await appSettings(), appUrl: config.appUrl, version: config.version, stalwart: config.stalwartUrl ? { host: config.stalwartHost, adminUrl: config.stalwartHost ? `https://${config.stalwartHost}/admin` : null } : null });
+settingsRouter.get('/', async (req, res) => {
+  const admin = req.user!.role === 'admin';
+  res.json({ app: await appSettings(), appUrl: config.appUrl, version: config.version, stalwart: admin && config.stalwartUrl ? { host: config.stalwartHost, adminUrl: config.stalwartHost ? `https://${config.stalwartHost}/admin` : null } : null });
 });
 
 settingsRouter.put('/', requireAdmin, async (req, res) => {

@@ -174,6 +174,13 @@ export function Shell({ children }: { children: ReactNode }) {
       </aside>
 
       <main className="main" key={section}>{children}</main>
+      <nav className="mobile-nav" aria-label="Primary">
+        <NavLink to="/mail/inbox" className={({ isActive }) => cls(isActive || loc.pathname.startsWith('/mail/') ? 'active' : '')}><Inbox size={20} />Mail{inboxCount ? <span className="mn-count">{inboxCount > 99 ? '99+' : inboxCount}</span> : null}</NavLink>
+        <NavLink to="/contacts"><Contact size={20} />Contacts</NavLink>
+        <button type="button" className="mn-compose" aria-label="Compose" onClick={() => compose.open({ accountId: filter === 'all' ? null : Number(filter) })}><span className="pill"><Pencil size={18} /></span></button>
+        <NavLink to="/review"><Sparkles size={20} />Review{counts?.review ? <span className="mn-count">{counts.review}</span> : null}</NavLink>
+        <NavLink to="/settings"><Settings size={20} />Settings</NavLink>
+      </nav>
       <ComposeDock />
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
       <ShortcutsHelp open={help} onClose={() => setHelp(false)} />

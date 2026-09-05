@@ -8,6 +8,7 @@ import { conflict } from '../errors.js';
 import { recommendModel } from '../ai/models.js';
 import { authSettings } from './users.js';
 import { stalwartEnabled } from '../services/stalwart.js';
+import { verifySolution } from '../pow.js';
 
 export const setupRouter = Router();
 
@@ -16,15 +17,21 @@ async function needsSetup(): Promise<boolean> {
   return (r?.n ?? 0) === 0;
 }
 
+// Public, unauthenticated. Until the first admin exists it describes the
+// install for the setup screen; afterwards it says only what the sign-in
+// page needs, so an anonymous visitor learns nothing about the box.
 setupRouter.get('/status', async (_req, res) => {
   const auth = await authSettings();
+  const fresh = await needsSetup();
+  res.setHeader('Cache-Control', 'no-store');
+  if (!fresh) { res.json({ needsSetup: false, registrationOpen: auth.allowRegistration, version: config.version }); return; }
   res.json({
-    needsSetup: await needsSetup(),
+    needsSetup: true,
     registrationOpen: auth.allowRegistration,
     version: config.version,
     appUrl: config.appUrl,
     aiEnabled: config.aiEnabled,
-    stalwart: config.stalwartUrl ? { url: config.stalwartUrl, host: config.stalwartHost, domain: config.stalwartDomain, provisioning: stalwartEnabled() } : null,
+    stalwart: config.stalwartUrl ? { host: config.stalwartHost, domain: config.stalwartDomain, provisioning: stalwartEnabled() } : null,
     recommendedModel: recommendModel(config.totalMemBytes).model,
     totalMemGiB: Math.round((config.totalMemBytes / 1024 ** 3) * 10) / 10,
   });
@@ -34,6 +41,7 @@ const setupSchema = z.object({
   username: z.string().min(2).max(64).regex(/^[a-zA-Z0-9._@-]+$/, 'letters, numbers, dots, dashes'),
   password: z.string().min(10).max(200),
   displayName: z.string().min(1).max(120),
+  pow: z.object({ challenge: z.string().max(600), nonce: z.string().max(64) }).optional(),
 });
 
 // Creates the first admin. Refuses once any user exists, so it can be left
@@ -41,6 +49,7 @@ const setupSchema = z.object({
 setupRouter.post('/', async (req, res) => {
   if (!(await needsSetup())) throw conflict('Setup is already complete');
   const body = parse(setupSchema, req.body);
+  verifySolution('setup', body.username, body.pow);
   const rows = await query<UserRow>(
     `INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,'admin') RETURNING *`,
     [body.username.toLowerCase(), body.displayName, await hashPassword(body.password)],

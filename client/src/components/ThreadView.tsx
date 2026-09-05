@@ -95,7 +95,7 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
 
   return (
     <div className="thread-view">
-      <div className="row mb-8" style={{ gap: 2 }}>
+      <div className="row mb-8 thread-toolbar" style={{ gap: 2 }}>
         <IconButton label="Back to list" onClick={onBack}><ArrowLeft size={18} /></IconButton>
         {inInbox ? <IconButton label="Archive (e)" onClick={() => act('archive', {}, { back: true, msg: 'Archived' })}><Archive size={17} /></IconButton> : <IconButton label="Move to inbox" onClick={() => act('inbox', {}, { msg: 'Moved to inbox' })}><Inbox size={17} /></IconButton>}
         <IconButton label="Delete (#)" onClick={() => act('trash', {}, { back: true, msg: 'Moved to trash' })}><Trash2 size={17} /></IconButton>

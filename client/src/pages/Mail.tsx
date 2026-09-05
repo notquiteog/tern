@@ -10,6 +10,7 @@ import { useHotkeys, useLocalStorage, useMediaQuery } from '../lib/hooks';
 import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented } from '../components/ui';
 import { createPortal } from 'react-dom';
 import { ThreadView } from '../components/ThreadView';
+import { DataTable } from '../components/DataTable';
 import { addrName, cls, fmtDate, fmtDateTime, localDateTimeValue, type Addr } from '../lib/format';
 
 interface ThreadRow { key: string; account_id: number; thread_id: string; last_at: string; n: number; unread: boolean; starred: boolean; has_attachment: boolean; has_draft: boolean; latest: { id: number; jmap_id: string; subject: string; preview: string; from: Addr[]; to: Addr[]; received_at: string }; participants: Addr[] | null; mailbox_ids: string[]; snoozed_until: string | null; contact_id: number | null; avatar_url?: string | null }
@@ -241,9 +242,14 @@ function ScheduledPage() {
     <div className="page">
       <h1 className="mb-16">Scheduled</h1>
       {!rows.length ? <Empty icon={<Clock size={24} />} title="Nothing scheduled">Use "Schedule send" or "Send with a natural delay" in the compose window.</Empty> : (
-        <div className="table-wrap"><table className="table"><thead><tr><th>To</th><th>Subject</th><th>Account</th><th>Sends at</th><th>Status</th><th /></tr></thead><tbody>
-          {rows.map((r) => <tr key={r.id}><td>{(r.to_addr ?? []).map((a: any) => a.email ?? a).join(', ')}</td><td>{r.subject || '(no subject)'}</td><td className="small muted">{accounts.find((a) => a.id === r.account_id)?.email}</td><td>{fmtDateTime(r.send_at)}{r.humanize === 'true' && <span className="small faint"> + natural delay</span>}</td><td>{r.status === 'failed' ? <span className="badge badge-danger" title={r.error}>failed</span> : <span className="badge badge-accent">{r.status}</span>}</td><td className="row gap-4" style={{ justifyContent: 'flex-end' }}><Button size="sm" icon={<Play size={13} />} onClick={() => now(r.id)}>Send now</Button><Button size="sm" variant="ghost" onClick={() => cancel(r.id)}>Cancel</Button></td></tr>)}
-        </tbody></table></div>
+        <DataTable rows={rows} rowKey={(r) => r.id} minWidth={720} columns={[
+          { key: 'to', header: 'To', primary: true, cell: (r) => (r.to_addr ?? []).map((a: any) => a.email ?? a).join(', ') },
+          { key: 'subject', header: 'Subject', secondary: true, cell: (r) => r.subject || '(no subject)' },
+          { key: 'account', header: 'Account', className: 'small muted', cell: (r) => accounts.find((a) => a.id === r.account_id)?.email },
+          { key: 'at', header: 'Sends at', nowrap: true, cell: (r) => <>{fmtDateTime(r.send_at)}{r.humanize === 'true' && <span className="small faint"> + natural delay</span>}</> },
+          { key: 'status', header: 'Status', cell: (r) => r.status === 'failed' ? <span className="badge badge-danger" title={r.error}>failed</span> : <span className="badge badge-accent">{r.status}</span> },
+          { key: 'act', actions: true, cell: (r) => <><Button size="sm" icon={<Play size={13} />} onClick={() => now(r.id)}>Send now</Button><Button size="sm" variant="ghost" onClick={() => cancel(r.id)}>Cancel</Button></> },
+        ]} />
       )}
     </div>
   );
@@ -261,20 +267,20 @@ function DraftsPage({ box, listQuery }: { box: string; listQuery: { threads: Thr
       {drafts.length === 0 && listQuery.threads.length === 0 && !listQuery.isLoading && <Empty icon={<FileText size={24} />} title="No drafts">Anything you start writing is saved here automatically.</Empty>}
       {drafts.length > 0 && <>
         <h4 className="mb-8">Saved in Tern</h4>
-        <table className="table mb-24"><tbody>
-          {drafts.map((d) => <tr key={d.id} className="clickable" onClick={() => compose.open({ draftId: d.id, accountId: d.account_id, kind: d.kind, to: d.to_addr, cc: d.cc_addr, bcc: d.bcc_addr, subject: d.subject, html: d.body_html, replyToEmailId: d.reply_to_email_id, threadKey: d.thread_id && d.account_id ? `${d.account_id}:${d.thread_id}` : null, attachments: [] })}>
-            <td style={{ width: 240 }} className="truncate">{(d.to_addr ?? []).map((a: any) => a.name || a.email).join(', ') || <span className="faint">(no recipients)</span>}</td>
-            <td className="truncate">{d.subject || <span className="faint">(no subject)</span>}<span className="faint"> — {String(d.body_html ?? '').replace(/<[^>]+>/g, ' ').slice(0, 80)}</span></td>
-            <td style={{ width: 120 }} className="small muted">{fmtDate(d.updated_at)}</td>
-            <td style={{ width: 60 }}><IconButton label="Discard" className="btn-sm" onClick={(e) => { e.stopPropagation(); api.del(`/api/mail/drafts/${d.id}`).then(() => { qc.invalidateQueries({ queryKey: ['drafts'] }); qc.invalidateQueries({ queryKey: ['counts'] }); }); }}><Trash2 size={14} /></IconButton></td>
-          </tr>)}
-        </tbody></table>
+        <div className="mb-24"><DataTable rows={drafts} rowKey={(d) => d.id} cardSize="sm" onRowClick={(d) => compose.open({ draftId: d.id, accountId: d.account_id, kind: d.kind, to: d.to_addr, cc: d.cc_addr, bcc: d.bcc_addr, subject: d.subject, html: d.body_html, replyToEmailId: d.reply_to_email_id, threadKey: d.thread_id && d.account_id ? `${d.account_id}:${d.thread_id}` : null, attachments: [] })} columns={[
+          { key: 'to', primary: true, width: 240, cell: (d) => (d.to_addr ?? []).map((a: any) => a.name || a.email).join(', ') || <span className="faint">(no recipients)</span> },
+          { key: 'subject', secondary: true, cell: (d) => <>{d.subject || <span className="faint">(no subject)</span>}<span className="faint"> — {String(d.body_html ?? '').replace(/<[^>]+>/g, ' ').slice(0, 80)}</span></> },
+          { key: 'when', width: 120, className: 'small muted', nowrap: true, cell: (d) => fmtDate(d.updated_at) },
+          { key: 'act', actions: true, width: 60, cell: (d) => <IconButton label="Discard" className="btn-sm" onClick={() => api.del(`/api/mail/drafts/${d.id}`).then(() => { qc.invalidateQueries({ queryKey: ['drafts'] }); qc.invalidateQueries({ queryKey: ['counts'] }); })}><Trash2 size={14} /></IconButton> },
+        ]} /></div>
       </>}
       {listQuery.threads.length > 0 && <>
         <h4 className="mb-8">On the mail server</h4>
-        <table className="table"><tbody>
-          {listQuery.threads.map((t) => <tr key={t.key} className="clickable" onClick={() => nav(`/mail/${box}/t/${encodeURIComponent(t.key)}`)}><td style={{ width: 240 }} className="truncate">{t.latest?.to?.map(addrName).join(', ') || <span className="faint">(no recipients)</span>}</td><td className="truncate">{t.latest?.subject || '(no subject)'}<span className="faint"> — {t.latest?.preview}</span></td><td style={{ width: 120 }} className="small muted">{fmtDate(t.last_at)}</td></tr>)}
-        </tbody></table>
+        <DataTable rows={listQuery.threads} rowKey={(t) => t.key} cardSize="sm" onRowClick={(t) => nav(`/mail/${box}/t/${encodeURIComponent(t.key)}`)} columns={[
+          { key: 'to', primary: true, width: 240, cell: (t) => t.latest?.to?.map(addrName).join(', ') || <span className="faint">(no recipients)</span> },
+          { key: 'subject', secondary: true, cell: (t) => <>{t.latest?.subject || '(no subject)'}<span className="faint"> — {t.latest?.preview}</span></> },
+          { key: 'when', width: 120, className: 'small muted', nowrap: true, cell: (t) => fmtDate(t.last_at) },
+        ]} />
       </>}
     </div>
   );

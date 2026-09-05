@@ -44,7 +44,7 @@ export default function TemplatesPage() {
         </>} />
       {templates.length > 0 && (
         <div className="list-toolbar">
-          <div className="search" style={{ maxWidth: 320, height: 36 }}><Search size={15} className="faint" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search templates" /></div>
+          <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search templates" /></div>
           <div className="segmented"><button className={!cat ? 'active' : ''} onClick={() => setCat('')}>All</button>{categories.map((c) => <button key={c} className={cat === c ? 'active' : ''} onClick={() => setCat(c)}>{c}</button>)}</div>
         </div>
       )}
@@ -170,7 +170,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
 
   return (
     <Modal open onClose={onClose} title={isNew ? 'New template' : 'Edit template'} size="xl" footer={<><Button onClick={onClose}>Cancel</Button><Button icon={<Eye size={15} />} onClick={() => doPreview()}>Preview</Button><Button variant="primary" loading={busy} onClick={async () => { const t = await save(); if (t) onClose(); }}>Save</Button></>}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 260px', gap: 20 }}>
+      <div className="editor-layout">
         <div>
           <div className="form-row">
             <Field label="Name"><Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Intro · warm lead" /></Field>

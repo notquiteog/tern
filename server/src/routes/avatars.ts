@@ -5,7 +5,7 @@ import { Router, raw } from 'express';
 import { one, query } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { idParam } from '../util/validate.js';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, forbidden, notFound } from '../errors.js';
 
 export const avatarsRouter = Router();
 avatarsRouter.use(requireAuth);
@@ -21,8 +21,11 @@ function send(res: any, row: { avatar: Buffer | null; avatar_type: string | null
   res.send(row.avatar);
 }
 
+// A user's picture is theirs; admins can see them in the user list.
 avatarsRouter.get('/user/:id', async (req, res) => {
-  send(res, await one<any>('SELECT avatar, avatar_type FROM users WHERE id=$1', [idParam(req.params.id)]));
+  const id = idParam(req.params.id);
+  if (id !== req.user!.id && req.user!.role !== 'admin') throw forbidden();
+  send(res, await one<any>('SELECT avatar, avatar_type FROM users WHERE id=$1', [id]));
 });
 
 avatarsRouter.get('/contact/:id', async (req, res) => {
