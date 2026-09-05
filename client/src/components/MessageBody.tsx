@@ -10,6 +10,16 @@ export function MessageBody({ html, text, attachments, accountId, allowRemote: a
   const [allowRemote, setAllowRemote] = useState(Boolean(allowRemoteDefault));
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(80);
+  const [dark, setDark] = useState(() => document.documentElement.dataset.theme === 'dark');
+  const [original, setOriginal] = useState(false);
+  useEffect(() => {
+    const obs = new MutationObserver(() => setDark(document.documentElement.dataset.theme === 'dark'));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  // "Designed" mail (newsletters with their own backgrounds and tables) keeps its
+  // colours on a light card; plain correspondence follows the app theme.
+  const designed = useMemo(() => Boolean(html && (/background(-color)?\s*:|bgcolor=|<table[^>]+(width|bgcolor)/i.test(html))), [html]);
 
   const { doc, hasRemote } = useMemo(() => {
     if (!html) return { doc: '', hasRemote: false };
@@ -30,12 +40,16 @@ export function MessageBody({ html, text, attachments, accountId, allowRemote: a
     const clean = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false, FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'meta', 'link', 'base', 'svg', 'math'], FORBID_ATTR: ['onerror', 'onload', 'srcset', 'formaction'], ALLOW_DATA_ATTR: false });
     DOMPurify.removeAllHooks();
     const csp = `default-src 'none'; img-src 'self' data: cid: blob:${allowRemote ? ' http: https:' : ''}; style-src 'unsafe-inline'; font-src data:; media-src 'self'`;
-    const docHtml = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>
-      html,body{margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1c1f2b;word-break:break-word;padding:4px 2px}
-      img{max-width:100%;height:auto}blockquote{margin:8px 0;padding-left:12px;border-left:3px solid #d0d4e0;color:#5b6274}pre{white-space:pre-wrap}a{color:#2f48c9}table{max-width:100%}
+    const themed = dark && !(designed && original);
+    const text = themed ? '#e8eaf1' : '#1c1f2b', muted = themed ? '#a4a9ba' : '#5b6274', link = themed ? '#9fb0ff' : '#2f48c9', rule = themed ? '#363b4b' : '#d0d4e0';
+    const bg = designed && !themed ? '#ffffff' : 'transparent';
+    const docHtml = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="color-scheme" content="${themed ? 'dark' : 'light'}"><base target="_blank"><style>
+      html,body{margin:0;padding:0;background:${bg}}body{font-family:"Inter Variable",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:${text};word-break:break-word;padding:4px 2px}
+      img{max-width:100%;height:auto}blockquote{margin:8px 0;padding-left:12px;border-left:3px solid ${rule};color:${muted}}pre{white-space:pre-wrap}a{color:${link}}table{max-width:100%}hr{border:0;border-top:1px solid ${rule}}
+      ${themed && designed ? 'body{filter:invert(1) hue-rotate(180deg);background:#fff}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}' : ''}
     </style></head><body>${clean}</body></html>`;
     return { doc: docHtml, hasRemote: remote };
-  }, [html, attachments, accountId, allowRemote]);
+  }, [html, attachments, accountId, allowRemote, dark, designed, original]);
 
   useEffect(() => {
     const f = ref.current;
@@ -56,7 +70,8 @@ export function MessageBody({ html, text, attachments, accountId, allowRemote: a
   return (
     <div>
       {hasRemote && !allowRemote && <div className="msg-remote"><ImageOff size={14} /><span className="flex-1">Remote images are hidden to protect your privacy.</span><Button size="sm" onClick={() => setAllowRemote(true)}>Show images</Button></div>}
-      <iframe ref={ref} className="msg-frame" title="Message" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcDoc={doc} style={{ height }} />
+      {designed && dark && <div className="row small faint mb-8" style={{ justifyContent: 'flex-end' }}><button type="button" className="btn btn-ghost btn-sm" onClick={() => setOriginal((o) => !o)}>{original ? 'Match theme' : 'Show original colours'}</button></div>}
+      <iframe ref={ref} className={designed && (!dark || original) ? 'msg-frame designed' : 'msg-frame'} title="Message" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcDoc={doc} style={{ height }} />
     </div>
   );
 }

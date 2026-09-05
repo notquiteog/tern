@@ -13,12 +13,13 @@ export interface UserRow {
   id: number; username: string; display_name: string; password_hash: string; role: 'admin' | 'member';
   totp_secret: string | null; totp_enabled: boolean; recovery_codes: string[]; prefs: Record<string, unknown>;
   disabled: boolean; password_changed_at: Date; created_at: Date; last_login_at: Date | null;
+  avatar?: Buffer | null; avatar_type?: string | null; avatar_updated_at?: Date | null;
 }
-export type PublicUser = Omit<UserRow, 'password_hash' | 'totp_secret' | 'recovery_codes'>;
+export type PublicUser = Omit<UserRow, 'password_hash' | 'totp_secret' | 'recovery_codes' | 'avatar' | 'avatar_type'> & { avatar_version: number | null };
 
 export function publicUser(u: UserRow): PublicUser {
-  const { password_hash, totp_secret, recovery_codes, ...rest } = u;
-  return rest;
+  const { password_hash, totp_secret, recovery_codes, avatar, avatar_type, ...rest } = u;
+  return { ...rest, avatar_version: u.avatar_updated_at ? new Date(u.avatar_updated_at).getTime() : null };
 }
 
 declare module 'express-serve-static-core' {
@@ -64,7 +65,8 @@ export async function attachUser(req: Request, _res: Response, next: NextFunctio
   const sid = parseCookies(req.headers.cookie)[COOKIE];
   if (!sid) return next();
   const row = await one<UserRow & { sid: string; last_seen_at: Date }>(
-    `SELECT u.*, s.id AS sid, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id=$1 AND s.expires_at > now()`,
+    `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.totp_secret, u.totp_enabled, u.recovery_codes, u.prefs, u.disabled, u.password_changed_at, u.created_at, u.last_login_at, u.avatar_updated_at, s.id AS sid, s.last_seen_at
+     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id=$1 AND s.expires_at > now()`,
     [sid],
   );
   if (!row || row.disabled) return next();

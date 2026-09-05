@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { Button, Field, Input } from '../components/ui';
 import { Feather } from 'lucide-react';
+import { Background } from '../components/Background';
 
 export default function LoginPage() {
   const { setUser, refresh, registrationOpen } = useAuth();
@@ -31,6 +32,7 @@ export default function LoginPage() {
 
   return (
     <div className="auth-page">
+      <Background />
       <form className="auth-card" onSubmit={submit}>
         <div className="brand"><span className="brand-logo"><Feather size={16} /></span>Tern</div>
         <h1 style={{ marginBottom: 4 }}>{mfa ? 'Two-factor code' : 'Sign in'}</h1>

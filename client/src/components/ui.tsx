@@ -31,9 +31,16 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
 export function Badge({ kind, children, dot }: { kind?: 'accent' | 'success' | 'danger' | 'warning' | 'info'; children: ReactNode; dot?: boolean }) {
   return <span className={cls('badge', kind && `badge-${kind}`, dot && 'badge-dot')}>{children}</span>;
 }
-export function Avatar({ name, email, color, size }: { name?: string | null; email?: string; color?: string; size?: 'sm' | 'md' | 'lg' }) {
+export function Avatar({ name, email, color, size, src, className }: { name?: string | null; email?: string; color?: string; size?: 'sm' | 'md' | 'lg' | 'xl'; src?: string | null; className?: string }) {
   const label = name || email || '?';
-  return <span className={cls('avatar', size === 'sm' && 'avatar-sm', size === 'lg' && 'avatar-lg')} style={{ background: color ?? colorFor(email || label) }} title={email}>{initials(label)}</span>;
+  const [broken, setBroken] = useState(false);
+  useEffect(() => { setBroken(false); }, [src]);
+  const base = color ?? colorFor(email || label);
+  return (
+    <span className={cls('avatar', size === 'sm' && 'avatar-sm', size === 'lg' && 'avatar-lg', size === 'xl' && 'avatar-xl', className)} style={{ backgroundColor: base }} title={email}>
+      {src && !broken ? <img src={src} alt="" onError={() => setBroken(true)} /> : initials(label)}
+    </span>
+  );
 }
 export function Spinner({ size = 18 }: { size?: number }) { return <div className="spinner" style={{ width: size, height: size }} />; }
 export function Empty({ icon, title, children, action }: { icon?: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {

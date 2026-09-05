@@ -57,7 +57,7 @@ export default function RespondersPage() {
       {jobs.length > 0 && (
         <div className="card mt-24">
           <div className="card-title"><h2>Recent activity</h2></div>
-          <table className="table"><tbody>{jobs.map((j) => <tr key={j.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtRelative(j.created_at)}</td><td className="small">{responders.find((r) => String(r.id) === String(j.responder_id))?.name ?? `responder ${j.responder_id}`}</td><td><Badge kind={j.status === 'failed' ? 'danger' : j.status === 'done' ? 'success' : 'accent'}>{j.status}</Badge></td><td className="small muted">{j.result ?? j.error ?? ''}</td></tr>)}</tbody></table>
+          <div className="table-wrap"><table className="table"><tbody>{jobs.map((j) => <tr key={j.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtRelative(j.created_at)}</td><td className="small">{responders.find((r) => String(r.id) === String(j.responder_id))?.name ?? `responder ${j.responder_id}`}</td><td><Badge kind={j.status === 'failed' ? 'danger' : j.status === 'done' ? 'success' : 'accent'}>{j.status}</Badge></td><td className="small muted">{j.result ?? j.error ?? ''}</td></tr>)}</tbody></table></div>
         </div>
       )}
       {editing && <ResponderEditor responder={editing} onClose={() => setEditing(null)} onSaved={invalidate} />}

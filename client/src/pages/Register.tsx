@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Feather } from 'lucide-react';
+import { Background } from '../components/Background';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { Button, Field, Input, Callout } from '../components/ui';
@@ -35,6 +36,7 @@ export default function RegisterPage() {
   }
   return (
     <div className="auth-page">
+      <Background />
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 440 }}>
         <div className="brand"><span className="brand-logo"><Feather size={16} /></span>Tern</div>
         <h1 style={{ marginBottom: 4 }}>Create your account</h1>

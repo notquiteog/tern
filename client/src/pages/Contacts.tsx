@@ -8,6 +8,7 @@ import { useCompose } from '../state/compose';
 import { useContactTags, useSequences } from '../lib/queries';
 import { useDebounced } from '../lib/hooks';
 import { Avatar, Badge, Button, Confirm, Drawer, Empty, Field, IconButton, Input, Menu, MenuItem, Modal, PageHeader, Select, Spinner, Textarea, Callout } from '../components/ui';
+import { AvatarUploader } from './Settings';
 import { fmtDate, fmtDateTime, fmtNumber, plural } from '../lib/format';
 
 const STATUS_KIND: Record<string, any> = { active: 'success', replied: 'accent', unsubscribed: 'danger', bounced: 'danger', do_not_contact: 'danger' };
@@ -73,11 +74,11 @@ export default function ContactsPage() {
         <Empty icon={<Filter size={24} />} title={dq || tag || status ? 'No matching contacts' : 'No contacts yet'} action={!dq && !tag && !status ? <Button variant="primary" icon={<Upload size={15} />} onClick={() => setImportOpen(true)}>Import a CSV</Button> : undefined}>{dq || tag || status ? 'Adjust the filters.' : 'Import a customer list or add people one at a time. Every contact carries merge fields for personalised sequences.'}</Empty>
       ) : (
         <>
-          <table className="table"><thead><tr><th style={{ width: 36 }}><input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th><th>Name</th><th>Email</th><th>Company</th><th>Tags</th><th>Status</th><th>Last contact</th><th>Replied</th><th /></tr></thead><tbody>
+          <div className="table-wrap"><table className="table"><thead><tr><th style={{ width: 36 }}><input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th><th>Name</th><th>Email</th><th>Company</th><th>Tags</th><th>Status</th><th>Last contact</th><th>Replied</th><th /></tr></thead><tbody>
             {rows.map((c) => (
               <tr key={c.id} className={selected.has(c.id) ? 'selected clickable' : 'clickable'} onClick={() => nav(`/contacts/${c.id}`)}>
                 <td onClick={(e) => e.stopPropagation()}><input type="checkbox" className="checkbox" checked={selected.has(c.id)} onChange={() => setSelected((s) => { const n = new Set(s); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; })} /></td>
-                <td><div className="row"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="sm" /><span className="strong">{[c.first_name, c.last_name].filter(Boolean).join(' ') || <span className="faint">—</span>}</span></div></td>
+                <td><div className="row"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="sm" src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} /><span className="strong">{[c.first_name, c.last_name].filter(Boolean).join(' ') || <span className="faint">—</span>}</span></div></td>
                 <td className="muted">{c.email}</td>
                 <td className="muted">{c.company}{c.title ? <span className="faint"> · {c.title}</span> : ''}</td>
                 <td><div className="row wrap gap-4">{(c.tags ?? []).slice(0, 3).map((t: string) => <span key={t} className="tag">{t}</span>)}{c.tags?.length > 3 && <span className="small faint">+{c.tags.length - 3}</span>}</div></td>
@@ -87,7 +88,7 @@ export default function ContactsPage() {
                 <td onClick={(e) => e.stopPropagation()}><div className="row gap-4"><IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton><IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton></div></td>
               </tr>
             ))}
-          </tbody></table>
+          </tbody></table></div>
           <div className="row mt-16" style={{ justifyContent: 'flex-end' }}><span className="small muted">{(page - 1) * size + 1}–{Math.min(total, page * size)} of {fmtNumber(total)}</span><IconButton label="Previous" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton><IconButton label="Next" disabled={page * size >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton></div>
         </>
       )}
@@ -186,13 +187,17 @@ function ContactEditor({ contact, onClose, onSaved }: { contact: any | null | 'n
 function ContactDrawer({ id, onClose, onEdit }: { id: number; onClose: () => void; onEdit: (c: any) => void }) {
   const nav = useNavigate();
   const compose = useCompose();
+  const qc = useQueryClient();
+  const toast = useToast();
   const { data, isLoading } = useQuery({ queryKey: ['contact', id], queryFn: () => api.get<any>(`/api/contacts/${id}`) });
   const c = data?.contact;
+  const refreshAll = () => { qc.invalidateQueries({ queryKey: ['contact', id] }); qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['thread'] }); };
   return (
     <Drawer open onClose={onClose} title={c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email : 'Contact'} actions={c && <><Button size="sm" icon={<Mail size={14} />} onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}>Email</Button><Button size="sm" icon={<Pencil size={14} />} onClick={() => onEdit(c)}>Edit</Button></>}>
       {isLoading || !c ? <div className="center" style={{ padding: 40 }}><Spinner /></div> : (
         <>
-          <div className="row mb-16"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="lg" /><div className="col" style={{ gap: 2 }}><div className="strong">{c.email}</div><div className="small muted">{c.title}{c.title && c.company ? ' at ' : ''}{c.company}</div><div className="row wrap gap-4"><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{data.suppression && <Badge kind="danger"><UserX size={12} /> suppressed: {data.suppression.reason}</Badge>}</div></div></div>
+          <div className="mb-16"><AvatarUploader src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} name={[c.first_name, c.last_name].join(' ') || c.email} email={c.email} onUpload={async (blob) => { await api.upload(`/api/avatars/contact/${c.id}`, blob, blob.type || 'image/webp'); refreshAll(); toast.success('Photo saved'); }} onRemove={async () => { await api.del(`/api/avatars/contact/${c.id}`); refreshAll(); }} /></div>
+          <div className="row mb-16"><div className="col" style={{ gap: 2 }}><div className="strong">{c.email}</div><div className="small muted">{c.title}{c.title && c.company ? ' at ' : ''}{c.company}</div><div className="row wrap gap-4"><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{data.suppression && <Badge kind="danger"><UserX size={12} /> suppressed: {data.suppression.reason}</Badge>}</div></div></div>
           <dl className="kv mb-16">
             {c.phone && <><dt>Phone</dt><dd>{c.phone}</dd></>}
             {c.website && <><dt>Website</dt><dd><a href={/^https?:/.test(c.website) ? c.website : `https://${c.website}`} target="_blank" rel="noreferrer">{c.website}</a></dd></>}

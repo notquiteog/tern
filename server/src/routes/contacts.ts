@@ -40,7 +40,9 @@ contactsRouter.get('/', async (req, res) => {
   const w = where.join(' AND ');
   const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM contacts c WHERE ${w}`, params);
   const rows = await query<any>(
-    `SELECT c.*, (SELECT count(*)::int FROM enrollments e WHERE e.contact_id=c.id AND e.status IN ('active','waiting_review','paused')) AS active_enrollments,
+    `SELECT c.id, c.user_id, c.email, c.first_name, c.last_name, c.company, c.title, c.phone, c.website, c.fields, c.tags, c.notes, c.source, c.consent_source, c.status, c.timezone, c.last_contacted_at, c.last_replied_at, c.created_at, c.updated_at,
+            (CASE WHEN c.avatar_updated_at IS NULL THEN NULL ELSE (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint END) AS avatar_version,
+            (SELECT count(*)::int FROM enrollments e WHERE e.contact_id=c.id AND e.status IN ('active','waiting_review','paused')) AS active_enrollments,
             EXISTS (SELECT 1 FROM suppressions s WHERE s.user_id=c.user_id AND lower(s.email)=lower(c.email)) AS suppressed
      FROM contacts c WHERE ${w} ORDER BY c.${sort} ${dir} NULLS LAST, c.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`,
     params,
@@ -74,8 +76,9 @@ contactsRouter.get('/export.csv', async (req, res) => {
 
 contactsRouter.get('/:id', async (req, res) => {
   const id = idParam(req.params.id);
-  const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
+  const c = await one<any>(`SELECT *, (CASE WHEN avatar_updated_at IS NULL THEN NULL ELSE (extract(epoch FROM avatar_updated_at) * 1000)::bigint END) AS avatar_version FROM contacts WHERE id=$1 AND user_id=$2`, [id, req.user!.id]);
   if (!c) throw notFound('Contact not found');
+  delete c.avatar; delete c.avatar_type;
   const sends = await query<any>(`SELECT l.*, s.name AS sequence_name FROM send_log l LEFT JOIN sequences s ON s.id=l.sequence_id WHERE l.contact_id=$1 ORDER BY l.sent_at DESC LIMIT 100`, [id]);
   const enrollments = await query<any>(`SELECT e.*, s.name AS sequence_name FROM enrollments e JOIN sequences s ON s.id=e.sequence_id WHERE e.contact_id=$1 ORDER BY e.created_at DESC`, [id]);
   const threads = await query<any>(

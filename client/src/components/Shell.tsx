@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, Bot, ChevronDown, Clock, Contact, FileText, Feather, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
+import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Feather, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
 import { useAuth } from '../state/auth';
 import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -10,7 +10,10 @@ import { useAccountFilter, useAccounts, useCounts, useMailboxes, type Mailbox } 
 import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Input } from './ui';
 import { ComposeDock } from './Compose';
 import { api } from '../api';
-import { applyTheme, getTheme, type Theme } from '../state/theme';
+import { adoptServerAppearance, getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
+import { Background } from './Background';
+import { PALETTES, BACKGROUNDS } from '../lib/palettes';
+import { Palette as PaletteIcon, Check } from 'lucide-react';
 import { cls } from '../lib/format';
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -27,7 +30,10 @@ export function Shell({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
-  const [theme, setTheme] = useState<Theme>(getTheme());
+  const [appearance, setAppearanceState] = useState<Appearance>(getAppearance());
+  useEffect(() => onAppearance(setAppearanceState), []);
+  useEffect(() => { adoptServerAppearance(user?.prefs); }, [user]);
+  const theme = appearance.theme;
   const searchRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState(new URLSearchParams(loc.search).get('q') ?? '');
 
@@ -53,10 +59,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const current = accounts.find((a) => String(a.id) === filter);
   const inboxCount = filter === 'all' ? counts?.inboxUnreadTotal ?? 0 : counts?.inboxUnread?.[filter] ?? 0;
 
-  function cycleTheme() {
-    const next: Theme = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system';
-    setTheme(next); applyTheme(next);
-  }
+  function setTheme(next: Theme) { setAppearance({ theme: next }); }
   function submitSearch(e: React.FormEvent) {
     e.preventDefault();
     const box = loc.pathname.startsWith('/mail/') ? loc.pathname.split('/')[2] : 'all';
@@ -73,8 +76,10 @@ export function Shell({ children }: { children: ReactNode }) {
     <NavLink to={to} className={({ isActive }) => cls('nav-item', isActive && 'active')}>{icon}<span className="truncate">{label}</span>{count ? <span className={cls('count', hot && 'hot')}>{count}</span> : null}</NavLink>
   );
 
+  const section = '/' + (loc.pathname.split('/')[1] || '');
   return (
     <div className="shell">
+      <Background />
       <header className="topbar">
         <IconButton label="Menu" className="mobile-only" onClick={() => setSidebarOpen((o) => !o)}>{sidebarOpen ? <X size={20} /> : <MenuIcon size={20} />}</IconButton>
         <NavLink to="/mail/inbox" className="brand"><span className="brand-logo"><Feather size={16} /></span><span className="desktop-only">Tern</span></NavLink>
@@ -94,11 +99,23 @@ export function Shell({ children }: { children: ReactNode }) {
             </Menu>
           )}
           <IconButton label="Check for new mail" onClick={refreshAll}><RefreshCw size={17} /></IconButton>
-          <IconButton label={`Theme: ${theme}`} onClick={cycleTheme}>{theme === 'dark' ? <Moon size={17} /> : theme === 'light' ? <Sun size={17} /> : <Monitor size={17} />}</IconButton>
-          <Menu align="right" width={230} trigger={(open) => <button className="btn btn-icon" onClick={open} aria-label="Account menu" style={{ width: 'auto', padding: '0 4px' }}><Avatar name={user!.display_name} email={user!.username} /></button>}>
+          <Menu align="right" width={300} trigger={(open) => <IconButton label="Appearance" onClick={open}>{theme === 'dark' ? <Moon size={17} /> : theme === 'light' ? <Sun size={17} /> : <Monitor size={17} />}</IconButton>}>
+            {(close) => <div style={{ padding: 8 }}>
+              <div className="menu-label">Theme</div>
+              <div className="segmented w-full mb-8" style={{ display: 'flex' }}>{(['system', 'light', 'dark'] as Theme[]).map((t) => <button key={t} type="button" className={cls(theme === t && 'active')} style={{ flex: 1 }} onClick={() => setTheme(t)}>{t === 'system' ? <Monitor size={14} /> : t === 'light' ? <Sun size={14} /> : <Moon size={14} />} {t}</button>)}</div>
+              <div className="menu-label">Palette</div>
+              <div className="row wrap gap-4 mb-8" style={{ padding: '2px 4px' }}>{PALETTES.map((p) => <button key={p.key} type="button" title={p.name} className={cls('swatch-dot', appearance.palette === p.key && 'active')} style={{ width: 26, height: 26, borderRadius: '50%', border: appearance.palette === p.key ? '2px solid var(--text)' : '2px solid transparent', background: `linear-gradient(135deg, ${p.gradient[0]}, ${p.gradient[1]})`, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }} onClick={() => setAppearance({ palette: p.key })}>{appearance.palette === p.key && <Check size={13} />}</button>)}</div>
+              <div className="menu-label">Background</div>
+              <div className="row wrap gap-4 mb-8" style={{ padding: '2px 4px' }}>{BACKGROUNDS.map((b) => <button key={b.key} type="button" className={cls('btn btn-sm', appearance.background === b.key && 'btn-soft')} onClick={() => setAppearance({ background: b.key })}>{b.name}</button>)}</div>
+              <div className="menu-sep" />
+              <MenuItem icon={<PaletteIcon size={15} />} onClick={() => { nav('/settings/appearance'); close(); }}>All appearance settings</MenuItem>
+            </div>}
+          </Menu>
+          <Menu align="right" width={230} trigger={(open) => <button className="btn btn-icon" onClick={open} aria-label="Account menu" style={{ width: 'auto', padding: '0 4px' }}><Avatar name={user!.display_name} email={user!.username} src={(user as any).avatar_version ? `/api/avatars/user/${user!.id}?v=${(user as any).avatar_version}` : null} /></button>}>
             {(close) => <>
               <div style={{ padding: '8px 10px 6px' }}><div className="strong">{user!.display_name}</div><div className="small muted">@{user!.username} · {user!.role}</div></div>
               <div className="menu-sep" />
+              <MenuItem icon={<UserCircle size={15} />} onClick={() => { nav('/settings/profile'); close(); }}>Profile</MenuItem>
               <MenuItem icon={<Settings size={15} />} onClick={() => { nav('/settings/accounts'); close(); }}>Settings</MenuItem>
               <MenuItem icon={<KeyRound size={15} />} onClick={() => { nav('/settings/security'); close(); }}>Security</MenuItem>
               <MenuItem icon={<Keyboard size={15} />} onClick={() => { setHelp(true); close(); }} shortcut="?">Keyboard shortcuts</MenuItem>
@@ -156,7 +173,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <main className="main">{children}</main>
+      <main className="main" key={section}>{children}</main>
       <ComposeDock />
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
       <ShortcutsHelp open={help} onClose={() => setHelp(false)} />
@@ -231,7 +248,8 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
     { label: 'Settings: Sending policy', run: () => nav('/settings/accounts') },
     { label: 'Settings: Security', run: () => nav('/settings/security') },
     { label: 'Settings: Appearance', run: () => nav('/settings/appearance') },
-    { label: 'Toggle dark mode', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
+    { label: 'Toggle dark mode', run: () => setAppearance({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }) },
+    { label: 'Settings: Profile picture', run: () => nav('/settings/profile') },
   ], [nav, compose]);
   const filtered = items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
   useEffect(() => { setIdx(0); }, [q, open]);

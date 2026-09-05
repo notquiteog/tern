@@ -215,7 +215,7 @@ function Enrollments({ sid }: { sid: number }) {
         <div className="row gap-4 ml-auto"><Button size="sm" icon={<Pause size={13} />} onClick={() => bulk('pause')}>Pause all</Button><Button size="sm" icon={<Play size={13} />} onClick={() => bulk('resume')}>Resume paused</Button><Button size="sm" variant="ghost" icon={<X size={13} />} onClick={() => { if (confirm('Remove finished, replied, bounced and unsubscribed enrollments from the list?')) void bulk('remove'); }}>Clear finished</Button></div>
       </div>
       {isLoading ? <Spinner /> : !rows.length ? <div className="empty"><Users size={22} /><h3>No enrollments{status ? ' with this status' : ''}</h3></div> : (
-        <table className="table"><thead><tr><th>Contact</th><th>Status</th><th>Step</th><th>Next send</th><th>Sent</th><th>Updated</th><th /></tr></thead><tbody>
+        <div className="table-wrap"><table className="table"><thead><tr><th>Contact</th><th>Status</th><th>Step</th><th>Next send</th><th>Sent</th><th>Updated</th><th /></tr></thead><tbody>
           {rows.map((e: any) => <tr key={e.id}>
             <td><div className="strong">{[e.first_name, e.last_name].filter(Boolean).join(' ') || e.email}</div><div className="small muted">{e.email}{e.company ? ` · ${e.company}` : ''}</div></td>
             <td><Badge kind={KIND[e.status]}>{e.status.replace('_', ' ')}</Badge>{e.error && <div className="small" style={{ color: 'var(--danger)' }}>{e.error}</div>}</td>
@@ -230,7 +230,7 @@ function Enrollments({ sid }: { sid: number }) {
               <IconButton label="Remove" className="btn-sm" onClick={() => act(e.id, 'remove')}><X size={14} /></IconButton>
             </div></td>
           </tr>)}
-        </tbody></table>
+        </tbody></table></div>
       )}
       {data && data.total > data.size && <div className="row mt-8" style={{ justifyContent: 'flex-end' }}><Button size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button><span className="small muted">page {page}</span><Button size="sm" disabled={page * data.size >= data.total} onClick={() => setPage(page + 1)}>Next</Button></div>}
     </div>

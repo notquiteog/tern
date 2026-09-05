@@ -2,20 +2,22 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, Info, ExternalLink, Server, Copy, KeySquare } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, Info, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
-import { applyDensity, applyTheme, getDensity, getTheme, type Theme } from '../state/theme';
+import { getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
+import { PALETTES, BACKGROUNDS } from '../lib/palettes';
+import { Avatar } from '../components/ui';
 import { useLocalStorage } from '../lib/hooks';
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
 
 export default function SettingsPage() {
   const { user, stalwartProvisioning } = useAuth();
-  const tabs = [['accounts', 'Accounts', <Mail size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['security', 'Security', <Shield size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['general', 'General', <SettingsIcon size={15} />]] as const;
+  const tabs = [['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['general', 'General', <SettingsIcon size={15} />]] as const;
   return (
     <div className="page">
       <div className="tabs">
@@ -24,6 +26,7 @@ export default function SettingsPage() {
         {stalwartProvisioning && <NavLink to="/settings/mailserver" className={({ isActive }) => cls(isActive && 'active')}><Server size={15} />Mail server</NavLink>}
       </div>
       <Routes>
+        <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
@@ -339,14 +342,14 @@ function AiSettings() {
               <div className="card-title"><h2>Models</h2><span className="small muted">Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b></span></div>
               <Callout>{data.recommended.note} Pulling downloads from the Ollama registry once; models live in the <code>ollama</code> volume.</Callout>
               {pull && <div className="mt-16"><div className="row small mb-8"><Loader2 size={14} className="spin" /> Pulling {pull.name}: {pull.status} {pull.pct ? `${pull.pct}%` : ''}</div><Progress value={pull.pct} max={100} /></div>}
-              <table className="table mt-16"><thead><tr><th>Model</th><th>Size</th><th>Note</th><th /></tr></thead><tbody>
+              <div className="table-wrap mt-16"><table className="table"><thead><tr><th>Model</th><th>Size</th><th>Note</th><th /></tr></thead><tbody>
                 {data.curated.map((m: any) => {
                   const inst = data.models.find((x: any) => x.name === m.name || x.name === `${m.name}:latest`);
                   const active = data.settings.model === m.name;
                   return <tr key={m.name}><td className="strong">{m.name} {active && <Badge kind="accent">in use</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</td><td className="muted">{inst ? fmtBytes(inst.size) : `~${m.sizeGB} GB`}</td><td className="muted small">{m.note}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{inst ? <><Button size="sm" disabled={active} onClick={() => save({ model: m.name })}>{active ? 'Selected' : 'Use'}</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(m.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button>}</div></td></tr>;
                 })}
                 {data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => <tr key={x.name}><td className="strong">{x.name} {data.settings.model === x.name && <Badge kind="accent">in use</Badge>}</td><td className="muted">{fmtBytes(x.size)}</td><td className="muted small">{x.parameterSize} {x.quantization}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}><Button size="sm" disabled={data.settings.model === x.name} onClick={() => save({ model: x.name })}>Use</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(x.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></div></td></tr>)}
-              </tbody></table>
+              </tbody></table></div>
               <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || Boolean(pull)} onClick={() => { doPull(customModel); setCustomModel(''); }}>Pull</Button></div>
             </div>
           )}
@@ -407,7 +410,7 @@ function SecuritySettings() {
       </div>
       <div className="card">
         <div className="card-title"><h2>Sessions</h2><Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { all: true }).then(() => { refetch(); toast.success('Other sessions signed out'); })}>Sign out everywhere else</Button></div>
-        <table className="table"><tbody>{(sessions?.sessions ?? []).map((s) => <tr key={s.id}><td>{s.current ? <Badge kind="success">this device</Badge> : <Badge>other</Badge>}</td><td className="small muted truncate" style={{ maxWidth: 320 }}>{s.user_agent || 'unknown client'}</td><td className="small muted">active {fmtRelative(s.last_seen_at)}</td><td>{!s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.fullId }).then(() => refetch())}>Sign out</Button>}</td></tr>)}</tbody></table>
+        <div className="table-wrap"><table className="table"><tbody>{(sessions?.sessions ?? []).map((s) => <tr key={s.id}><td>{s.current ? <Badge kind="success">this device</Badge> : <Badge>other</Badge>}</td><td className="small muted truncate" style={{ maxWidth: 320 }}>{s.user_agent || 'unknown client'}</td><td className="small muted">active {fmtRelative(s.last_seen_at)}</td><td>{!s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.fullId }).then(() => refetch())}>Sign out</Button>}</td></tr>)}</tbody></table></div>
       </div>
     </div>
   );
@@ -416,15 +419,93 @@ function SecuritySettings() {
 // ---------------- Appearance ----------------
 
 function AppearanceSettings() {
-  const [theme, setTheme] = useState<Theme>(getTheme());
-  const [density, setDensity] = useState(getDensity());
+  const [a, setA] = useState<Appearance>(getAppearance());
+  useEffect(() => onAppearance(setA), []);
+  const set = (patch: Partial<Appearance>) => setA(setAppearance(patch));
+  return (
+    <div style={{ maxWidth: 820 }}>
+      <PageHeader title="Appearance" sub="Theme, colour palette and the living background. Saved to this browser and to your profile, so it follows you." />
+      <div className="card mb-16">
+        <h2 className="mb-8">Theme</h2>
+        <div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map((t) => <button key={t} className={a.theme === t ? 'active' : ''} onClick={() => set({ theme: t })}>{t === 'system' ? <Monitor size={14} /> : t === 'light' ? <Sun size={14} /> : <Moon size={14} />} {t === 'system' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}</button>)}</div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Colour palette</h2>
+        <div className="swatches">{PALETTES.map((p) => <button key={p.key} type="button" className={cls('swatch-card', a.palette === p.key && 'active')} onClick={() => set({ palette: p.key })}><div className="bar" style={{ background: `linear-gradient(120deg, ${p.gradient.join(', ')})` }} /><div className="name">{p.name}</div><div className="hint">{a.palette === p.key ? 'in use' : ' '}</div></button>)}</div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Background</h2>
+        <p className="muted small">Rendered with WebGL on the GPU at a low resolution, capped at 30 frames per second, paused when the tab is hidden. Choose Plain for a flat colour.</p>
+        <div className="swatches">{BACKGROUNDS.map((b) => <button key={b.key} type="button" className={cls('swatch-card', a.background === b.key && 'active')} onClick={() => set({ background: b.key })}><div className={`bar bg-preview-${b.key}`} /><div className="name">{b.name}</div><div className="hint">{b.hint}</div></button>)}</div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Glass</h2>
+        <p className="muted small">How translucent the panels are. Strong looks best over a lively background; Subtle keeps text crisp on slower machines.</p>
+        <div className="segmented"><button className={a.glass === 'subtle' ? 'active' : ''} onClick={() => set({ glass: 'subtle' })}>Subtle</button><button className={a.glass === 'balanced' ? 'active' : ''} onClick={() => set({ glass: 'balanced' })}>Balanced</button><button className={a.glass === 'strong' ? 'active' : ''} onClick={() => set({ glass: 'strong' })}>Strong</button></div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Motion</h2>
+        <div className="segmented"><button className={a.motion === 'full' ? 'active' : ''} onClick={() => set({ motion: 'full' })}>Full</button><button className={a.motion === 'reduced' ? 'active' : ''} onClick={() => set({ motion: 'reduced' })}>Reduced</button></div>
+        <div className="help-text mt-8">Reduced freezes the background and shortens every transition. The system "reduce motion" preference is always honoured.</div>
+      </div>
+      <div className="card mb-16"><h2 className="mb-8">Density</h2><div className="segmented"><button className={a.density === 'comfortable' ? 'active' : ''} onClick={() => set({ density: 'comfortable' })}>Comfortable</button><button className={a.density === 'compact' ? 'active' : ''} onClick={() => set({ density: 'compact' })}>Compact</button></div></div>
+      <div className="card"><h2 className="mb-8">Reading pane</h2><ReadingPaneToggle /></div>
+    </div>
+  );
+}
+
+function ReadingPaneToggle() {
   const [split, setSplit] = useLocalStorage('tern.split', true);
+  return <div className="row"><Toggle checked={split} onChange={setSplit} /><span className="small">Show conversations beside the list on wide screens</span></div>;
+}
+
+// ---------------- Profile ----------------
+
+async function downscale(file: File, size = 256): Promise<Blob> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = URL.createObjectURL(file); });
+  const c = document.createElement('canvas'); c.width = size; c.height = size;
+  const ctx = c.getContext('2d')!;
+  const s = Math.min(img.width, img.height);
+  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+  URL.revokeObjectURL(img.src);
+  return new Promise((resolve) => c.toBlob((b) => resolve(b!), 'image/webp', 0.86));
+}
+
+export function AvatarUploader({ src, name, email, onUpload, onRemove }: { src: string | null; name: string; email?: string; onUpload: (blob: Blob) => Promise<void>; onRemove: () => Promise<void> }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  return (
+    <div className="row gap-16" style={{ alignItems: 'center' }}>
+      <div className="profile-avatar"><Avatar name={name} email={email} src={src} size="xl" /><Button size="sm" className="edit" iconOnly icon={<Pencil size={13} />} onClick={() => input.current?.click()} aria-label="Change picture" /></div>
+      <div className="col gap-4">
+        <div className="row gap-4"><Button size="sm" icon={<Upload size={13} />} loading={busy} onClick={() => input.current?.click()}>Upload picture</Button>{src && <Button size="sm" variant="ghost" onClick={async () => { setBusy(true); try { await onRemove(); } finally { setBusy(false); } }}>Remove</Button>}</div>
+        <div className="help-text">PNG, JPEG or WebP. It is squared and shrunk to 256 pixels in your browser before upload.</div>
+      </div>
+      <input ref={input} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; setBusy(true); try { await onUpload(await downscale(f)); } catch (err) { toast.error(err); } finally { setBusy(false); } }} />
+    </div>
+  );
+}
+
+function ProfileSettings() {
+  const { user, refresh } = useAuth();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [name, setName] = useState(user!.display_name);
+  const src = user!.avatar_version ? `/api/avatars/user/${user!.id}?v=${user!.avatar_version}` : null;
   return (
     <div style={{ maxWidth: 640 }}>
-      <PageHeader title="Appearance" sub="Stored in this browser." />
-      <div className="card mb-16"><h2 className="mb-8">Theme</h2><Segmented value={theme} onChange={(t) => { setTheme(t); applyTheme(t); }} options={[{ value: 'system', label: 'System' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} /></div>
-      <div className="card mb-16"><h2 className="mb-8">Density</h2><Segmented value={density} onChange={(d) => { setDensity(d); applyDensity(d); }} options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} /></div>
-      <div className="card"><h2 className="mb-8">Reading pane</h2><div className="row"><Toggle checked={split} onChange={setSplit} /><span className="small">Show conversations beside the list on wide screens</span></div></div>
+      <PageHeader title="Profile" sub={`@${user!.username} · ${user!.role}`} />
+      <div className="card mb-16">
+        <h2 className="mb-16">Picture</h2>
+        <AvatarUploader src={src} name={user!.display_name} email={user!.username} onUpload={async (blob) => { await api.upload('/api/avatars/me', blob, blob.type || 'image/webp'); await refresh(); qc.invalidateQueries({ queryKey: ['threads'] }); toast.success('Picture updated'); }} onRemove={async () => { await api.del('/api/avatars/me'); await refresh(); toast.success('Picture removed'); }} />
+        <div className="help-text mt-16">Shown in the top bar and beside messages you sent from any connected mailbox.</div>
+      </div>
+      <div className="card">
+        <h2 className="mb-8">Name</h2>
+        <Field label="Display name" hint="Used in the app; each mailbox has its own From name under Accounts."><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Button variant="primary" disabled={!name.trim() || name === user!.display_name} onClick={() => api.put('/api/auth/profile', { displayName: name.trim() }).then(() => { refresh(); toast.success('Saved'); }).catch((e) => toast.error(e))}>Save</Button>
+      </div>
     </div>
   );
 }
@@ -453,7 +534,7 @@ function GeneralSettings() {
       {user!.role === 'admin' && (
         <div className="card">
           <h2 className="mb-8">Audit log</h2>
-          <table className="table"><tbody>{(audit?.entries ?? []).slice(0, 60).map((e) => <tr key={e.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(e.created_at)}</td><td className="small">{e.username ?? 'system'}</td><td className="small strong">{e.action}</td><td className="small muted truncate" style={{ maxWidth: 300 }}>{e.target ?? ''} {Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}</td></tr>)}</tbody></table>
+          <div className="table-wrap"><table className="table"><tbody>{(audit?.entries ?? []).slice(0, 60).map((e) => <tr key={e.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(e.created_at)}</td><td className="small">{e.username ?? 'system'}</td><td className="small strong">{e.action}</td><td className="small muted truncate" style={{ maxWidth: 300 }}>{e.target ?? ''} {Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}</td></tr>)}</tbody></table></div>
         </div>
       )}
     </div>
@@ -486,7 +567,7 @@ function UsersSettings() {
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="Users" sub="Everyone signs in with a username and password; there is no email-based reset by design." actions={<Button variant="primary" icon={<Plus size={15} />} onClick={() => setCreate(true)}>Add user</Button>} />
-      <table className="table"><thead><tr><th>User</th><th>Role</th><th>Accounts</th><th>2FA</th><th>Last sign-in</th><th /></tr></thead><tbody>
+      <div className="table-wrap"><table className="table"><thead><tr><th>User</th><th>Role</th><th>Accounts</th><th>2FA</th><th>Last sign-in</th><th /></tr></thead><tbody>
         {(data?.users ?? []).map((u) => <tr key={u.id}>
           <td><div className="strong">{u.display_name}</div><div className="small muted">@{u.username}{u.disabled && <Badge kind="danger">disabled</Badge>}</div></td>
           <td><Select className="input-sm" value={u.role} disabled={u.id === me!.id} onChange={(e) => api.put(`/api/users/${u.id}`, { role: e.target.value }).then(invalidate).catch((err) => toast.error(err))}><option value="admin">admin</option><option value="member">member</option></Select></td>
@@ -499,7 +580,7 @@ function UsersSettings() {
             {u.id !== me!.id && <IconButton label="Delete" className="btn-sm" onClick={() => setDel(u)}><Trash2 size={14} /></IconButton>}
           </div></td>
         </tr>)}
-      </tbody></table>
+      </tbody></table></div>
       <div className="card mt-24">
         <div className="card-title"><h2>Registration</h2></div>
         <div className="row mb-8"><Toggle checked={Boolean(authSettings?.allowRegistration)} onChange={(v) => saveAuth({ allowRegistration: v })} /><div><div className="strong small">Allow anyone who reaches the sign-in page to create an account</div><div className="help-text">Off by default. Invite links below work either way.</div></div></div>
@@ -508,7 +589,7 @@ function UsersSettings() {
       <div className="card mt-16">
         <div className="card-title"><h2>Invite links</h2></div>
         <div className="row wrap mb-16"><Select className="input-sm" style={{ width: 130 }} value={inviteRole} onChange={(e) => setInviteRole(e.target.value as any)}><option value="member">Member</option><option value="admin">Admin</option></Select><Input className="input-sm" style={{ maxWidth: 260 }} value={inviteNote} onChange={(e) => setInviteNote(e.target.value)} placeholder="Note, e.g. for Sam" /><Input className="input-sm" type="number" min={1} max={365} style={{ width: 90 }} value={inviteDays} onChange={(e) => setInviteDays(Number(e.target.value))} /><span className="small muted">days valid</span><Button size="sm" variant="primary" icon={<Plus size={13} />} onClick={makeInvite}>Create link</Button></div>
-        {invites?.length ? <table className="table"><tbody>{invites.map((i) => <tr key={i.id}><td><Badge>{i.role}</Badge></td><td className="small">{i.note}</td><td className="small muted">{i.used_at ? `used by @${i.used_by_username}` : new Date(i.expires_at) < new Date() ? 'expired' : `expires ${fmtRelative(i.expires_at)}`}</td><td className="small mono truncate" style={{ maxWidth: 320 }}>{i.used_at ? '' : i.url}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{!i.used_at && <Button size="sm" onClick={() => { navigator.clipboard?.writeText(i.url); toast.success('Link copied'); }}>Copy</Button>}<IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/users/invites/${i.id}`).then(() => qc.invalidateQueries({ queryKey: ['invites'] }))}><Trash2 size={14} /></IconButton></div></td></tr>)}</tbody></table> : <div className="small muted">No invite links yet.</div>}
+        {invites?.length ? <div className="table-wrap"><table className="table"><tbody>{invites.map((i) => <tr key={i.id}><td><Badge>{i.role}</Badge></td><td className="small">{i.note}</td><td className="small muted">{i.used_at ? `used by @${i.used_by_username}` : new Date(i.expires_at) < new Date() ? 'expired' : `expires ${fmtRelative(i.expires_at)}`}</td><td className="small mono truncate" style={{ maxWidth: 320 }}>{i.used_at ? '' : i.url}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{!i.used_at && <Button size="sm" onClick={() => { navigator.clipboard?.writeText(i.url); toast.success('Link copied'); }}>Copy</Button>}<IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/users/invites/${i.id}`).then(() => qc.invalidateQueries({ queryKey: ['invites'] }))}><Trash2 size={14} /></IconButton></div></td></tr>)}</tbody></table></div> : <div className="small muted">No invite links yet.</div>}
       </div>
       <Modal open={create} onClose={() => setCreate(false)} title="Add user" footer={<><Button onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" disabled={!f.username || !f.displayName || f.password.length < 10} onClick={add}>Create</Button></>}>
         <div className="form-row"><Field label="Name"><Input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} /></Field><Field label="Username"><Input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} /></Field><Field label="Temporary password" hint="At least 10 characters; they can change it later."><Input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" /></Field><Field label="Role"><Select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="member">Member</option><option value="admin">Admin</option></Select></Field></div>
@@ -569,7 +650,7 @@ function MailServerSettings() {
       <div className="card mt-16 mb-16">
         <div className="card-title"><h2>Mailboxes</h2><span className="small muted">{data.mailboxes.length} on the server</span></div>
         {!data.mailboxes.length ? <div className="small muted">No mailboxes yet.</div> : (
-          <table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
+          <div className="table-wrap"><table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
             {data.mailboxes.map((m: any) => <tr key={m.id}>
               <td className="strong">{m.email}{m.aliases?.length ? <div className="small muted">aliases: {m.aliases.join(', ')}</div> : null}</td>
               <td className="muted">{m.description ?? ''}</td>
@@ -580,7 +661,7 @@ function MailServerSettings() {
                 <IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton>
               </div></td>
             </tr>)}
-          </tbody></table>
+          </tbody></table></div>
         )}
       </div>
       <div className="card">

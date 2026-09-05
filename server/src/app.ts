@@ -22,6 +22,7 @@ import { eventsRouter } from './routes/events.js';
 import { publicRouter } from './routes/public.js';
 import { respondersRouter } from './routes/responders.js';
 import { stalwartRouter } from './routes/stalwart.js';
+import { avatarsRouter } from './routes/avatars.js';
 
 const log = logger('http');
 
@@ -54,6 +55,7 @@ export function createApp(): express.Express {
   app.use('/api/rules', rulesRouter);
   app.use('/api/responders', respondersRouter);
   app.use('/api/stalwart', stalwartRouter);
+  app.use('/api/avatars', avatarsRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/events', eventsRouter);
@@ -64,7 +66,10 @@ export function createApp(): express.Express {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const dist = config.clientDist || path.resolve(here, '../../client/dist');
   if (fs.existsSync(dist)) {
-    app.use(express.static(dist, { index: false, maxAge: '1y', immutable: true, setHeaders: (res, p) => { if (p.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
+    // Only Vite's hashed bundles are immutable; index.html, theme-init.js,
+    // fonts and icons keep short-lived caching so an update is picked up on
+    // the next load rather than in a year.
+    app.use(express.static(dist, { index: false, setHeaders: (res, p) => { res.setHeader('Cache-Control', p.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : p.endsWith('.woff2') ? 'public, max-age=604800' : 'no-cache'); } }));
     app.get('{*rest}', (req, res, next) => {
       if (req.path.startsWith('/api/')) return next();
       res.setHeader('Cache-Control', 'no-cache');

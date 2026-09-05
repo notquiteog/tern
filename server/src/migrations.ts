@@ -451,4 +451,16 @@ ALTER TABLE templates ADD COLUMN IF NOT EXISTS use_count INT NOT NULL DEFAULT 0;
 ALTER TABLE send_log ADD COLUMN IF NOT EXISTS template_id BIGINT REFERENCES templates(id) ON DELETE SET NULL;
 `,
   },
+  {
+    id: '20260905_0004_avatars',
+    up: `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_type TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar BYTEA;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_type TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS contacts_email_lower_idx ON contacts (user_id, lower(email));
+`,
+  },
 ];

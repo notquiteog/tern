@@ -35,6 +35,7 @@ mailRouter.get('/threads', async (req, res) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
   const pageSize = Math.min(100, Math.max(10, Number(req.query.size ?? 50)));
   const q = String(req.query.q ?? '').trim();
+  const filter = String(req.query.f ?? '');
 
   const where: string[] = ['e.account_id = ANY($1)'];
   const params: unknown[] = [accountIds];
@@ -66,6 +67,10 @@ mailRouter.get('/threads', async (req, res) => {
     }
     if (box !== 'snoozed') where.push(`NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.account_id=e.account_id AND s.thread_id=e.thread_id AND NOT s.restored)`);
   }
+  if (filter === 'unread') where.push('e.is_unread');
+  else if (filter === 'read') where.push('NOT e.is_unread');
+  else if (filter === 'starred') where.push('e.is_flagged');
+  else if (filter === 'attachments') where.push('e.has_attachment');
   if (q) {
     const parsed = parseSearch(q);
     const sql = await buildSearchSql(parsed, accountIds, p);
@@ -88,11 +93,23 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT jsonb_agg(DISTINCT x.from_addr->0) FROM emails x WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id AND jsonb_typeof(x.from_addr->0) = 'object') AS participants,
        (SELECT array_agg(DISTINCT m) FROM emails x, unnest(x.mailbox_ids) m WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id) AS mailbox_ids,
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
-       (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id
+       (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id,
+       (SELECT jsonb_build_object('id', c.id, 'v', (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint) FROM contacts c
+          WHERE c.user_id=${p(req.user!.id)} AND c.avatar_updated_at IS NOT NULL AND lower(c.email) = (SELECT x.from_email FROM emails x WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id ORDER BY x.received_at DESC LIMIT 1) LIMIT 1) AS avatar
      FROM (${agg}) t ORDER BY last_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
     params,
   );
-  res.json({ threads: rows.map((r) => ({ ...r, key: `${r.account_id}:${r.thread_id}` })), total: total?.n ?? 0, page, pageSize });
+  const me = req.user!;
+  const myEmails = new Set(accounts.map((a) => a.email.toLowerCase()));
+  res.json({
+    threads: rows.map((r) => {
+      const fromEmail = String(r.latest?.from?.[0]?.email ?? '').toLowerCase();
+      const avatarUrl = r.avatar?.id ? `/api/avatars/contact/${r.avatar.id}?v=${r.avatar.v}` : myEmails.has(fromEmail) && me.avatar_updated_at ? `/api/avatars/user/${me.id}?v=${new Date(me.avatar_updated_at).getTime()}` : null;
+      const { avatar: _a, ...rest } = r;
+      return { ...rest, key: `${r.account_id}:${r.thread_id}`, avatar_url: avatarUrl };
+    }),
+    total: total?.n ?? 0, page, pageSize,
+  });
 });
 
 // ---------- Thread detail ----------
@@ -108,9 +125,15 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
     [acc.id, threadId],
   );
   if (!messages.length) throw notFound('Thread not found');
+  // Profile pictures: a contact's photo for their address, the user's own for the account's address.
+  const senders = [...new Set(messages.map((m: any) => m.from_email).filter(Boolean))];
+  const photos = await query<{ email: string; id: number; v: number }>(`SELECT lower(email) AS email, id, (extract(epoch FROM avatar_updated_at) * 1000)::bigint AS v FROM contacts WHERE user_id=$1 AND avatar_updated_at IS NOT NULL AND lower(email) = ANY($2)`, [req.user!.id, senders]);
+  const photoMap = new Map(photos.map((p) => [p.email, `/api/avatars/contact/${p.id}?v=${p.v}`]));
+  if (req.user!.avatar_updated_at) photoMap.set(acc.email.toLowerCase(), `/api/avatars/user/${req.user!.id}?v=${new Date(req.user!.avatar_updated_at).getTime()}`);
+  for (const m of messages) (m as any).avatar_url = photoMap.get(m.from_email) ?? null;
   const mailboxes = await query<any>('SELECT jmap_id, name, role, color FROM mailboxes WHERE account_id=$1', [acc.id]);
   const contact = await one<any>(
-    `SELECT c.* FROM contacts c WHERE c.user_id=$1 AND (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1) OR lower(c.email) = ANY($4)) ORDER BY (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1)) DESC LIMIT 1`,
+    `SELECT c.id, c.email, c.first_name, c.last_name, c.company, c.title, c.status, c.tags, c.notes, c.fields, c.last_replied_at, c.last_contacted_at, (CASE WHEN c.avatar_updated_at IS NULL THEN NULL ELSE (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint END) AS avatar_version FROM contacts c WHERE c.user_id=$1 AND (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1) OR lower(c.email) = ANY($4)) ORDER BY (c.id = (SELECT contact_id FROM contact_threads WHERE account_id=$2 AND thread_id=$3 LIMIT 1)) DESC LIMIT 1`,
     [req.user!.id, acc.id, threadId, [...new Set(messages.flatMap((m: any) => [...(m.from_addr ?? []), ...(m.to_addr ?? [])].map((a: any) => String(a.email ?? '').toLowerCase())).filter((e: string) => e && e !== acc.email.toLowerCase()))]],
   );
   const enrollments = contact ? await query<any>(

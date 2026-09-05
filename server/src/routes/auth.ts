@@ -94,6 +94,12 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   res.json({ user: publicUser(req.user!), accountCount: accounts[0]?.n ?? 0, version: config.version, stalwartProvisioning: stalwartEnabled() && req.user!.role === 'admin' });
 });
 
+authRouter.put('/profile', requireAuth, async (req, res) => {
+  const b = parse(z.object({ displayName: z.string().min(1).max(120) }), req.body);
+  const rows = await query<UserRow>(`UPDATE users SET display_name=$2 WHERE id=$1 RETURNING *`, [req.user!.id, b.displayName]);
+  res.json({ user: publicUser(rows[0]) });
+});
+
 authRouter.put('/prefs', requireAuth, async (req, res) => {
   const prefs = parse(z.record(z.string(), z.unknown()), req.body);
   const rows = await query<UserRow>(`UPDATE users SET prefs = prefs || $2::jsonb WHERE id=$1 RETURNING *`, [req.user!.id, JSON.stringify(prefs)]);

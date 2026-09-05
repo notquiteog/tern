@@ -185,12 +185,35 @@ ends the chain. "Run on inbox" applies a rule to mail already there.
 
 ## Appearance
 
-Settings → Appearance: light, dark or system theme; comfortable or compact
-density; split or full-width reading pane. Stored per browser.
+Settings → Appearance, or the theme button in the top bar for the quick
+version. Everything is saved in the browser and mirrored to your profile.
 
-The design tokens are CSS variables at the top of
-`client/src/styles/app.css`. Change `--accent` for a different brand colour;
-both themes derive from the same token names.
+- **Theme**: Auto (follows the system), Light or Dark.
+- **Colour palette**: eight palettes (Indigo, Ocean, Sunset, Forest, Rose,
+  Violet, Amber, Graphite). A palette sets the accent colours and the four
+  gradient stops the background shaders mix. Add one in
+  `client/src/lib/palettes.ts` and `client/public/theme-init.js`.
+- **Background**: WebGL2 fragment shaders drawn behind the glass panels:
+  Aurora, Mesh, Nebula, Waves, Orbs, Grid, or Plain. They render at reduced
+  resolution, cap at 30 fps, pause in hidden tabs, and freeze to a single
+  frame when motion is reduced. Without WebGL2 a CSS gradient stands in.
+  Shaders live in `client/src/lib/shaders.ts`.
+- **Glass**: Subtle, Balanced or Strong translucency and blur for the panels.
+- **Motion**: Full or Reduced. The operating system's reduce-motion setting
+  is always respected.
+- **Density** and **reading pane** as before.
+
+Message bodies follow the theme: plain correspondence is drawn in the theme's
+text colours, while designed newsletters keep their own colours on a light
+card in dark mode with a "Match theme" switch that inverts them.
+
+## Profile pictures
+
+Settings → Profile: upload a picture (squared and shrunk to 256 px in the
+browser). It appears in the top bar and next to messages you sent. Contacts
+get photos from their drawer in Contacts; those show in the inbox list and
+thread view for mail from that address. Pictures are stored in Postgres and
+served only to signed-in users.
 
 ## Environment variables
 

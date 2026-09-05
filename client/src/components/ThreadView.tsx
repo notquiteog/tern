@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AlarmClock, Archive, ArrowLeft, ChevronDown, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useCompose } from '../state/compose';
@@ -11,13 +11,14 @@ import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Fiel
 import { MessageBody } from './MessageBody';
 import { addrFull, addrName, cls, fmtBytes, fmtDateTime, fmtDate, fmtRelative, localDateTimeValue, escapeHtml, type Addr } from '../lib/format';
 
-interface Msg { id: number; jmap_id: string; thread_id: string; mailbox_ids: string[]; keywords: string[]; received_at: string; sent_at: string | null; message_id: string[]; from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[]; subject: string; preview: string; has_attachment: boolean; body_text: string | null; body_html: string | null; attachments: any[]; is_unread: boolean; is_flagged: boolean; is_draft: boolean; from_email: string; size: number; blob_id: string }
+interface Msg { id: number; jmap_id: string; thread_id: string; mailbox_ids: string[]; keywords: string[]; received_at: string; sent_at: string | null; message_id: string[]; from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[]; subject: string; preview: string; has_attachment: boolean; body_text: string | null; body_html: string | null; attachments: any[]; is_unread: boolean; is_flagged: boolean; is_draft: boolean; from_email: string; size: number; blob_id: string; avatar_url?: string | null }
 
 export function ThreadView({ accountId, threadId, box, onBack }: { accountId: number; threadId: string; box: string; onBack: () => void }) {
   const qc = useQueryClient();
   const toast = useToast();
   const compose = useCompose();
   const nav = useNavigate();
+  const [params, setParams] = useSearchParams();
   const { data: mailboxes = [] } = useMailboxes();
   const { data, isLoading, error } = useQuery({ queryKey: ['thread', accountId, threadId], queryFn: () => api.get<any>(`/api/mail/threads/${accountId}/${encodeURIComponent(threadId)}`) });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -50,6 +51,12 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
   }
   const last = messages[messages.length - 1];
   const starred = messages.some((m) => m.is_flagged);
+  useEffect(() => {
+    if (!last) return;
+    if (params.get('reply') === '1') { reply(last); setParams((p) => { p.delete('reply'); return p; }, { replace: true }); }
+    if (params.get('forward') === '1') { forward(last); setParams((p) => { p.delete('forward'); return p; }, { replace: true }); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [last?.id, params]);
   const inInbox = messages.some((m) => m.mailbox_ids.some((id) => roleOf.get(id)?.role === 'inbox'));
 
   function quoteOf(m: Msg): string {
@@ -138,7 +145,7 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
             return (
               <div key={m.jmap_id} className={cls('msg', !open && 'collapsed')}>
                 <div className="msg-head" onClick={() => { if (!open || messages.length > 1) setExpanded((s) => { const n = new Set(s); if (n.has(m.jmap_id)) n.delete(m.jmap_id); else n.add(m.jmap_id); return n; }); }}>
-                  <Avatar name={from?.name} email={from?.email} />
+                  <Avatar name={from?.name} email={from?.email} src={m.avatar_url} />
                   <div className="who">
                     <div className="name"><span className="truncate">{addrName(from)}</span>{isDraft && <Badge kind="warning">Draft</Badge>}{m.from_email === account?.email?.toLowerCase() && <Badge>me</Badge>}{!open && m.has_attachment && <Paperclip size={13} className="faint" />}</div>
                     {open ? <Menu width={360} trigger={(o) => <div className="to" onClick={(e) => { e.stopPropagation(); o(); }} style={{ cursor: 'pointer' }}>to {m.to_addr.map(addrName).join(', ') || '—'}{m.cc_addr?.length ? `, cc ${m.cc_addr.map(addrName).join(', ')}` : ''} <ChevronDown size={12} /></div>}>
@@ -225,7 +232,7 @@ function ContextCard({ data, accountId, onOpenContact }: { data: any; accountId:
     <div className="card context-card">
       {c ? (
         <>
-          <div className="row mb-8"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="lg" /><div className="flex-1 col" style={{ gap: 0 }}><div className="strong truncate">{[c.first_name, c.last_name].filter(Boolean).join(' ') || c.email}</div><div className="small muted truncate">{c.title}{c.title && c.company ? ' · ' : ''}{c.company}</div></div></div>
+          <div className="row mb-8"><Avatar name={[c.first_name, c.last_name].join(' ')} email={c.email} size="lg" src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} /><div className="flex-1 col" style={{ gap: 0 }}><div className="strong truncate">{[c.first_name, c.last_name].filter(Boolean).join(' ') || c.email}</div><div className="small muted truncate">{c.title}{c.title && c.company ? ' · ' : ''}{c.company}</div></div></div>
           <div className="small muted truncate mb-8">{c.email}</div>
           <div className="row wrap gap-4 mb-8"><Badge kind={c.status === 'active' ? 'success' : c.status === 'replied' ? 'accent' : 'danger'}>{c.status}</Badge>{(c.tags ?? []).map((t: string) => <span key={t} className="tag">{t}</span>)}</div>
           {data.enrollments?.length > 0 && <div className="mb-8"><h4 className="mb-8">Sequences</h4>{data.enrollments.map((e: any) => <div key={e.id} className="row small" style={{ justifyContent: 'space-between' }}><span className="truncate"><Workflow size={12} /> {e.sequence_name}</span><Badge kind={e.status === 'active' ? 'accent' : e.status === 'replied' ? 'success' : undefined}>{e.status}</Badge></div>)}</div>}
@@ -261,7 +268,7 @@ function SuggestedReply({ draft, accountId, threadId }: { draft: any; accountId:
   }
   async function discard() { await api.del(`/api/mail/drafts/${draft.id}`); refresh(); }
   return (
-    <div className="card mb-16" style={{ borderColor: 'var(--accent)' }}>
+    <div className="card mb-16 suggested-glow" style={{ borderColor: 'var(--accent)' }}>
       <div className="row mb-8"><Bot size={15} /><span className="strong small">Suggested reply{draft.responder_name ? ` · ${draft.responder_name}` : ''}</span><span className="small faint">{fmtRelative(draft.created_at)}</span><span className="ml-auto small muted">to {(draft.to_addr ?? []).map((a: any) => a.email).join(', ')}</span></div>
       <div className="strong small mb-8">{draft.subject}</div>
       <div className="msg-text" style={{ fontSize: 13.5 }} dangerouslySetInnerHTML={{ __html: String(draft.body_html).split('<div class="tern-quote"')[0] }} />

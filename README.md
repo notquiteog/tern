@@ -14,8 +14,11 @@ Nothing leaves your server except the mail itself.
 **Mail**
 - Unified inbox across accounts, conversation threading, labels, stars, snooze,
   archive, junk, search with operators (`from:`, `subject:`, `is:unread`,
-  `has:attachment`, `newer_than:7d`), keyboard shortcuts (`j`/`k`, `e`, `#`,
-  `r`, `c`, `/`, `?`), split or full-width reading pane, dark mode.
+  `has:attachment`, `newer_than:7d`), list filters, right-click menu,
+  keyboard shortcuts (`j`/`k`, `e`, `#`, `r`, `c`, `/`, `?`), split or
+  full-width reading pane, profile pictures for people and contacts.
+- Glassmorphism interface with light, dark and auto themes, eight colour
+  palettes and six WebGL2 shader backgrounds; works on phones and desktops.
 - Compose with rich text, attachments, contact autocomplete, signatures,
   drafts that autosave, **Schedule send**, and **Send with a natural delay**.
 - Remote images blocked by default; HTML mail renders in a sandboxed frame.
