@@ -80,7 +80,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <NavLink to="/mail/inbox" className="brand"><span className="brand-logo"><Feather size={16} /></span><span className="desktop-only">Tern</span></NavLink>
         <form className="search" onSubmit={submitSearch}>
           <Search size={16} className="faint" />
-          <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mail  (from:  subject:  is:unread  has:attachment  newer_than:7d)" />
+          <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mail" title="Operators: from: to: subject: is:unread is:starred has:attachment label: newer_than:7d older_than:30d before:2026-01-01" />
           {q ? <IconButton label="Clear" size={14} onClick={() => { setQ(''); nav(loc.pathname); }}><X size={14} /></IconButton> : <span className="kbd-hint desktop-only"><Kbd>/</Kbd></span>}
         </form>
         <div className="ml-auto row gap-4">

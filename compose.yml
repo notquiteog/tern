@@ -36,6 +36,12 @@ services:
     depends_on:
       - db
       - ollama
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     # Memory headroom for a 4.5 GB box: the app itself sits around 200 MB.
     mem_limit: ${APP_MEM_LIMIT:-768m}
 
