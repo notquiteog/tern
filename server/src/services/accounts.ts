@@ -14,7 +14,7 @@ export interface AccountRow {
   provider: 'fastmail' | 'stalwart' | 'jmap';
   session_url: string; auth_type: 'bearer' | 'basic'; auth_user: string | null; auth_secret_enc: string;
   pin_origin: boolean; smtp: SmtpConfig | null; send_via: 'jmap' | 'smtp';
-  signature_html: string; color: string;
+  signature_html: string; voice: string; color: string;
   jmap_account_id: string | null; api_url: string | null; upload_url: string | null; download_url: string | null; event_source_url: string | null;
   capabilities: Record<string, unknown>; identity_id: string | null;
   mailbox_state: string | null; email_state: string | null;

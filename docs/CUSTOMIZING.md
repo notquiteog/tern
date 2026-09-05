@@ -39,6 +39,69 @@ takes the same path.
 - **Enrollment**: by tag, by picking contacts, or everyone active. Contacts
   who are unsubscribed, bounced, suppressed or already enrolled are skipped.
 
+## AI responders
+
+Responders → New responder. A responder watches incoming mail on one or all
+accounts and asks the model for a reply.
+
+- **Mode**: *Draft* files a suggested reply in the thread and in Drafts, and
+  you send it; *Review* puts it in AI review, where approving sends it;
+  *Send automatically* sends with nobody reading it first.
+- **Which messages**: optional conditions (same builder as inbox rules).
+  With no conditions, every inbound message qualifies. "Contacts only"
+  restricts it to people in Contacts.
+- **Skip lists**: on by default. Newsletters, notifications, no-reply
+  senders and anything with `List-Unsubscribe`, `List-Id` or a bulk
+  `Precedence` header are ignored, as are auto-replies, bounces and
+  messages you already answered.
+- **Instructions, tone, length, reply-all**: what the reply should do. The
+  model also sees the thread, the contact's notes, the account's writing
+  voice and the system prompt.
+- **Safety valves**: a daily cap per responder, one reply per thread per
+  cooldown period (stops bot-to-bot loops), and "respect the account's send
+  policy" so automatic replies leave inside the window with a random delay.
+- **Try it** runs the responder against the latest inbound message without
+  sending anything, so you can see the tone before enabling it.
+
+Generation happens in the background; a thread shows "an AI responder is
+writing a reply" until the draft appears.
+
+## AI campaigns
+
+Sequences → **AI campaign**. Give it a name, a sending account, a brief (the
+facts the email must convey), optional style instructions, and an audience
+(a tag or all active contacts). It creates a sequence with an AI-personalised
+step and an optional same-thread follow-up, enrolls the audience and
+activates it. With "Review each draft", every email waits in AI review; with
+"Send automatically", it goes out under the account's cap, window and delay.
+
+## System prompt, voice and tuning
+
+Settings → AI (admins):
+
+- **System prompt**: the standing instructions every generation starts
+  with. Empty means the built-in default, shown as the placeholder. Put house
+  rules here ("never quote prices", "British spelling", "sign off with the
+  team name").
+- **Tuning**: temperature, top-p, top-k, repeat penalty, max tokens per
+  reply, context window, and how long the model stays loaded.
+- **Playground**: run a draft, reply, rewrite or subject line with the saved
+  prompt and tuning to check the effect of a change.
+
+Settings → Accounts → Edit → Identity → **Writing voice**: a short note on
+how that mailbox writes. It is added to every generation for that account,
+so two people sharing a Tern install can sound like themselves.
+
+## Registration and invites
+
+Settings → Users (admins):
+
+- **Invite links**: create a link with a role and an expiry; the person
+  opens it, picks a username and password, and lands in the app. Links are
+  single-use.
+- **Open registration**: off by default. When on, the sign-in page shows
+  "Create an account" and new users get the role you choose.
+
 ## Merge fields
 
 Available everywhere a template or step body is written:

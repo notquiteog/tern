@@ -99,6 +99,7 @@ const updateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   signatureHtml: z.string().max(20000).optional(),
+  voice: z.string().max(4000).optional(),
   dailyCap: z.number().int().min(0).max(5000).optional(),
   jitterEnabled: z.boolean().optional(),
   jitterMinS: z.number().int().min(0).max(86400).optional(),
@@ -130,10 +131,11 @@ accountsRouter.put('/:id', async (req, res) => {
        jitter_enabled=COALESCE($6,jitter_enabled), jitter_min_s=COALESCE($7,jitter_min_s), jitter_max_s=COALESCE($8,jitter_max_s), send_window=COALESCE($9,send_window),
        sync_limit=COALESCE($10,sync_limit), enabled=COALESCE($11,enabled), auth_secret_enc=COALESCE($12,auth_secret_enc), auth_user=COALESCE($13,auth_user), session_url=$14,
        pin_origin=COALESCE($15,pin_origin), send_via=COALESCE($16,send_via), smtp=$17,
-       api_url = CASE WHEN $18 THEN NULL ELSE api_url END, sync_status = CASE WHEN $18 THEN 'idle' ELSE sync_status END, sync_error = CASE WHEN $18 THEN NULL ELSE sync_error END
+       api_url = CASE WHEN $18 THEN NULL ELSE api_url END, sync_status = CASE WHEN $18 THEN 'idle' ELSE sync_status END, sync_error = CASE WHEN $18 THEN NULL ELSE sync_error END,
+       voice=COALESCE($19, voice)
      WHERE id=$1`,
     [id, b.name ?? null, b.color ?? null, b.signatureHtml ?? null, b.dailyCap ?? null, b.jitterEnabled ?? null, b.jitterMinS ?? null, b.jitterMaxS ?? null, b.sendWindow ? JSON.stringify(b.sendWindow) : null,
-      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged],
+      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null],
   );
   if (credsChanged || b.enabled !== undefined) await syncManager.refresh(id);
   res.json({ account: publicAccount((await getUserAccount(req.user!.id, id))!) });

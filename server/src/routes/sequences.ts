@@ -32,6 +32,11 @@ const seqSchema = z.object({
   steps: z.array(stepSchema).optional(),
 });
 
+const seqUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(), description: z.string().max(5000).optional(), account_id: z.number().int().nullable().optional(),
+  stop_on_reply: z.boolean().optional(), ai_mode: z.enum(['off', 'review', 'auto']).optional(), unsubscribe_footer: z.boolean().optional(), steps: z.array(stepSchema).optional(),
+});
+
 async function seqOf(userId: number, id: number) {
   const s = await one<any>('SELECT * FROM sequences WHERE id=$1 AND user_id=$2', [id, userId]);
   if (!s) throw notFound('Sequence not found');
@@ -79,7 +84,7 @@ sequencesRouter.get('/:id', async (req, res) => {
 sequencesRouter.put('/:id', async (req, res) => {
   const id = idParam(req.params.id);
   await seqOf(req.user!.id, id);
-  const b = parse(seqSchema.partial(), req.body);
+  const b = parse(seqUpdateSchema, req.body);
   if (b.account_id && !(await getUserAccount(req.user!.id, b.account_id))) throw badRequest('Account not found');
   await withTx(async (c) => {
     await c.query(`UPDATE sequences SET name=COALESCE($3,name), description=COALESCE($4,description), account_id=COALESCE($5,account_id), stop_on_reply=COALESCE($6,stop_on_reply), ai_mode=COALESCE($7,ai_mode), unsubscribe_footer=COALESCE($8,unsubscribe_footer), updated_at=now() WHERE id=$1 AND user_id=$2`, [id, req.user!.id, b.name ?? null, b.description ?? null, b.account_id ?? null, b.stop_on_reply ?? null, b.ai_mode ?? null, b.unsubscribe_footer ?? null]);

@@ -119,7 +119,9 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   ) : [];
   const sends = await query<any>('SELECT id, kind, subject, sent_at, replied_at, bounced_at, status, error FROM send_log WHERE account_id=$1 AND thread_id=$2 ORDER BY sent_at', [acc.id, threadId]);
   const snooze = await one<any>('SELECT until_at FROM snoozes WHERE account_id=$1 AND thread_id=$2 AND NOT restored', [acc.id, threadId]);
-  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null });
+  const drafts = await query<any>(`SELECT d.*, r.name AS responder_name FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 AND d.account_id=$2 AND d.thread_id=$3 ORDER BY d.updated_at DESC`, [req.user!.id, acc.id, threadId]);
+  const pendingJobs = await one<{ n: number }>(`SELECT count(*)::int AS n FROM ai_jobs WHERE user_id=$1 AND kind='responder' AND status IN ('pending','running') AND payload->>'threadId'=$2 AND (payload->>'accountId')::bigint=$3`, [req.user!.id, threadId, acc.id]);
+  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, drafts, aiPending: pendingJobs?.n ?? 0 });
 });
 
 // ---------- Actions ----------
@@ -360,7 +362,7 @@ const draftSchema = z.object({
 });
 
 mailRouter.get('/drafts', async (req, res) => {
-  const rows = await query<any>('SELECT * FROM drafts WHERE user_id=$1 ORDER BY updated_at DESC', [req.user!.id]);
+  const rows = await query<any>('SELECT d.*, r.name AS responder_name FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 ORDER BY d.updated_at DESC', [req.user!.id]);
   res.json({ drafts: rows });
 });
 

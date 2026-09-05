@@ -4,9 +4,47 @@ import { config } from '../config.js';
 import { dummyHash, generateRecoveryCodes, generateTotpSecret, hashPassword, otpauthUrl, sha256hex, verifyPassword, verifyTotp } from '../crypto.js';
 import { checkLoginAllowed, clearLoginFailures, clientIp, createSession, destroySession, destroyUserSessions, publicUser, recordLoginFailure, requireAuth, setSessionCookie, type UserRow } from '../auth.js';
 import { parse, z } from '../util/validate.js';
-import { badRequest, unauthorized } from '../errors.js';
+import { badRequest, forbidden, notFound, unauthorized } from '../errors.js';
+import { authSettings } from './users.js';
 
 export const authRouter = Router();
+
+const registerSchema = z.object({
+  username: z.string().min(2).max(64).regex(/^[a-zA-Z0-9._@-]+$/, 'letters, numbers, dots, dashes'),
+  password: z.string().min(10).max(200),
+  displayName: z.string().min(1).max(120),
+  invite: z.string().max(200).optional(),
+});
+
+// Self-registration is off unless an admin opens it or hands out an invite
+// link. Either way the new account gets the role the admin decided on.
+authRouter.post('/register', async (req, res) => {
+  const body = parse(registerSchema, req.body);
+  const settings = await authSettings();
+  let role: 'admin' | 'member' = settings.defaultRole;
+  let invite: any = null;
+  if (body.invite) {
+    invite = await one<any>('SELECT * FROM invites WHERE token=$1 AND used_at IS NULL AND expires_at > now()', [body.invite]);
+    if (!invite) throw badRequest('This invite link is invalid or has expired');
+    role = invite.role;
+  } else if (!settings.allowRegistration) {
+    throw forbidden('Registration is by invitation only');
+  }
+  const username = body.username.toLowerCase();
+  if (await one('SELECT 1 FROM users WHERE username=$1', [username])) throw badRequest('That username is taken');
+  const rows = await query<UserRow>(`INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING *`, [username, body.displayName, await hashPassword(body.password), role]);
+  if (invite) await query('UPDATE invites SET used_by=$2, used_at=now() WHERE id=$1', [invite.id, rows[0].id]);
+  const sid = await createSession(rows[0].id, req.headers['user-agent']);
+  setSessionCookie(res, sid);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.registered',$2)`, [rows[0].id, JSON.stringify({ via: invite ? 'invite' : 'open', role })]);
+  res.json({ user: publicUser(rows[0]) });
+});
+
+authRouter.get('/invite/:token', async (req, res) => {
+  const inv = await one<any>('SELECT role, note, expires_at FROM invites WHERE token=$1 AND used_at IS NULL AND expires_at > now()', [String(req.params.token)]);
+  if (!inv) throw notFound('This invite link is invalid or has expired');
+  res.json({ valid: true, role: inv.role, note: inv.note, expiresAt: inv.expires_at });
+});
 
 const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional() });
 

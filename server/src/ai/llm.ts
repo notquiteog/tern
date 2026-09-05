@@ -18,6 +18,11 @@ export interface AiSettings {
   temperature: number;
   numCtx: number;
   keepAlive: string;
+  systemPrompt: string;
+  topP: number;
+  topK: number;
+  repeatPenalty: number;
+  maxTokens: number;
 }
 
 const DEFAULTS: AiSettings = {
@@ -29,6 +34,11 @@ const DEFAULTS: AiSettings = {
   temperature: 0.7,
   numCtx: 4096,
   keepAlive: '10m',
+  systemPrompt: '',
+  topP: 0.9,
+  topK: 40,
+  repeatPenalty: 1.1,
+  maxTokens: 700,
 };
 
 let cache: { at: number; value: AiSettings } | null = null;
@@ -67,7 +77,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
       messages: opts.messages,
       stream: true,
       keep_alive: s.keepAlive,
-      options: { temperature: opts.temperature ?? s.temperature, num_ctx: s.numCtx, num_predict: opts.maxTokens ?? 700 },
+      options: { temperature: opts.temperature ?? s.temperature, num_ctx: s.numCtx, num_predict: opts.maxTokens ?? s.maxTokens, top_p: s.topP, top_k: s.topK, repeat_penalty: s.repeatPenalty },
     }),
     signal: opts.signal,
   });
@@ -102,7 +112,7 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
   const res = await fetch(`${s.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
-    body: JSON.stringify({ model, messages: opts.messages, stream: true, temperature: opts.temperature ?? s.temperature, max_tokens: opts.maxTokens ?? 700 }),
+    body: JSON.stringify({ model, messages: opts.messages, stream: true, temperature: opts.temperature ?? s.temperature, max_tokens: opts.maxTokens ?? s.maxTokens, top_p: s.topP }),
     signal: opts.signal,
   });
   if (!res.ok || !res.body) throw new Error(`LLM endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);

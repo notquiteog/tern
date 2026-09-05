@@ -5,6 +5,8 @@ import { ComposeProvider } from './state/compose';
 import { Shell } from './components/Shell';
 import LoginPage from './pages/Login';
 import SetupPage from './pages/Setup';
+import RegisterPage from './pages/Register';
+import RespondersPage from './pages/Responders';
 import MailPage from './pages/Mail';
 import ContactsPage from './pages/Contacts';
 import TemplatesPage from './pages/Templates';
@@ -21,8 +23,8 @@ function Gate() {
   const loc = useLocation();
   if (loading) return <div className="center" style={{ height: '100vh' }}><Spinner size={26} /></div>;
   if (needsSetup) return loc.pathname === '/setup' ? <SetupPage /> : <Navigate to="/setup" replace />;
-  if (!user) return loc.pathname === '/login' ? <LoginPage /> : <Navigate to="/login" replace state={{ from: loc.pathname }} />;
-  if (loc.pathname === '/login' || loc.pathname === '/setup') return <Navigate to="/mail/inbox" replace />;
+  if (!user) return loc.pathname === '/login' ? <LoginPage /> : loc.pathname === '/register' ? <RegisterPage /> : <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (loc.pathname === '/login' || loc.pathname === '/setup' || loc.pathname === '/register') return <Navigate to="/mail/inbox" replace />;
   return (
     <Shell>
       <Routes>
@@ -36,6 +38,7 @@ function Gate() {
         <Route path="/sequences" element={<SequencesPage />} />
         <Route path="/sequences/:id" element={<SequenceEditorPage />} />
         <Route path="/rules" element={<RulesPage />} />
+        <Route path="/responders" element={<RespondersPage />} />
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/settings/*" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/mail/inbox" replace />} />

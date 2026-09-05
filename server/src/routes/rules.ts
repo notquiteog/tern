@@ -13,6 +13,7 @@ rulesRouter.use(requireAuth);
 const condition = z.object({ field: z.enum(['from', 'to', 'cc', 'subject', 'body', 'any', 'has_attachment', 'list']), op: z.enum(['contains', 'not_contains', 'equals', 'starts_with', 'ends_with', 'matches', 'is_true', 'is_false']), value: z.string().max(500).optional() });
 const action = z.object({ type: z.enum(['archive', 'trash', 'spam', 'mark_read', 'star', 'unstar', 'label']), mailboxId: z.string().optional() });
 const schema = z.object({ name: z.string().min(1).max(200), account_id: z.number().int().nullable().optional(), enabled: z.boolean().default(true), match: z.enum(['all', 'any']).default('all'), conditions: z.array(condition).min(1).max(20), actions: z.array(action).min(1).max(10) });
+const updateSchema = z.object({ name: z.string().min(1).max(200).optional(), account_id: z.number().int().nullable().optional(), enabled: z.boolean().optional(), match: z.enum(['all', 'any']).optional(), conditions: z.array(condition).min(1).max(20).optional(), actions: z.array(action).min(1).max(10).optional() });
 
 rulesRouter.get('/', async (req, res) => {
   const rows = await query<any>('SELECT r.*, a.email AS account_email FROM rules r LEFT JOIN accounts a ON a.id=r.account_id WHERE r.user_id=$1 ORDER BY r.position, r.id', [req.user!.id]);
@@ -28,7 +29,7 @@ rulesRouter.post('/', async (req, res) => {
 });
 
 rulesRouter.put('/:id', async (req, res) => {
-  const b = parse(schema.partial(), req.body);
+  const b = parse(updateSchema, req.body);
   const rows = await query<any>(
     `UPDATE rules SET name=COALESCE($3,name), account_id=CASE WHEN $4::boolean THEN $5 ELSE account_id END, enabled=COALESCE($6,enabled), match=COALESCE($7,match), conditions=COALESCE($8,conditions), actions=COALESCE($9,actions), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *`,
     [idParam(req.params.id), req.user!.id, b.name ?? null, b.account_id !== undefined, b.account_id ?? null, b.enabled ?? null, b.match ?? null, b.conditions ? JSON.stringify(b.conditions) : null, b.actions ? JSON.stringify(b.actions) : null],

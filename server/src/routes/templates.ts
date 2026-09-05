@@ -10,6 +10,7 @@ export const templatesRouter = Router();
 templatesRouter.use(requireAuth);
 
 const schema = z.object({ name: z.string().min(1).max(200), subject: z.string().max(998).default(''), body_html: z.string().max(500000).default(''), category: z.string().max(60).default('outreach'), ai_brief: z.string().max(20000).default('') });
+const updateSchema = z.object({ name: z.string().min(1).max(200).optional(), subject: z.string().max(998).optional(), body_html: z.string().max(500000).optional(), category: z.string().max(60).optional(), ai_brief: z.string().max(20000).optional() });
 
 templatesRouter.get('/', async (req, res) => {
   const rows = await query<any>(`SELECT t.*, (SELECT count(*)::int FROM sequence_steps s WHERE s.template_id=t.id) AS used_in_steps FROM templates t WHERE t.user_id=$1 ORDER BY t.updated_at DESC`, [req.user!.id]);
@@ -23,7 +24,7 @@ templatesRouter.post('/', async (req, res) => {
 });
 
 templatesRouter.put('/:id', async (req, res) => {
-  const b = parse(schema.partial(), req.body);
+  const b = parse(updateSchema, req.body);
   const rows = await query<any>(
     `UPDATE templates SET name=COALESCE($3,name), subject=COALESCE($4,subject), body_html=COALESCE($5,body_html), category=COALESCE($6,category), ai_brief=COALESCE($7,ai_brief), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *`,
     [idParam(req.params.id), req.user!.id, b.name ?? null, b.subject ?? null, b.body_html ?? null, b.category ?? null, b.ai_brief ?? null],

@@ -4,7 +4,7 @@ import { useLocalStorage } from './hooks';
 
 export interface Account {
   id: number; user_id: number; name: string; email: string; provider: 'fastmail' | 'stalwart' | 'jmap'; session_url: string; auth_type: 'bearer' | 'basic'; auth_user: string | null; pin_origin: boolean;
-  send_via: 'jmap' | 'smtp'; signature_html: string; color: string; sync_status: string; sync_error: string | null; last_sync_at: string | null; initial_sync_done: boolean; sync_limit: number;
+  send_via: 'jmap' | 'smtp'; signature_html: string; voice: string; color: string; sync_status: string; sync_error: string | null; last_sync_at: string | null; initial_sync_done: boolean; sync_limit: number;
   daily_cap: number; jitter_enabled: boolean; jitter_min_s: number; jitter_max_s: number; send_window: { start: number; end: number; days: number[]; tz: string }; next_send_at: string | null; enabled: boolean;
   has_smtp: boolean; smtp: { host: string; port: number; secure: boolean; user: string } | null; has_push: boolean; has_submission: boolean; push: { push: string; lastPushAt: string | null };
 }

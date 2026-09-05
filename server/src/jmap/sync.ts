@@ -17,7 +17,7 @@ const EMAIL_PROPS = [
   'id', 'blobId', 'threadId', 'mailboxIds', 'keywords', 'size', 'receivedAt', 'sentAt',
   'messageId', 'inReplyTo', 'references', 'sender', 'from', 'to', 'cc', 'bcc', 'replyTo',
   'subject', 'preview', 'hasAttachment', 'bodyValues', 'textBody', 'htmlBody', 'attachments',
-  'header:Auto-Submitted:asText',
+  'header:Auto-Submitted:asText', 'header:List-Unsubscribe:asText', 'header:List-Id:asText', 'header:Precedence:asText',
 ];
 const MAILBOX_PROPS = ['id', 'name', 'parentId', 'role', 'sortOrder', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'];
 

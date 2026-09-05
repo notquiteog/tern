@@ -367,4 +367,77 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `,
   },
+  {
+    id: '20260905_0002_responders_invites_voice',
+    up: `
+CREATE TABLE IF NOT EXISTS responders (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT REFERENCES accounts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  mode TEXT NOT NULL DEFAULT 'draft' CHECK (mode IN ('draft','review','send')),
+  match TEXT NOT NULL DEFAULT 'all' CHECK (match IN ('all','any')),
+  conditions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  only_contacts BOOLEAN NOT NULL DEFAULT false,
+  skip_lists BOOLEAN NOT NULL DEFAULT true,
+  instructions TEXT NOT NULL DEFAULT '',
+  tone TEXT NOT NULL DEFAULT 'friendly',
+  length TEXT NOT NULL DEFAULT 'medium',
+  reply_all BOOLEAN NOT NULL DEFAULT false,
+  humanize BOOLEAN NOT NULL DEFAULT true,
+  daily_cap INT NOT NULL DEFAULT 20,
+  cooldown_hours INT NOT NULL DEFAULT 24,
+  position INT NOT NULL DEFAULT 0,
+  hits INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_jobs (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','skipped')),
+  attempts INT NOT NULL DEFAULT 0,
+  error TEXT,
+  result TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_jobs_pending_idx ON ai_jobs(status, created_at);
+
+CREATE TABLE IF NOT EXISTS invites (
+  id BIGSERIAL PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
+  note TEXT NOT NULL DEFAULT '',
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'sequence';
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS responder_id BIGINT REFERENCES responders(id) ON DELETE CASCADE;
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS reply_to_email_id BIGINT REFERENCES emails(id) ON DELETE CASCADE;
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS thread_id TEXT;
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS to_addr JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS context TEXT NOT NULL DEFAULT '';
+ALTER TABLE review_queue ALTER COLUMN enrollment_id DROP NOT NULL;
+ALTER TABLE review_queue ALTER COLUMN contact_id DROP NOT NULL;
+
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS responder_id BIGINT REFERENCES responders(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS drafts_thread_idx ON drafts(account_id, thread_id);
+
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS voice TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS responder_id BIGINT REFERENCES responders(id) ON DELETE SET NULL;
+ALTER TABLE send_log DROP CONSTRAINT IF EXISTS send_log_kind_check;
+ALTER TABLE send_log ADD CONSTRAINT send_log_kind_check CHECK (kind IN ('sequence','compose','reply','forward','scheduled','auto_reply'));
+`,
+  },
 ];

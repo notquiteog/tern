@@ -6,6 +6,7 @@ import { createSession, publicUser, setSessionCookie, type UserRow } from '../au
 import { parse, z } from '../util/validate.js';
 import { conflict } from '../errors.js';
 import { recommendModel } from '../ai/models.js';
+import { authSettings } from './users.js';
 
 export const setupRouter = Router();
 
@@ -15,8 +16,10 @@ async function needsSetup(): Promise<boolean> {
 }
 
 setupRouter.get('/status', async (_req, res) => {
+  const auth = await authSettings();
   res.json({
     needsSetup: await needsSetup(),
+    registrationOpen: auth.allowRegistration,
     version: config.version,
     appUrl: config.appUrl,
     aiEnabled: config.aiEnabled,

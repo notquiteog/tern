@@ -32,7 +32,7 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
   const [showBcc, setShowBcc] = useState(Boolean(win.bcc?.length));
   const [subject, setSubject] = useState(win.subject ?? '');
   const [attachments, setAttachments] = useState(win.attachments ?? []);
-  const [ai, setAi] = useState(false);
+  const [ai, setAi] = useState(Boolean(win.autoAi));
   const [sending, setSending] = useState(false);
   const [schedule, setSchedule] = useState<null | string>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -122,7 +122,7 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
         {attachments.length > 0 && (
           <div className="compose-attach">{attachments.map((a) => <span key={a.id} className="chip"><Paperclip size={12} /><span className="truncate">{a.filename}</span><span className="faint">{fmtBytes(a.size)}</span><button type="button" className="chip-x" onClick={() => { api.del(`/api/mail/uploads/${a.id}`).catch(() => {}); setAttachments((l) => l.filter((x) => x.id !== a.id)); setDirty(true); }}><X size={12} /></button></span>)}</div>
         )}
-        {ai && <AiPanel context={aiContext} getDraft={() => editor.current?.getHtml() ?? ''} onClose={() => setAi(false)} onSubject={(s) => { setSubject(s); setDirty(true); }} onInsert={(h, mode) => { if (mode === 'compose' || mode === 'reply') { const quote = win.quoteHtml ?? ''; editor.current?.setHtml(h + (quote ? `<p><br></p>${quote}` : '')); } else editor.current?.setHtml(h + (win.quoteHtml ? `<p><br></p>${win.quoteHtml}` : '')); html.current = editor.current?.getHtml() ?? ''; setDirty(true); }} />}
+        {ai && <AiPanel context={aiContext} autoRun={Boolean(win.autoAi)} defaultMode={win.autoAi ?? undefined} getDraft={() => editor.current?.getHtml() ?? ''} onClose={() => setAi(false)} onSubject={(s) => { setSubject(s); setDirty(true); }} onInsert={(h, mode) => { if (mode === 'compose' || mode === 'reply') { const quote = win.quoteHtml ?? ''; editor.current?.setHtml(h + (quote ? `<p><br></p>${quote}` : '')); } else editor.current?.setHtml(h + (win.quoteHtml ? `<p><br></p>${win.quoteHtml}` : '')); html.current = editor.current?.getHtml() ?? ''; setDirty(true); }} />}
         <div className="compose-foot">
           <span className="send-group">
             <Button variant="primary" icon={<Send size={15} />} loading={sending} onClick={() => send()}>Send</Button>

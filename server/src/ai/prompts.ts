@@ -18,9 +18,11 @@ export interface DraftInput {
   draft?: string;
   template?: string;
   subject?: string;
+  systemPrompt?: string;
+  voice?: string;
 }
 
-const SYSTEM = `You are an email writing assistant inside a mail client. You write in the sender's voice: clear, warm, specific and brief. Rules:
+export const DEFAULT_SYSTEM_PROMPT = `You are an email writing assistant inside a mail client. You write in the sender's voice: clear, warm, specific and brief. Rules:
 - Output only what was asked for. No preamble, no "Here is", no markdown, no bullet symbols unless asked, no quoted email.
 - Never invent facts, offers, prices, dates or names that were not provided.
 - Do not add a subject line unless asked for one.
@@ -86,13 +88,14 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       break;
   }
   if (sender) parts.push(sender);
+  if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these):\n${input.voice.trim()}`);
   const rb = recipientBlock(input.recipient); if (rb) parts.push(rb);
   const tb = threadBlock(input.thread); if (tb) parts.push(tb);
   if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
   if (input.template) parts.push(`Brief / template:\n${input.template}`);
   if (input.draft) parts.push(input.mode === 'subject' ? `Email:\n${input.draft}` : `Draft:\n${input.draft}`);
   return [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: input.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT },
     { role: 'user', content: parts.filter(Boolean).join('\n\n') },
   ];
 }
@@ -102,6 +105,10 @@ export function cleanOutput(text: string, mode: DraftMode): string {
   let t = text.trim();
   t = t.replace(/^(here(?:'s| is) (?:the|a|your) (?:email|draft|reply|subject line|summary)[^\n]*:?\s*)/i, '');
   t = t.replace(/^```[a-z]*\n?|\n?```$/g, '');
+  // Small models like to add a speaker label or markdown emphasis; email is plain text.
+  t = t.replace(/^\*{0,2}[A-Z][A-Za-z .'-]{0,40}:\*{0,2}\s*(?=\S)/, (m) => (/^\*{0,2}(subject|re|dear|hi|hello|hey)\b/i.test(m) ? m : ''));
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/(^|\s)\*([^*\n]+)\*(?=\s|$)/g, '$1$2');
+  t = t.replace(/^Subject:.*\n+/i, (m) => (mode === 'subject' ? m : ''));
   if (mode === 'subject') {
     t = t.split('\n')[0].replace(/^subject:\s*/i, '').replace(/^["'“”]+|["'“”]+$/g, '').replace(/[.!]+$/, '').trim();
   }

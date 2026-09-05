@@ -10,6 +10,7 @@ import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '
 import { jitterMs, reserveSendSlot } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput } from '../ai/prompts.js';
+import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
 
@@ -34,6 +35,7 @@ export async function tick(): Promise<void> {
     await processSnoozes();
     await processOutbox();
     await processEnrollments();
+    await processAiJobs();
   } catch (e) {
     log.error('tick failed', { err: (e as Error).message });
   } finally {
@@ -86,7 +88,7 @@ async function processOutbox(): Promise<void> {
       if (slot.waitMs) await new Promise((r) => setTimeout(r, Math.min(slot.waitMs, 5000)));
     }
     try {
-      await composeAndSend(acc, { ...payload, kind: 'scheduled' });
+      await composeAndSend(acc, { ...payload, kind: payload.kind === 'auto_reply' ? 'auto_reply' : 'scheduled' });
       await query(`UPDATE outbox SET status='sent', sent_at=now(), error=NULL WHERE id=$1`, [id]);
     } catch (e) {
       const msg = (e as Error).message;
@@ -239,6 +241,8 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     mode: 'personalize',
     instruction: step.ai_instructions || undefined,
     senderName: acc.name,
+    systemPrompt: settings.systemPrompt,
+    voice: acc.voice,
     recipient: { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields },
     template: rendered.brief || htmlToText(rendered.html),
     subject: rendered.subject,
@@ -250,4 +254,97 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: 40, temperature: 0.4 }), 'subject');
   }
   return { subject, html: textToHtml(body), model: settings.model };
+}
+
+
+// ---------- AI responders ----------
+// Generates the reply a responder asked for, then either files it as a
+// draft, queues it for review, or sends it (through the outbox when the
+// responder wants the account's pacing and random delay).
+
+async function processAiJobs(): Promise<void> {
+  for (let n = 0; n < 2; n++) {
+    const rows = await query<any>(`UPDATE ai_jobs SET status='running', attempts = attempts + 1, updated_at=now() WHERE id = (SELECT id FROM ai_jobs WHERE status='pending' ORDER BY created_at LIMIT 1) AND status='pending' RETURNING *`);
+    const job = rows[0];
+    if (!job) return;
+    try {
+      const result = job.kind === 'responder' ? await runResponderJob(job) : 'unknown job kind';
+      await query(`UPDATE ai_jobs SET status='done', result=$2, updated_at=now() WHERE id=$1`, [job.id, result]);
+    } catch (e) {
+      const msg = (e as Error).message;
+      log.error('ai job failed', { job: job.id, err: msg });
+      if (job.attempts >= 3) await query(`UPDATE ai_jobs SET status='failed', error=$2, updated_at=now() WHERE id=$1`, [job.id, msg.slice(0, 500)]);
+      else await query(`UPDATE ai_jobs SET status='pending', error=$2, updated_at=now() WHERE id=$1`, [job.id, msg.slice(0, 500)]);
+    }
+  }
+}
+
+export async function generateResponderReply(responder: any, acc: AccountRow, email: any): Promise<{ subject: string; html: string; text: string; to: { name: string | null; email: string }[]; model: string }> {
+  const settings = await getAiSettings();
+  const thread = await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]);
+  const contact = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, String(email.from_addr?.[0]?.email ?? '').toLowerCase()]);
+  const messages = buildMessages({
+    mode: 'reply',
+    instruction: responder.instructions || undefined,
+    tone: responder.tone || undefined,
+    length: responder.length || 'medium',
+    senderName: acc.name,
+    subject: email.subject,
+    systemPrompt: settings.systemPrompt,
+    voice: acc.voice,
+    recipient: contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email },
+    thread: thread.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() })),
+  });
+  const text = cleanOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply');
+  const me = acc.email.toLowerCase();
+  const replyTo: any[] = email.reply_to?.length ? email.reply_to : email.from_addr ?? [];
+  let to = replyTo.filter((a: any) => String(a.email).toLowerCase() !== me).map((a: any) => ({ name: a.name ?? null, email: a.email }));
+  if (responder.reply_all) {
+    for (const a of [...(email.to_addr ?? []), ...(email.cc_addr ?? [])]) if (String(a.email).toLowerCase() !== me && !to.some((t: any) => t.email.toLowerCase() === String(a.email).toLowerCase())) to.push({ name: a.name ?? null, email: a.email });
+  }
+  const quote = `<div class="tern-quote" style="margin-top:16px"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">On ${escapeHtml(new Date(email.received_at).toUTCString())}, ${escapeHtml(email.from_addr?.[0]?.email ?? '')} wrote:</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0">${email.body_html ?? `<div style="white-space:pre-wrap">${escapeHtml(email.body_text ?? '')}</div>`}</blockquote></div>`;
+  return { subject: /^re:/i.test(email.subject ?? '') ? email.subject : `Re: ${email.subject ?? ''}`, html: textToHtml(text) + quote, text, to, model: settings.model };
+}
+
+async function runResponderJob(job: any): Promise<string> {
+  const p = job.payload;
+  const responder = await one<any>('SELECT * FROM responders WHERE id=$1 AND enabled', [p.responderId]);
+  if (!responder) return 'responder gone or disabled';
+  const acc = await getAccount(p.accountId);
+  if (!acc || !acc.enabled) return 'account unavailable';
+  const email = await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id=$2', [p.emailDbId, acc.id]);
+  if (!email) return 'email gone';
+  // Someone may have answered by hand in the meantime.
+  const answered = await one(`SELECT 1 FROM emails WHERE account_id=$1 AND thread_id=$2 AND from_email=$3 AND received_at > $4`, [acc.id, email.thread_id, acc.email.toLowerCase(), email.received_at]);
+  if (answered) return 'already answered';
+  const gen = await generateResponderReply(responder, acc, email);
+  if (!gen.to.length) return 'no recipient';
+  const contact = await one<{ id: number }>('SELECT id FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, gen.to[0].email.toLowerCase()]);
+  await query('UPDATE responders SET hits = hits + 1, updated_at=now() WHERE id=$1', [responder.id]);
+  if (responder.mode === 'draft') {
+    await query(
+      `INSERT INTO drafts (user_id, account_id, kind, reply_to_email_id, thread_id, to_addr, subject, body_html, source, responder_id) VALUES ($1,$2,'reply',$3,$4,$5,$6,$7,'ai',$8)`,
+      [acc.user_id, acc.id, email.id, email.thread_id, JSON.stringify(gen.to), gen.subject, gen.html, responder.id],
+    );
+    publish({ type: 'sync', userId: acc.user_id, accountId: acc.id });
+    publish({ type: 'ai', userId: acc.user_id, status: 'draft' });
+    return 'draft created';
+  }
+  if (responder.mode === 'review') {
+    await query(
+      `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context)
+       VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11)`,
+      [acc.user_id, acc.id, contact?.id ?? null, gen.subject, gen.html, gen.model, responder.id, email.id, email.thread_id, JSON.stringify(gen.to), (email.body_text || email.preview || '').slice(0, 2000)],
+    );
+    const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
+    publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
+    return 'queued for review';
+  }
+  const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true };
+  if (responder.humanize) {
+    await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, JSON.stringify({ ...payload, humanize: true })]);
+    return 'queued to send with natural delay';
+  }
+  await composeAndSend(acc, payload as any);
+  return 'sent';
 }

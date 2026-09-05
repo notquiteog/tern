@@ -169,7 +169,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   const qc = useQueryClient();
   const toast = useToast();
   const [tab, setTab] = useState<'sending' | 'identity' | 'connection'>('sending');
-  const [f, setF] = useState({ name: account.name, color: account.color, dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin });
+  const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin });
   const sig = useRef(account.signature_html);
   const editor = useRef<EditorHandle>(null);
   const [busy, setBusy] = useState(false);
@@ -177,7 +177,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   async function save() {
     setBusy(true);
     try {
-      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null };
+      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null };
       if (f.secret) body.secret = f.secret;
       if (f.authUser !== (account.auth_user ?? '')) body.authUser = f.authUser;
       if (f.sessionUrl !== account.session_url) body.sessionUrl = f.sessionUrl;
@@ -217,6 +217,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
         <>
           <div className="form-row"><Field label="Display name"><Input value={f.name} onChange={(e) => set({ name: e.target.value })} /></Field><Field label="Colour"><ColorPicker value={f.color} onChange={(c) => set({ color: c })} /></Field></div>
           <Field label="Signature" hint="Appended to every message sent from this account, including sequences."><div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}><Editor ref={editor} initialHtml={sig.current} minHeight={120} placeholder="Alex Rivera · Tern · +1 555 0100" onChange={(h) => { sig.current = h; }} /></div></Field>
+          <Field label="Writing voice for the AI" hint="How this account writes. Given to the model for every draft, reply, responder and campaign sent from it."><Textarea value={f.voice} onChange={(e) => set({ voice: e.target.value })} placeholder="Plain and warm. Short sentences. First names. Never 'I hope this email finds you well'. Sign off with 'Best, Alex'." style={{ minHeight: 80 }} /></Field>
           <Field label="Messages to keep locally" hint="Newest N messages are synced on the first run; more can be loaded later."><Input type="number" min={100} max={50000} value={f.syncLimit} onChange={(e) => set({ syncLimit: Number(e.target.value) })} /></Field>
         </>
       )}
@@ -260,6 +261,9 @@ function AiSettings() {
   const [customModel, setCustomModel] = useState('');
   const [testOut, setTestOut] = useState('');
   const [testing, setTesting] = useState(false);
+  const [playInstruction, setPlayInstruction] = useState('Write two friendly sentences confirming the assistant works and mention that it runs locally.');
+  const [playMode, setPlayMode] = useState<'compose' | 'reply' | 'subject' | 'rewrite'>('compose');
+  const [playDraft, setPlayDraft] = useState('');
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   const admin = user!.role === 'admin';
   async function save(patch: any) {
@@ -274,7 +278,7 @@ function AiSettings() {
   }
   async function test() {
     setTesting(true); setTestOut('');
-    try { await apiStream('/api/ai/draft', { mode: 'compose', instruction: 'Write two friendly sentences confirming the assistant works.', length: 'short' }, { onEvent: (ev, d) => { if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
+    try { await apiStream('/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
   if (isLoading || !data || !f) return <Spinner />;
   const installed = new Set(data.models.map((m: any) => m.name));
@@ -288,7 +292,13 @@ function AiSettings() {
           <span>Model in use: <b>{data.settings.model}</b> {data.settings.provider === 'ollama' && (data.modelInstalled ? <Badge kind="success">installed</Badge> : <Badge kind="danger">not downloaded</Badge>)}</span>
           {data.loaded?.length > 0 && <span className="muted">loaded in memory: {data.loaded.map((m: any) => m.name).join(', ')}</span>}
         </div>
-        <div className="row mt-16"><Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={testing} onClick={test} disabled={!data.settings.enabled}>Test the assistant</Button>{testOut && <span className="small">{testOut}</span>}</div>
+      </div>
+      <div className="card mb-16">
+        <div className="card-title"><h2>Playground</h2><span className="small muted">Uses the saved system prompt and tuning</span></div>
+        <div className="row mb-8"><Select className="input-sm" style={{ width: 150 }} value={playMode} onChange={(e) => setPlayMode(e.target.value as any)}><option value="compose">Draft</option><option value="reply">Reply</option><option value="rewrite">Rewrite</option><option value="subject">Subject line</option></Select><Input className="input-sm" value={playInstruction} onChange={(e) => setPlayInstruction(e.target.value)} placeholder="Instruction" /></div>
+        {(playMode === 'rewrite' || playMode === 'subject' || playMode === 'reply') && <Textarea className="mb-8" value={playDraft} onChange={(e) => setPlayDraft(e.target.value)} placeholder={playMode === 'reply' ? 'Paste the message you are replying to' : 'Paste the draft to work on'} style={{ minHeight: 70 }} />}
+        <div className="row"><Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={testing} onClick={test} disabled={!data.settings.enabled}>Run</Button></div>
+        {testOut && <div className="ai-preview mt-8">{testOut}</div>}
       </div>
       {admin ? (
         <>
@@ -303,6 +313,24 @@ function AiSettings() {
               <Field label="Context window (tokens)" hint="4096 keeps memory low. Long threads get truncated to the newest messages."><Input type="number" min={512} max={32768} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
             </div>
             <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
+          </div>
+          <div className="card mb-16">
+            <div className="card-title"><h2>System prompt</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, systemPrompt: '' })}>Reset to default</Button></div>
+            <p className="muted small">The standing instructions every generation starts with: who the assistant is, house rules, things it must never say. Leave empty to use the built-in default shown as the placeholder. Per-account voice notes (Settings → Accounts → Identity) are added on top.</p>
+            <Textarea value={f.systemPrompt ?? ''} onChange={(e) => setF({ ...f, systemPrompt: e.target.value })} placeholder={data.defaultSystemPrompt} style={{ minHeight: 180, fontFamily: 'var(--mono)', fontSize: 12.5 }} />
+            <Button variant="primary" className="mt-8" onClick={() => save({ systemPrompt: f.systemPrompt ?? '' })}>Save system prompt</Button>
+          </div>
+          <div className="card mb-16">
+            <div className="card-title"><h2>Tuning</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, temperature: 0.7, topP: 0.9, topK: 40, repeatPenalty: 1.1, maxTokens: 700, numCtx: 4096 })}>Defaults</Button></div>
+            <div className="form-grid-3">
+              <Field label={`Temperature: ${f.temperature}`} hint="Creativity. 0.3 literal, 0.7 natural, 1.0+ loose."><input className="range" type="range" min={0} max={1.5} step={0.05} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
+              <Field label={`Top-p: ${f.topP}`} hint="Nucleus sampling. Lower is safer."><input className="range" type="range" min={0.1} max={1} step={0.05} value={f.topP} onChange={(e) => setF({ ...f, topP: Number(e.target.value) })} /></Field>
+              <Field label={`Top-k: ${f.topK}`} hint="Candidates per token."><input className="range" type="range" min={1} max={100} step={1} value={f.topK} onChange={(e) => setF({ ...f, topK: Number(e.target.value) })} /></Field>
+              <Field label={`Repeat penalty: ${f.repeatPenalty}`} hint="Above 1 discourages repetition."><input className="range" type="range" min={0.8} max={1.6} step={0.05} value={f.repeatPenalty} onChange={(e) => setF({ ...f, repeatPenalty: Number(e.target.value) })} /></Field>
+              <Field label="Max tokens per reply" hint="Caps the length of a generation."><Input type="number" min={64} max={4096} value={f.maxTokens} onChange={(e) => setF({ ...f, maxTokens: Number(e.target.value) })} /></Field>
+              <Field label="Keep model loaded" hint="e.g. 10m, 1h, -1 for always"><Input value={f.keepAlive} onChange={(e) => setF({ ...f, keepAlive: e.target.value })} /></Field>
+            </div>
+            <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive })}>Save tuning</Button>
           </div>
           {f.provider === 'ollama' && (
             <div className="card">
@@ -443,6 +471,13 @@ function UsersSettings() {
   const [newPw, setNewPw] = useState('');
   const [del, setDel] = useState<any>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['users'] });
+  const { data: authSettings } = useQuery({ queryKey: ['auth-settings'], queryFn: () => api.get<{ settings: { allowRegistration: boolean; defaultRole: string } }>('/api/users/auth-settings').then((r) => r.settings) });
+  const { data: invites } = useQuery({ queryKey: ['invites'], queryFn: () => api.get<{ invites: any[] }>('/api/users/invites').then((r) => r.invites) });
+  const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member');
+  const [inviteNote, setInviteNote] = useState('');
+  const [inviteDays, setInviteDays] = useState(7);
+  async function saveAuth(patch: any) { try { await api.put('/api/users/auth-settings', patch); qc.invalidateQueries({ queryKey: ['auth-settings'] }); toast.success('Saved'); } catch (e) { toast.error(e); } }
+  async function makeInvite() { try { await api.post('/api/users/invites', { role: inviteRole, note: inviteNote, days: inviteDays }); qc.invalidateQueries({ queryKey: ['invites'] }); setInviteNote(''); } catch (e) { toast.error(e); } }
   async function add() {
     try { await api.post('/api/users', f); invalidate(); setCreate(false); setF({ username: '', displayName: '', password: '', role: 'member' }); toast.success('User created'); } catch (e) { toast.error(e); }
   }
@@ -463,6 +498,16 @@ function UsersSettings() {
           </div></td>
         </tr>)}
       </tbody></table>
+      <div className="card mt-24">
+        <div className="card-title"><h2>Registration</h2></div>
+        <div className="row mb-8"><Toggle checked={Boolean(authSettings?.allowRegistration)} onChange={(v) => saveAuth({ allowRegistration: v })} /><div><div className="strong small">Allow anyone who reaches the sign-in page to create an account</div><div className="help-text">Off by default. Invite links below work either way.</div></div></div>
+        {authSettings?.allowRegistration && <Field label="Role for self-registered users"><Select value={authSettings.defaultRole} onChange={(e) => saveAuth({ defaultRole: e.target.value })} style={{ maxWidth: 200 }}><option value="member">Member</option><option value="admin">Admin</option></Select></Field>}
+      </div>
+      <div className="card mt-16">
+        <div className="card-title"><h2>Invite links</h2></div>
+        <div className="row wrap mb-16"><Select className="input-sm" style={{ width: 130 }} value={inviteRole} onChange={(e) => setInviteRole(e.target.value as any)}><option value="member">Member</option><option value="admin">Admin</option></Select><Input className="input-sm" style={{ maxWidth: 260 }} value={inviteNote} onChange={(e) => setInviteNote(e.target.value)} placeholder="Note, e.g. for Sam" /><Input className="input-sm" type="number" min={1} max={365} style={{ width: 90 }} value={inviteDays} onChange={(e) => setInviteDays(Number(e.target.value))} /><span className="small muted">days valid</span><Button size="sm" variant="primary" icon={<Plus size={13} />} onClick={makeInvite}>Create link</Button></div>
+        {invites?.length ? <table className="table"><tbody>{invites.map((i) => <tr key={i.id}><td><Badge>{i.role}</Badge></td><td className="small">{i.note}</td><td className="small muted">{i.used_at ? `used by @${i.used_by_username}` : new Date(i.expires_at) < new Date() ? 'expired' : `expires ${fmtRelative(i.expires_at)}`}</td><td className="small mono truncate" style={{ maxWidth: 320 }}>{i.used_at ? '' : i.url}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{!i.used_at && <Button size="sm" onClick={() => { navigator.clipboard?.writeText(i.url); toast.success('Link copied'); }}>Copy</Button>}<IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/users/invites/${i.id}`).then(() => qc.invalidateQueries({ queryKey: ['invites'] }))}><Trash2 size={14} /></IconButton></div></td></tr>)}</tbody></table> : <div className="small muted">No invite links yet.</div>}
+      </div>
       <Modal open={create} onClose={() => setCreate(false)} title="Add user" footer={<><Button onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" disabled={!f.username || !f.displayName || f.password.length < 10} onClick={add}>Create</Button></>}>
         <div className="form-row"><Field label="Name"><Input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} /></Field><Field label="Username"><Input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} /></Field><Field label="Temporary password" hint="At least 10 characters; they can change it later."><Input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" /></Field><Field label="Role"><Select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="member">Member</option><option value="admin">Admin</option></Select></Field></div>
       </Modal>

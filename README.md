@@ -34,14 +34,24 @@ Nothing leaves your server except the mail itself.
 **AI, locally**
 - Bundled Ollama container; the installer picks a model that fits the RAM.
 - In the composer: draft, reply, rewrite, fix grammar, shorten, expand,
-  subject lines. In a thread: summarise.
-- Sequence steps can be personalised per contact by the model, with a review
-  queue before anything goes out (or fully automatic if you choose).
+  subject lines. In a thread: one-click AI reply and summarise.
+- **AI responders**: answer incoming mail automatically as a suggested draft
+  in the thread, through the review queue, or sent without a human in the
+  loop, with list and auto-reply detection, per-thread cooldown, daily caps
+  and the account's send pacing.
+- **AI campaigns**: a brief plus an audience becomes a personalised email
+  for every contact, reviewed or automatic, with a same-thread follow-up.
+- Sequence steps can be personalised per contact by the model.
+- **System prompt and tuning in the UI**: edit the standing instructions,
+  temperature, top-p, top-k, repeat penalty, context window and length; a
+  playground to try changes; a writing-voice note per account.
 - Any OpenAI-compatible endpoint works too.
 
 **Accounts and admin**
-- Users with roles, TOTP two-factor with recovery codes, session management,
-  audit log. No email-based password reset by design.
+- Sign in with username and password, TOTP two-factor with recovery codes,
+  session management, audit log. Registration is by invite link, or open
+  self-registration if an admin turns it on. No email-based password reset
+  by design.
 - Optional Stalwart mail server on the same box, bootstrapped by the installer.
 
 ## Install

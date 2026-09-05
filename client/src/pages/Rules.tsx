@@ -5,9 +5,7 @@ import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useAccounts, useMailboxes } from '../lib/queries';
 import { Badge, Button, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Toggle } from '../components/ui';
-
-const FIELDS = [['from', 'From'], ['to', 'To'], ['cc', 'Cc'], ['subject', 'Subject'], ['body', 'Body'], ['any', 'Anywhere'], ['list', 'Mailing list header'], ['has_attachment', 'Has attachment']];
-const OPS = [['contains', 'contains'], ['not_contains', 'does not contain'], ['equals', 'is exactly'], ['starts_with', 'starts with'], ['ends_with', 'ends with'], ['matches', 'matches regex']];
+import { ConditionsEditor } from '../components/Conditions';
 const ACTIONS = [['archive', 'Skip the inbox (archive)'], ['mark_read', 'Mark as read'], ['star', 'Star it'], ['label', 'Apply label'], ['trash', 'Delete it'], ['spam', 'Mark as junk']];
 
 export default function RulesPage() {
@@ -77,19 +75,7 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
         <Field label="Name"><Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Newsletters out of the inbox" /></Field>
         <Field label="Applies to"><Select value={accountId} onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : '')}><option value="">All accounts</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.email}</option>)}</Select></Field>
       </div>
-      <Field label={<span>When <select className="select input-sm" style={{ width: 80, display: 'inline-block', margin: '0 4px' }} value={match} onChange={(e) => setMatch(e.target.value as any)}><option value="all">all</option><option value="any">any</option></select> of these match</span> as any}>
-        {conds.map((c, i) => (
-          <div key={i} className="row mb-8">
-            <Select className="input-sm" style={{ width: 170 }} value={c.field} onChange={(e) => setConds((l) => l.map((x, j) => (j === i ? { ...x, field: e.target.value, op: e.target.value === 'has_attachment' ? 'is_true' : x.op === 'is_true' || x.op === 'is_false' ? 'contains' : x.op } : x)))}>{FIELDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
-            {c.field === 'has_attachment' ? <Select className="input-sm" style={{ width: 120 }} value={c.op} onChange={(e) => setConds((l) => l.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))}><option value="is_true">yes</option><option value="is_false">no</option></Select> : <>
-              <Select className="input-sm" style={{ width: 170 }} value={c.op} onChange={(e) => setConds((l) => l.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))}>{OPS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
-              <Input className="input-sm" value={c.value ?? ''} onChange={(e) => setConds((l) => l.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} placeholder={c.field === 'from' ? 'newsletter@ or @example.com' : 'text'} />
-            </>}
-            <IconButton label="Remove" className="btn-sm" onClick={() => setConds((l) => l.filter((_, j) => j !== i))}><X size={14} /></IconButton>
-          </div>
-        ))}
-        <Button size="sm" icon={<Plus size={13} />} onClick={() => setConds((l) => [...l, { field: 'subject', op: 'contains', value: '' }])}>Add condition</Button>
-      </Field>
+      <div className="field"><ConditionsEditor conditions={conds} onChange={setConds} match={match} onMatchChange={setMatch} /></div>
       <Field label="Then">
         {acts.map((a, i) => (
           <div key={i} className="row mb-8">

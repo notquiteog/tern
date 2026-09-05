@@ -20,6 +20,7 @@ import { aiRouter } from './routes/ai.js';
 import { settingsRouter } from './routes/settings.js';
 import { eventsRouter } from './routes/events.js';
 import { publicRouter } from './routes/public.js';
+import { respondersRouter } from './routes/responders.js';
 
 const log = logger('http');
 
@@ -50,6 +51,7 @@ export function createApp(): express.Express {
   app.use('/api/sequences', sequencesRouter);
   app.use('/api/review', reviewRouter);
   app.use('/api/rules', rulesRouter);
+  app.use('/api/responders', respondersRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/events', eventsRouter);

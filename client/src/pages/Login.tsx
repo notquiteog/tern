@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { Button, Field, Input } from '../components/ui';
 import { Feather } from 'lucide-react';
 
 export default function LoginPage() {
-  const { setUser, refresh } = useAuth();
+  const { setUser, refresh, registrationOpen } = useAuth();
   const nav = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -46,6 +46,7 @@ export default function LoginPage() {
         {error && <div className="login-error">{error}</div>}
         <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>{mfa ? 'Verify' : 'Sign in'}</Button>
         {mfa && <Button type="button" variant="ghost" className="w-full mt-8" onClick={() => { setMfa(false); setCode(''); }}>Back</Button>}
+        {registrationOpen && <p className="help-text mt-16" style={{ textAlign: 'center' }}>New here? <Link to="/register">Create an account</Link></p>}
         <p className="help-text mt-16">No password reset by design. An admin can set a new password with <code>tern set-password</code> on the server.</p>
       </form>
     </div>

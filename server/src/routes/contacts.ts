@@ -100,9 +100,19 @@ contactsRouter.post('/', async (req, res) => {
   res.json({ contact: rows[0] });
 });
 
+// Update schemas carry no defaults: a partial update must leave untouched
+// fields alone, and Zod applies .default() even through .partial().
+const contactUpdateSchema = z.object({
+  email: z.string().email().optional(),
+  first_name: z.string().max(120).optional(), last_name: z.string().max(120).optional(), company: z.string().max(200).optional(), title: z.string().max(200).optional(),
+  phone: z.string().max(60).optional(), website: z.string().max(300).optional(), fields: z.record(z.string(), z.unknown()).optional(), tags: z.array(z.string().max(60)).optional(),
+  notes: z.string().max(20000).optional(), consent_source: z.string().max(300).optional(),
+  status: z.enum(['active', 'unsubscribed', 'bounced', 'replied', 'do_not_contact']).optional(), timezone: z.string().max(64).nullable().optional(),
+});
+
 contactsRouter.put('/:id', async (req, res) => {
   const id = idParam(req.params.id);
-  const b = parse(contactSchema.partial(), req.body);
+  const b = parse(contactUpdateSchema, req.body);
   const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
   if (!c) throw notFound('Contact not found');
   const rows = await query<any>(

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, ChevronDown, Clock, Contact, FileText, Feather, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
+import { Archive, BookOpen, Bot, ChevronDown, Clock, Contact, FileText, Feather, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
 import { useAuth } from '../state/auth';
 import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -135,6 +135,7 @@ export function Shell({ children }: { children: ReactNode }) {
             {navItem('/sequences', <Workflow size={17} />, 'Sequences')}
             {navItem('/templates', <BookOpen size={17} />, 'Templates')}
             {navItem('/review', <Sparkles size={17} />, 'AI review', counts?.review, true)}
+            {navItem('/responders', <Bot size={17} />, 'AI responders')}
             {navItem('/rules', <ListFilter size={17} />, 'Rules')}
           </div>
           <div className="nav-section">
@@ -223,6 +224,8 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
     { label: 'Templates', run: () => nav('/templates') },
     { label: 'AI review queue', hint: 'g r', run: () => nav('/review') },
     { label: 'Inbox rules', run: () => nav('/rules') },
+    { label: 'AI responders', run: () => nav('/responders') },
+    { label: 'New AI campaign', run: () => nav('/sequences?campaign=1') },
     { label: 'Settings: Accounts', run: () => nav('/settings/accounts') },
     { label: 'Settings: AI assistant', run: () => nav('/settings/ai') },
     { label: 'Settings: Sending policy', run: () => nav('/settings/accounts') },

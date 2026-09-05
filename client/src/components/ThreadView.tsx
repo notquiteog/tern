@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { AlarmClock, Archive, ArrowLeft, ChevronDown, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink } from 'lucide-react';
+import { AlarmClock, Archive, ArrowLeft, ChevronDown, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -57,12 +57,12 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
     const body = m.body_html ?? (m.body_text ? `<div style="white-space:pre-wrap">${escapeHtml(m.body_text)}</div>` : '');
     return `<div class="tern-quote"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">${header}</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0">${body}</blockquote></div>`;
   }
-  function reply(m: Msg, all = false) {
+  function reply(m: Msg, all = false, autoAi: 'reply' | null = null) {
     const me = account?.email?.toLowerCase();
     const replyTo = m.reply_to?.length ? m.reply_to : m.from_addr;
     const to = replyTo.filter((a) => a.email.toLowerCase() !== me).length ? replyTo.filter((a) => a.email.toLowerCase() !== me) : m.to_addr.filter((a) => a.email.toLowerCase() !== me);
     const cc = all ? [...m.to_addr, ...m.cc_addr].filter((a) => a.email.toLowerCase() !== me && !to.some((t) => t.email.toLowerCase() === a.email.toLowerCase())) : [];
-    compose.open({ accountId, kind: all ? 'reply_all' : 'reply', to, cc, subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`, quoteHtml: quoteOf(m), replyToEmailId: m.id, threadKey: `${accountId}:${threadId}`, contactId: data?.contact?.id ?? null });
+    compose.open({ accountId, kind: all ? 'reply_all' : 'reply', to, cc, subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`, quoteHtml: quoteOf(m), replyToEmailId: m.id, threadKey: `${accountId}:${threadId}`, contactId: data?.contact?.id ?? null, autoAi });
   }
   function forward(m: Msg) {
     const header = `<div style="color:#5b6274;font-size:12.5px">---------- Forwarded message ----------<br>From: ${escapeHtml(addrFull(m.from_addr?.[0]))}<br>Date: ${fmtDateTime(m.received_at)}<br>Subject: ${escapeHtml(m.subject)}<br>To: ${escapeHtml(m.to_addr.map(addrFull).join(', '))}</div><br>`;
@@ -113,6 +113,7 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
           </>}
         </Menu>
         <div className="ml-auto row gap-4">
+          <Button size="sm" variant="ai" icon={<Bot size={14} />} onClick={() => last && reply(last, false, 'reply')}>AI reply</Button>
           <Button size="sm" variant="ai" icon={<Sparkles size={14} />} onClick={summarize} loading={summarizing}>Summarize</Button>
         </div>
       </div>
@@ -183,6 +184,8 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
               </div>
             );
           })}
+          {(data?.drafts ?? []).filter((d: any) => d.source === 'ai').map((d: any) => <SuggestedReply key={d.id} draft={d} accountId={accountId} threadId={threadId} />)}
+          {data?.aiPending > 0 && <div className="card mb-16" style={{ background: 'var(--accent-soft)', borderColor: 'transparent' }}><div className="row small"><Spinner size={14} /> An AI responder is writing a reply to this thread…</div></div>}
           <div className="reply-bar">
             <Button icon={<Reply size={15} />} onClick={() => reply(last)}>Reply</Button>
             <Button icon={<ReplyAll size={15} />} onClick={() => reply(last, true)}>Reply all</Button>
@@ -236,6 +239,37 @@ function ContextCard({ data, accountId, onOpenContact }: { data: any; accountId:
           <Button size="sm" icon={<Contact size={14} />} onClick={addContact} loading={adding}>Add to contacts</Button>
         </>
       ) : <div className="small muted">No external participants.</div>}
+    </div>
+  );
+}
+
+
+// A reply an AI responder prepared. Open it in the composer to edit, send it
+// as it is, or discard it.
+function SuggestedReply({ draft, accountId, threadId }: { draft: any; accountId: number; threadId: string }) {
+  const compose = useCompose();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const refresh = () => { qc.invalidateQueries({ queryKey: ['thread', accountId, threadId] }); qc.invalidateQueries({ queryKey: ['drafts'] }); qc.invalidateQueries({ queryKey: ['counts'] }); };
+  async function sendNow() {
+    setBusy(true);
+    try {
+      await api.post('/api/mail/send', { accountId, to: draft.to_addr, cc: draft.cc_addr, bcc: draft.bcc_addr, subject: draft.subject, html: draft.body_html, replyToEmailId: draft.reply_to_email_id, draftId: draft.id });
+      toast.success('Sent'); refresh();
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function discard() { await api.del(`/api/mail/drafts/${draft.id}`); refresh(); }
+  return (
+    <div className="card mb-16" style={{ borderColor: 'var(--accent)' }}>
+      <div className="row mb-8"><Bot size={15} /><span className="strong small">Suggested reply{draft.responder_name ? ` · ${draft.responder_name}` : ''}</span><span className="small faint">{fmtRelative(draft.created_at)}</span><span className="ml-auto small muted">to {(draft.to_addr ?? []).map((a: any) => a.email).join(', ')}</span></div>
+      <div className="strong small mb-8">{draft.subject}</div>
+      <div className="msg-text" style={{ fontSize: 13.5 }} dangerouslySetInnerHTML={{ __html: String(draft.body_html).split('<div class="tern-quote"')[0] }} />
+      <div className="row mt-16 gap-4">
+        <Button size="sm" variant="primary" icon={<Send size={13} />} loading={busy} onClick={sendNow}>Send</Button>
+        <Button size="sm" icon={<Pencil size={13} />} onClick={() => compose.open({ draftId: draft.id, accountId, kind: 'reply', to: draft.to_addr, cc: draft.cc_addr, bcc: draft.bcc_addr, subject: draft.subject, html: draft.body_html, replyToEmailId: draft.reply_to_email_id, threadKey: `${accountId}:${threadId}` })}>Edit</Button>
+        <Button size="sm" variant="ghost" icon={<X size={13} />} onClick={discard}>Discard</Button>
+      </div>
     </div>
   );
 }

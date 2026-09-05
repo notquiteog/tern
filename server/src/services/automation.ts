@@ -15,6 +15,15 @@ const STOP_RE = /^\s*(?:please\s+)?(?:stop|unsubscribe|remove me|opt[\s-]?out|no
 const BOUNCE_FROM_RE = /mailer-daemon|postmaster|mail delivery|delivery status|no-?reply@.*\b(bounce|mailer)/i;
 const BOUNCE_SUBJECT_RE = /undeliver|delivery (?:status|failure|has failed)|returned mail|failure notice|mail delivery failed|could not be delivered|delivery notification/i;
 
+// Newsletters, notifications and other machine mail: never auto-answer these.
+export function isListMail(e: any): boolean {
+  if (e['header:List-Unsubscribe:asText'] || e['header:List-Id:asText']) return true;
+  const prec = String(e['header:Precedence:asText'] ?? '').toLowerCase();
+  if (/bulk|list|junk/.test(prec)) return true;
+  const from = String(e.from?.[0]?.email ?? '').toLowerCase();
+  return /^(no-?reply|do-?not-?reply|notifications?|noreply|newsletter|mailer-daemon|postmaster|bounce)/.test(from.split('@')[0] ?? '');
+}
+
 function firstLines(text: string | null, n = 6): string {
   if (!text) return '';
   return text.split('\n').filter((l) => !l.trim().startsWith('>')).slice(0, n).join('\n');
@@ -26,6 +35,7 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
   const roleOf = new Map(mailboxes.map((m) => [m.jmap_id, m.role]));
   const inboxId = mailboxes.find((m) => m.role === 'inbox')?.jmap_id;
   const rules = await query<any>(`SELECT * FROM rules WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
+  const responders = await query<any>(`SELECT * FROM responders WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
 
   for (const e of fresh) {
     const fromEmail: string = (e.from?.[0]?.email ?? '').toLowerCase();
@@ -74,6 +84,42 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
     if (rules.length && inboxId && mailboxIds.includes(inboxId)) {
       try { await applyRules(acc, e, rules, text); } catch (err) { log.error('rule application failed', { err: (err as Error).message }); }
     }
+    if (responders.length && !isAuto && !bounceLike) {
+      try { await enqueueResponders(acc, e, responders, text, roles); } catch (err) { log.error('responder queueing failed', { err: (err as Error).message }); }
+    }
+  }
+}
+
+// ---------- AI responders ----------
+// Matching happens here, at sync time; the slow part (asking the model) is a
+// job the scheduler works through so a mailbox sync is never blocked on a
+// 30-second generation.
+async function enqueueResponders(acc: AccountRow, e: any, responders: any[], text: string, roles: (string | null | undefined)[]): Promise<void> {
+  if (roles.includes('junk') || roles.includes('spam') || roles.includes('trash')) return;
+  const fromEmail: string = (e.from?.[0]?.email ?? '').toLowerCase();
+  if (!fromEmail) return;
+  for (const r of responders) {
+    if (r.skip_lists && isListMail(e)) continue;
+    const conds: RuleCondition[] = Array.isArray(r.conditions) ? r.conditions : [];
+    if (conds.length && !ruleMatches(r, e, text)) continue;
+    if (r.only_contacts) {
+      const c = await one('SELECT 1 FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, fromEmail]);
+      if (!c) continue;
+    }
+    // Loop and flood protection: one answer per thread per cooldown, and a daily cap per responder.
+    const recent = await one(
+      `SELECT 1 FROM send_log WHERE responder_id=$1 AND thread_id=$2 AND sent_at > now() - ($3 || ' hours')::interval
+       UNION ALL SELECT 1 FROM drafts WHERE responder_id=$1 AND thread_id=$2 AND created_at > now() - ($3 || ' hours')::interval
+       UNION ALL SELECT 1 FROM review_queue WHERE responder_id=$1 AND thread_id=$2 AND created_at > now() - ($3 || ' hours')::interval
+       UNION ALL SELECT 1 FROM ai_jobs WHERE kind='responder' AND (payload->>'responderId')::bigint=$1 AND payload->>'threadId'=$2 AND status IN ('pending','running') LIMIT 1`,
+      [r.id, e.threadId, String(r.cooldown_hours ?? 24)],
+    );
+    if (recent) continue;
+    const today = await one<{ n: number }>(`SELECT (SELECT count(*) FROM send_log WHERE responder_id=$1 AND sent_at > now() - interval '24 hours') + (SELECT count(*) FROM drafts WHERE responder_id=$1 AND created_at > now() - interval '24 hours') + (SELECT count(*) FROM review_queue WHERE responder_id=$1 AND created_at > now() - interval '24 hours') AS n`, [r.id]);
+    if ((today?.n ?? 0) >= (r.daily_cap ?? 20)) { log.info('responder daily cap reached', { responder: r.id }); continue; }
+    await query(`INSERT INTO ai_jobs (user_id, kind, payload) VALUES ($1, 'responder', $2)`, [acc.user_id, JSON.stringify({ responderId: r.id, accountId: acc.id, emailDbId: e._id, jmapId: e.id, threadId: e.threadId })]);
+    log.info('responder queued', { responder: r.id, email: e.id });
+    break; // first matching responder wins
   }
 }
 

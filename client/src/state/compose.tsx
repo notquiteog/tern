@@ -14,6 +14,7 @@ export interface ComposeSeed {
   contactId?: number | null;
   draftId?: number | null;
   attachments?: { id: number; filename: string; size: number; content_type: string }[];
+  autoAi?: 'reply' | 'compose' | null;
 }
 export interface ComposeWindow extends ComposeSeed { key: number; minimized: boolean; maximized: boolean }
 interface Ctx { windows: ComposeWindow[]; open: (seed?: ComposeSeed) => void; close: (key: number) => void; update: (key: number, patch: Partial<ComposeWindow>) => void }

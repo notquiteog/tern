@@ -76,7 +76,21 @@ These apply to sequences and to "Send with a natural delay". Manual sends are ne
 
 For sequences, a step's **AI personalise** switch has the model write each contact's message from the template brief and the contact's fields and notes. With the sequence's AI mode on **Review** (the default), those drafts wait in **AI review** for approval.
 
-## 7. Keep it running
+## 7. Let the model answer mail
+
+**Responders → New responder.** Start in *Draft* mode: each matching message
+gets a suggested reply in its thread and under Drafts, and you press Send.
+Use "Try it" to see what it would write to your latest message. Switch to
+*Review* or *Send automatically* once the tone is right. Details and safety
+valves are in [CUSTOMIZING.md](CUSTOMIZING.md#ai-responders).
+
+## 8. Add your team
+
+**Settings → Users.** Create accounts directly, or make an invite link and
+send it; the person picks their own password. Open self-registration is a
+switch on the same page, off by default.
+
+## 9. Keep it running
 
 | Task | Command |
 |---|---|

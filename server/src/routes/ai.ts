@@ -4,7 +4,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
 import { chatStream, deleteModel, getAiSettings, listModels, loadedModels, ollamaHealth, pullModel, saveAiSettings, aiDefaults } from '../ai/llm.js';
-import { buildMessages, cleanOutput, type DraftInput } from '../ai/prompts.js';
+import { buildMessages, cleanOutput, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
 import { getUserAccount } from '../services/accounts.js';
@@ -41,11 +41,13 @@ aiRouter.get('/status', async (_req, res) => {
     curated: CURATED_MODELS,
     totalMemGiB: Math.round((config.totalMemBytes / 1024 ** 3) * 10) / 10,
     defaults: (({ apiKey: _k, ...d }) => d)(aiDefaults()),
+    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
   });
 });
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
-  const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(32768).optional(), keepAlive: z.string().max(20).optional() }), req.body);
+  const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(32768).optional(), keepAlive: z.string().max(20).optional(),
+    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(), maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
   const next = await saveAiSettings(b);
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
@@ -92,7 +94,7 @@ aiRouter.post('/draft', async (req, res) => {
   const s = await getAiSettings();
   if (!s.enabled) throw badRequest('AI drafting is turned off');
   const acc = b.accountId ? await getUserAccount(req.user!.id, b.accountId) : null;
-  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, draft: b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template };
+  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, draft: b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice };
   if (b.contactId) {
     const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [b.contactId, req.user!.id]);
     if (c) input.recipient = { name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email, company: c.company, title: c.title, notes: c.notes, fields: c.fields };

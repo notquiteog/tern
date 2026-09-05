@@ -12,9 +12,9 @@ const MODES: { value: AiMode; label: string; needsDraft?: boolean }[] = [
 ];
 const TONES = ['friendly', 'professional', 'casual', 'direct', 'warm', 'formal', 'enthusiastic'];
 
-export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, getDraft }: {
+export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, getDraft, autoRun }: {
   context: { accountId?: number | null; contactId?: number | null; threadKey?: string | null; subject?: string; recipientEmail?: string };
-  onInsert: (html: string, mode: AiMode) => void; onSubject: (s: string) => void; onClose: () => void; defaultMode?: AiMode; getDraft: () => string;
+  onInsert: (html: string, mode: AiMode) => void; onSubject: (s: string) => void; onClose: () => void; defaultMode?: AiMode; getDraft: () => string; autoRun?: boolean;
 }) {
   const { data: ai } = useAiStatus();
   const [mode, setMode] = useState<AiMode>(defaultMode ?? (context.threadKey ? 'reply' : 'compose'));
@@ -26,9 +26,10 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const abort = useRef<AbortController | null>(null);
-  useEffect(() => () => abort.current?.abort(), []);
-
   const unavailable = ai && (!ai.settings.enabled || !ai.health.ok || !ai.modelInstalled);
+  useEffect(() => () => abort.current?.abort(), []);
+  const ranOnce = useRef(false);
+  useEffect(() => { if (autoRun && ai && !unavailable && !ranOnce.current) { ranOnce.current = true; void run(); } /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [autoRun, ai]);
 
   async function run() {
     setBusy(true); setOut(''); setFinal(null); setError('');
