@@ -1,0 +1,8 @@
+# Optional overlay: hand an NVIDIA GPU to Ollama. Requires the NVIDIA
+# container toolkit with CDI configured (`nvidia-ctk cdi generate`).
+services:
+  ollama:
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable

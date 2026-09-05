@@ -1,0 +1,16 @@
+[Unit]
+Description=Tern outreach inbox (podman-compose)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=${INSTALL_DIR}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/bin/tern up
+ExecStop=${INSTALL_DIR}/bin/tern down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

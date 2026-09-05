@@ -1,0 +1,23 @@
+{
+  "name": "tern",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted outreach inbox: a Gmail-style web client for any JMAP mailbox, with sequences, humanised send timing and a local LLM drafting assistant.",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client && npm run build -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "test": "npm test -w server",
+    "start": "node server/dist/index.js",
+    "cli": "node server/dist/cli.js"
+  }
+}

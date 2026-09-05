@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Operator wrapper around podman-compose for a Tern install.
+#   ./bin/tern up | down | restart [service] | ps | logs [service] | build
+#   ./bin/tern cli <args>            run tern-cli inside the app container
+#   ./bin/tern pull-model <name>     download an Ollama model
+#   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
+#   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
+#   ./bin/tern backup [dir]          dump the database and the .env into a dated tarball
+#   ./bin/tern restore <tarball>     restore a backup made by `backup`
+#   ./bin/tern update                same as ./update.sh
+#   ./bin/tern compose <args>        raw podman-compose with the right files
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+[ -f .env ] || { echo "No .env yet; run ./install.sh first." >&2; exit 1; }
+# shellcheck disable=SC1091
+set -a; . ./.env; set +a
+export COMPOSE_FILE="${COMPOSE_FILE:-compose.yml}"
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null; then exec sudo -E "$0" "$@"; fi
+compose() { podman-compose --env-file "$ROOT/.env" "$@"; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  up)        compose up -d --remove-orphans "$@" ;;
+  down)      compose down "$@" ;;
+  restart)   compose restart "$@" ;;
+  ps)        compose ps "$@" ;;
+  logs)      compose logs -f --tail=200 "$@" ;;
+  build)     compose build app "$@" ;;
+  compose)   compose "$@" ;;
+  cli)       compose exec -T app tern-cli "$@" ;;
+  pull-model) compose exec -T ollama ollama pull "${1:?model name}" ;;
+  update)    exec "$ROOT/update.sh" "$@" ;;
+  stalwart-api)
+    [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled." >&2; exit 1; }
+    curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" \
+      -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":${1:?methodCalls json}}"; echo ;;
+  cert-sync)
+    # Caddy owns 80/443 and therefore the ACME certificate for the mail host.
+    # Stalwart needs the same certificate for SMTP/IMAP TLS, so copy it in
+    # through the management API and make it the default. Idempotent; the
+    # systemd timer runs it daily to pick up renewals.
+    [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled."; exit 0; }
+    SW="http://127.0.0.1:${STALWART_HTTP_PORT:-8080}"
+    api() { curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "$SW/jmap" -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}"; }
+    CERT_DIR="/data/caddy/certificates"
+    CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
+    KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+    if [ -z "$CRT" ] || [ -z "$KEY" ]; then echo "No certificate for $STALWART_HOST in Caddy yet (DNS must point here and port 80/443 must be reachable)." >&2; exit 2; fi
+    esc() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || { printf '"%s"' "$(sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')"; }; }
+    CRT_J="$(printf '%s\n' "$CRT" | esc)"; KEY_J="$(printf '%s\n' "$KEY" | esc)"
+    EXISTING="$(api '[["x:Certificate/get",{"ids":null,"properties":["id","subjectAlternativeNames"]},"c1"]]' | sed -n "s/.*{\"id\":\"\([^\"]*\)\",\"subjectAlternativeNames\":{[^}]*\"$STALWART_HOST\".*/\1/p" | head -1)"
+    if [ -z "$EXISTING" ]; then
+      EXISTING="$(api '[["x:Certificate/get",{"ids":null,"properties":["id"]},"c1"]]' | sed -n 's/.*"list":\[{"id":"\([^"]*\)".*/\1/p')"
+    fi
+    if [ -n "$EXISTING" ]; then
+      R="$(api "[[\"x:Certificate/set\",{\"update\":{\"$EXISTING\":{\"certificate\":{\"@type\":\"Text\",\"value\":$CRT_J},\"privateKey\":{\"@type\":\"Text\",\"secret\":$KEY_J}}}},\"c1\"]]")"
+      CID="$EXISTING"
+      echo "$R" | grep -q '"updated"' || { echo "update failed: $R" >&2; exit 1; }
+    else
+      R="$(api "[[\"x:Certificate/set\",{\"create\":{\"c\":{\"certificate\":{\"@type\":\"Text\",\"value\":$CRT_J},\"privateKey\":{\"@type\":\"Text\",\"secret\":$KEY_J}}}},\"c1\"]]")"
+      CID="$(echo "$R" | sed -n 's/.*"created":{"c":{"id":"\([^"]*\)".*/\1/p')"
+      [ -n "$CID" ] || { echo "create failed: $R" >&2; exit 1; }
+    fi
+    api "[[\"x:SystemSettings/set\",{\"update\":{\"singleton\":{\"defaultCertificateId\":\"$CID\"}}},\"c1\"]]" >/dev/null
+    echo "Certificate for $STALWART_HOST installed in Stalwart (id $CID)." ;;
+  backup)
+    DEST="${1:-$ROOT/backups}"; mkdir -p "$DEST"
+    STAMP="$(date +%Y%m%d-%H%M%S)"; TMP="$(mktemp -d)"
+    compose exec -T db pg_dump -U tern -d tern --no-owner --format=custom > "$TMP/tern.pgdump"
+    cp .env "$TMP/env"
+    tar -C "$TMP" -czf "$DEST/tern-backup-$STAMP.tar.gz" tern.pgdump env
+    rm -rf "$TMP"
+    echo "Backup written to $DEST/tern-backup-$STAMP.tar.gz (database + .env; Ollama models and Stalwart data are not included)" ;;
+  restore)
+    TARBALL="${1:?path to backup tarball}"; TMP="$(mktemp -d)"
+    tar -C "$TMP" -xzf "$TARBALL"
+    echo "Restoring the database from $TARBALL (this replaces the current data)…"
+    compose stop app >/dev/null
+    compose exec -T db psql -U tern -d postgres -c "DROP DATABASE IF EXISTS tern_restore;" -c "CREATE DATABASE tern_restore OWNER tern;" >/dev/null
+    compose exec -T db pg_restore -U tern -d tern_restore --no-owner < "$TMP/tern.pgdump"
+    compose exec -T db psql -U tern -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='tern';" -c "DROP DATABASE tern;" -c "ALTER DATABASE tern_restore RENAME TO tern;" >/dev/null
+    compose start app >/dev/null
+    rm -rf "$TMP"
+    echo "Restored. If the backup came from another machine, copy its ENCRYPTION_KEY into .env or mailbox credentials will not decrypt." ;;
+  help|*)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

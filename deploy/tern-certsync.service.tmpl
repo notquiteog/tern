@@ -1,0 +1,7 @@
+[Unit]
+Description=Copy the mail host's TLS certificate from Caddy into Stalwart
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/bin/tern cert-sync

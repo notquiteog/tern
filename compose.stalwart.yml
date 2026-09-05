@@ -1,0 +1,40 @@
+# Optional overlay: a Stalwart mail server on this box. Enabled by install.sh
+# when you answer yes to "run a mail server here"; it is layered on top of
+# compose.yml via COMPOSE_FILE in .env.
+services:
+  stalwart:
+    image: ${STALWART_IMAGE:-docker.io/stalwartlabs/stalwart:v0.16}
+    restart: unless-stopped
+    environment:
+      # Only read while the server is in bootstrap or recovery mode; blank
+      # otherwise. install.sh sets it for first-run provisioning and clears it.
+      STALWART_RECOVERY_ADMIN: ${STALWART_RECOVERY_ADMIN:-}
+      STALWART_RECOVERY_MODE: ${STALWART_RECOVERY_MODE:-}
+      STALWART_PUBLIC_URL: https://${STALWART_HOST}
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "4190:4190"
+      # Plain HTTP admin/JMAP for the installer and for SSH-tunnelled access.
+      - "127.0.0.1:${STALWART_HTTP_PORT:-8080}:8080"
+    volumes:
+      - tern-stalwart-etc:/etc/stalwart
+      - tern-stalwart-data:/var/lib/stalwart
+    mem_limit: ${STALWART_MEM_LIMIT:-768m}
+
+  app:
+    environment:
+      STALWART_URL: http://stalwart:8080
+      STALWART_HOST: ${STALWART_HOST}
+    depends_on:
+      - stalwart
+
+  caddy:
+    depends_on:
+      - stalwart
+
+volumes:
+  tern-stalwart-etc:
+  tern-stalwart-data:

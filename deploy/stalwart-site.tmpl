@@ -1,0 +1,8 @@
+
+# The bundled mail server's web endpoints (admin panel, JMAP, autoconfig).
+https://${STALWART_HOST} {
+	encode zstd gzip
+	reverse_proxy stalwart:8080 {
+		flush_interval -1
+	}
+}

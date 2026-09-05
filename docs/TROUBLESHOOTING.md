@@ -1,0 +1,90 @@
+# Troubleshooting
+
+## Where to look
+
+```bash
+./bin/tern ps                 # container status
+./bin/tern logs app           # application log (sync, sends, errors)
+./bin/tern logs caddy         # TLS and proxy
+./bin/tern logs ollama        # model loading
+./bin/tern logs stalwart      # mail server
+./bin/tern cli stats          # row counts
+```
+
+Settings → Accounts shows each mailbox's sync state and last error; Settings
+→ AI shows whether the model server is reachable and the model installed;
+Settings → General shows the audit log.
+
+## The site does not load / certificate errors
+
+- DNS must point at the server before Caddy can get a certificate. Check `dig
+  +short your.host`; then `./bin/tern logs caddy` for `obtaining certificate`.
+- Ports 80 and 443 must be open at the provider firewall and on the box.
+- Behind another proxy or a CDN, set `SITE_ADDRESS=:80` in `.env`, terminate
+  TLS there and keep `APP_URL` as the public https URL.
+
+## "Mail server rejected the credentials"
+
+- Fastmail: the API token needs Mail read/write scope; tokens are shown once.
+- Stalwart: use the full address (`alex@team.example.com`) and the mailbox
+  password, or an app password.
+- After changing a password, edit the account in Tern and enter the new one;
+  syncing resumes automatically.
+
+## Mail is syncing but sending fails
+
+- "Blob upload failed" or "Send rejected": the server refused the message.
+  For Stalwart, check the account is allowed to send (`emailSend`) and that
+  the From address is one of its identities.
+- "no JMAP submission": the server cannot send over JMAP; add SMTP details
+  under Edit account → Connection.
+- Sequence steps show their last error in the enrollments table; they retry
+  every 30 minutes.
+
+## Sequence is active but nothing goes out
+
+In order of likelihood:
+
+1. The send window is closed (see the account card on the Overview page).
+2. The daily cap is reached.
+3. The contact is unsubscribed, bounced or on the suppression list.
+4. The sequence's AI mode is Review and the drafts are waiting under AI review.
+5. The account is paused.
+
+The enrollments table shows each contact's status and next send time.
+
+## Replies are not detected
+
+Replies are matched by threading headers and by the sender's address. If the
+reply came from a different address than the one enrolled, add that address
+as a contact or merge it manually. Auto-replies (`Auto-Submitted`) are ignored
+on purpose.
+
+## The assistant is slow or unavailable
+
+- On a CPU-only 4.5 GB box a 1.5B model takes 10 to 30 seconds for a draft.
+  The first request after ten idle minutes also has to load the model.
+- "not downloaded": pull it under Settings → AI or `./bin/tern pull-model`.
+- Out of memory: pick a smaller model, or lower `OLLAMA_MEM_LIMIT` so the
+  container is limited before the host swaps.
+
+## Stalwart
+
+- Admin panel over an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 server`, then
+  `http://127.0.0.1:8080/admin`.
+- Lost the admin password: set `STALWART_RECOVERY_MODE=1` and
+  `STALWART_RECOVERY_ADMIN=recovery:newpass` in `.env`, `./bin/tern up`,
+  fix things via the panel on port 8080, then clear both and `./bin/tern up`.
+- No TLS on SMTP/IMAP: `./bin/tern cert-sync` after Caddy has the
+  certificate for the mail host; it exits 2 if Caddy does not have it yet.
+- Not receiving mail: port 25 inbound, MX record, and `./bin/tern logs stalwart`.
+- Not delivering: port 25 outbound, reverse DNS, SPF/DKIM published.
+
+## Recovery
+
+- Lost admin password: `./bin/tern cli set-password --username admin --password '…'`.
+- Locked out by 2FA: `./bin/tern cli disable-totp --username admin`.
+- Restore a backup: `./bin/tern restore backups/tern-backup-….tar.gz`. The
+  backup's `.env` carries the `ENCRYPTION_KEY`; without the original key,
+  stored mailbox credentials cannot be decrypted and must be re-entered.
+- Full reset: `./bin/tern down`, `podman volume rm tern_tern-db`, `./install.sh`.
