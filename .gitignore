@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.*
+!.env.dev.example
 !.env.example
 deploy/generated/
 *.log
