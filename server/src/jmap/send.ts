@@ -4,6 +4,7 @@
 // replies against. JMAP is preferred: the sent copy lands in the mailbox's
 // Sent folder as part of the same request and threads correctly everywhere.
 import nodemailer from 'nodemailer';
+import { createRequire } from 'node:module';
 import { clientFor, type AccountRow } from '../services/accounts.js';
 import { decrypt, randomToken } from '../crypto.js';
 import { mailboxByRole } from './actions.js';
@@ -12,9 +13,16 @@ import { logger } from '../log.js';
 import { htmlToText } from '../services/merge.js';
 
 const log = logger('send');
+// nodemailer's MIME node is the only builder we need for PGP envelopes; it is
+// not on the package's public type surface, hence the require.
+const MimeNode: any = createRequire(import.meta.url)('nodemailer/lib/mime-node');
 
 export interface Address { name?: string | null; email: string }
 export interface OutgoingAttachment { filename: string; content: Buffer; contentType: string; cid?: string }
+// A message the browser or the server already protected with OpenPGP.
+//   encrypted: `armored` is the ciphertext of a complete inner MIME part (RFC 3156 multipart/encrypted)
+//   signed:    `inner` is the exact MIME part that was signed, `signature` the detached signature
+export interface PgpPayload { mode: 'encrypted' | 'signed'; armored?: string; inner?: string; signature?: string }
 export interface OutgoingMessage {
   from: Address;
   to: Address[];
@@ -29,6 +37,7 @@ export interface OutgoingMessage {
   headers?: Record<string, string>;
   attachments?: OutgoingAttachment[];
   messageId?: string;
+  pgp?: PgpPayload | null;
 }
 export interface SendOutcome { messageId: string; jmapEmailId: string | null; threadId: string | null; via: 'jmap' | 'smtp' }
 
@@ -41,8 +50,57 @@ export function newMessageId(fromEmail: string): string {
   return `<${randomToken(12).toLowerCase().replace(/[^a-z0-9]/g, '')}.${Date.now().toString(36)}@${domain}>`;
 }
 
+// The part that gets encrypted or signed: text and HTML alternatives plus
+// attachments, without the envelope headers the builder adds to a root node.
+export async function buildInnerMime(msg: { html: string; text?: string; attachments?: OutgoingAttachment[] }): Promise<string> {
+  const alt = new MimeNode('multipart/alternative');
+  alt.createChild('text/plain; charset=utf-8').setContent(msg.text ?? htmlToText(msg.html));
+  alt.createChild('text/html; charset=utf-8').setContent(msg.html);
+  let root = alt;
+  if (msg.attachments?.length) {
+    root = new MimeNode('multipart/mixed');
+    root.appendChild(alt);
+    for (const a of msg.attachments) {
+      const n = root.createChild(a.contentType);
+      n.setHeader('Content-Disposition', `${a.cid ? 'inline' : 'attachment'}; filename="${a.filename.replace(/["\r\n]/g, '_')}"`);
+      if (a.cid) n.setHeader('Content-ID', `<${a.cid}>`);
+      n.setContent(a.content);
+    }
+  }
+  const built = (await root.build()).toString('utf8');
+  const split = built.indexOf('\r\n\r\n');
+  const headers = built.slice(0, split).split('\r\n').filter((l: string) => !/^(Date|Message-ID|MIME-Version):/i.test(l));
+  return headers.join('\r\n') + built.slice(split);
+}
+
+function pgpEnvelope(msg: OutgoingMessage, messageId: string): any {
+  const pgp = msg.pgp!;
+  const root = new MimeNode(pgp.mode === 'encrypted' ? 'multipart/encrypted; protocol="application/pgp-encrypted"' : 'multipart/signed; protocol="application/pgp-signature"; micalg="pgp-sha256"');
+  const headers: Record<string, unknown> = { From: [toNm(msg.from)], To: msg.to.map(toNm), Subject: msg.subject, 'Message-ID': messageId, ...(msg.headers ?? {}) };
+  if (msg.cc?.length) headers.Cc = msg.cc.map(toNm);
+  if (msg.replyTo?.length) headers['Reply-To'] = msg.replyTo.map(toNm);
+  if (msg.inReplyTo) headers['In-Reply-To'] = bracket(msg.inReplyTo);
+  if (msg.references?.length) headers.References = msg.references.map(bracket).join(' ');
+  root.setHeader(headers);
+  if (pgp.mode === 'encrypted') {
+    if (!pgp.armored) throw new Error('encrypted message without ciphertext');
+    const v = root.createChild('application/pgp-encrypted'); v.setHeader('Content-Description', 'PGP/MIME version identification'); v.setHeader('Content-Transfer-Encoding', '7bit'); v.setContent('Version: 1\r\n');
+    const c = root.createChild('application/octet-stream'); c.setHeader('Content-Description', 'OpenPGP encrypted message'); c.setHeader('Content-Disposition', 'inline; filename="encrypted.asc"'); c.setHeader('Content-Transfer-Encoding', '7bit'); c.setContent(pgp.armored.replace(/\r?\n/g, '\r\n'));
+  } else {
+    if (!pgp.inner || !pgp.signature) throw new Error('signed message without body or signature');
+    root.createChild().setRaw(pgp.inner);
+    const s = root.createChild('application/pgp-signature'); s.setHeader('Content-Description', 'OpenPGP digital signature'); s.setHeader('Content-Disposition', 'attachment; filename="signature.asc"'); s.setHeader('Content-Transfer-Encoding', '7bit'); s.setContent(pgp.signature.replace(/\r?\n/g, '\r\n'));
+  }
+  return root;
+}
+
 export async function buildMime(msg: OutgoingMessage): Promise<{ raw: Buffer; messageId: string }> {
   const messageId = msg.messageId ? bracket(msg.messageId) : newMessageId(msg.from.email);
+  if (msg.pgp) {
+    const raw: Buffer = await pgpEnvelope(msg, messageId).build();
+    // Bcc never appears in the envelope headers; submission gets the full recipient list separately.
+    return { raw, messageId };
+  }
   const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' });
   const info = await transport.sendMail({
     from: toNm(msg.from),

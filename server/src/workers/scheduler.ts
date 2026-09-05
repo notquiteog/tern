@@ -231,6 +231,7 @@ async function runEnrollment(enr: any): Promise<void> {
     inReplyTo: threaded ? enr.last_message_id : null,
     references: threaded ? [enr.last_message_id] : [],
     unsubscribeFooter: seq.unsubscribe_footer,
+    encrypt: seq.encrypt_pgp ? 'if_possible' : null,
   });
 
   const nextIndex = enr.current_step + 1;
@@ -373,7 +374,8 @@ async function runResponderJob(job: any): Promise<string> {
     publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
     return 'queued for review';
   }
-  const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true };
+  // A reply to someone whose key is on file goes back encrypted.
+  const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible' };
   if (responder.humanize) {
     await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, JSON.stringify({ ...payload, humanize: true })]);
     return 'queued to send with natural delay';

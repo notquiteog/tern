@@ -83,6 +83,19 @@ Nothing leaves your server except the mail itself.
 - AI drafts always open with a greeting to the actual recipient: the
   salutation is checked and corrected after generation, so a small model
   cannot greet the wrong person or invent a name.
+
+**OpenPGP**
+- Generate or import a key pair under Settings → Encryption. The private key
+  is stored only passphrase-protected and unlocked in your browser; the
+  server never has a usable copy.
+- Mail to anyone whose public key is on file (contact card, pasted, or found
+  through their Web Key Directory and keys.openpgp.org) is encrypted by
+  default, and you can sign per message. Sequences and AI responders encrypt
+  to contacts with keys too. Encrypted mail you receive is decrypted in the
+  browser, with signatures verified against known keys.
+- Use the key to sign in: as a second factor after the password, or with no
+  password at all. Works from browsers that hold the key, or by decrypting
+  the challenge with GnuPG.
 - Optional Stalwart mail server on the same box, bootstrapped by the
   installer, with mailbox creation, password resets, a guided DNS setup with
   live verification (A, reverse DNS, MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT,

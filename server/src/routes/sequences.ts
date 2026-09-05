@@ -29,12 +29,13 @@ const seqSchema = z.object({
   stop_on_reply: z.boolean().default(true),
   ai_mode: z.enum(['off', 'review', 'auto']).default('review'),
   unsubscribe_footer: z.boolean().default(true),
+  encrypt_pgp: z.boolean().default(false),
   steps: z.array(stepSchema).optional(),
 });
 
 const seqUpdateSchema = z.object({
   name: z.string().min(1).max(200).optional(), description: z.string().max(5000).optional(), account_id: z.number().int().nullable().optional(),
-  stop_on_reply: z.boolean().optional(), ai_mode: z.enum(['off', 'review', 'auto']).optional(), unsubscribe_footer: z.boolean().optional(), steps: z.array(stepSchema).optional(),
+  stop_on_reply: z.boolean().optional(), ai_mode: z.enum(['off', 'review', 'auto']).optional(), unsubscribe_footer: z.boolean().optional(), encrypt_pgp: z.boolean().optional(), steps: z.array(stepSchema).optional(),
 });
 
 async function seqOf(userId: number, id: number) {
@@ -61,7 +62,7 @@ sequencesRouter.post('/', async (req, res) => {
   const b = parse(seqSchema, req.body);
   if (b.account_id && !(await getUserAccount(req.user!.id, b.account_id))) throw badRequest('Account not found');
   const seq = await withTx(async (c) => {
-    const r = await c.query('INSERT INTO sequences (user_id, name, description, account_id, stop_on_reply, ai_mode, unsubscribe_footer) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *', [req.user!.id, b.name, b.description, b.account_id ?? null, b.stop_on_reply, b.ai_mode, b.unsubscribe_footer]);
+    const r = await c.query('INSERT INTO sequences (user_id, name, description, account_id, stop_on_reply, ai_mode, unsubscribe_footer, encrypt_pgp) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *', [req.user!.id, b.name, b.description, b.account_id ?? null, b.stop_on_reply, b.ai_mode, b.unsubscribe_footer, b.encrypt_pgp]);
     const s = r.rows[0];
     let pos = 0;
     for (const st of b.steps ?? []) {
@@ -87,7 +88,7 @@ sequencesRouter.put('/:id', async (req, res) => {
   const b = parse(seqUpdateSchema, req.body);
   if (b.account_id && !(await getUserAccount(req.user!.id, b.account_id))) throw badRequest('Account not found');
   await withTx(async (c) => {
-    await c.query(`UPDATE sequences SET name=COALESCE($3,name), description=COALESCE($4,description), account_id=COALESCE($5,account_id), stop_on_reply=COALESCE($6,stop_on_reply), ai_mode=COALESCE($7,ai_mode), unsubscribe_footer=COALESCE($8,unsubscribe_footer), updated_at=now() WHERE id=$1 AND user_id=$2`, [id, req.user!.id, b.name ?? null, b.description ?? null, b.account_id ?? null, b.stop_on_reply ?? null, b.ai_mode ?? null, b.unsubscribe_footer ?? null]);
+    await c.query(`UPDATE sequences SET name=COALESCE($3,name), description=COALESCE($4,description), account_id=COALESCE($5,account_id), stop_on_reply=COALESCE($6,stop_on_reply), ai_mode=COALESCE($7,ai_mode), unsubscribe_footer=COALESCE($8,unsubscribe_footer), encrypt_pgp=COALESCE($9,encrypt_pgp), updated_at=now() WHERE id=$1 AND user_id=$2`, [id, req.user!.id, b.name ?? null, b.description ?? null, b.account_id ?? null, b.stop_on_reply ?? null, b.ai_mode ?? null, b.unsubscribe_footer ?? null, b.encrypt_pgp ?? null]);
     if (b.steps) {
       // Replace the step list, keeping ids that still exist so send_log
       // history and in-flight enrollments keep pointing at the right step.

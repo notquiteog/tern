@@ -33,7 +33,7 @@ reviewRouter.post('/:id', async (req, res) => {
       const acc = await getAccount(item.account_id);
       const responder = item.responder_id ? await one<any>('SELECT * FROM responders WHERE id=$1', [item.responder_id]) : null;
       if (acc) {
-        const payload = { to: item.to_addr, subject: b.subject ?? item.subject, html: b.body_html ?? item.body_html, replyToEmailId: item.reply_to_email_id, kind: 'auto_reply', contactId: item.contact_id, responderId: item.responder_id, includeSignature: true };
+        const payload = { to: item.to_addr, subject: b.subject ?? item.subject, html: b.body_html ?? item.body_html, replyToEmailId: item.reply_to_email_id, kind: 'auto_reply', contactId: item.contact_id, responderId: item.responder_id, includeSignature: true, encrypt: 'if_possible' };
         if (responder?.humanize) await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, JSON.stringify({ ...payload, humanize: true })]);
         else await composeAndSend(acc, payload as any);
       }

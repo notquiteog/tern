@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Maximize2, Minimize2, Minus, Paperclip, Send, Sparkles, Trash2, X, Clock, Shuffle, FileText, ShieldCheck } from 'lucide-react';
+import { ChevronDown, Maximize2, Minimize2, Minus, Paperclip, Send, Sparkles, Trash2, X, Clock, Shuffle, FileText, ShieldCheck, Lock, LockOpen, PenLine } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { usePgp } from '../state/pgp';
+import { encryptText, signDetached } from '../lib/pgp';
+import { buildMime, htmlToPlain } from '../lib/mime';
+import { useDebounced } from '../lib/hooks';
 import { api } from '../api';
 import { useCompose, type ComposeWindow } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -41,6 +46,37 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
   const html = useRef(win.html ?? (win.quoteHtml ? `<p><br></p>${win.quoteHtml}` : ''));
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // OpenPGP: encrypt when every recipient has a key (on by default, one click
+  // to turn off), sign with the unlocked key when asked.
+  const { requestKey } = usePgp();
+  const { data: myKey } = useQuery({ queryKey: ['pgp-me'], queryFn: () => api.get<{ key: { publicKey: string } | null; hasPrivate: boolean }>('/api/pgp/me'), staleTime: 60_000 });
+  const allEmails = useDebounced([...to, ...cc, ...bcc].map((a) => a.email.toLowerCase()).filter(Boolean).sort().join(','), 400);
+  const { data: recipientKeys } = useQuery({ queryKey: ['pgp-recipients', allEmails], queryFn: () => api.get<{ keys: Record<string, { fingerprint: string; publicKey: string }> }>(`/api/pgp/recipients?emails=${encodeURIComponent(allEmails)}`).then((r) => r.keys), enabled: allEmails.length > 0, staleTime: 60_000 });
+  const emailList = allEmails ? allEmails.split(',') : [];
+  const missingKeys = emailList.filter((e) => !recipientKeys?.[e]);
+  const canEncrypt = emailList.length > 0 && missingKeys.length === 0;
+  const [encryptPref, setEncryptPref] = useState<boolean | null>(null);
+  const encrypt = canEncrypt && (encryptPref ?? true);
+  const [sign, setSign] = useState<boolean>(() => { try { return localStorage.getItem('tern.pgp.sign') === '1'; } catch { return false; } });
+  const canSign = Boolean(myKey?.key) && (myKey?.hasPrivate || Boolean(localStorage.getItem('tern.pgp.privateKey')));
+  useEffect(() => { try { localStorage.setItem('tern.pgp.sign', sign ? '1' : '0'); } catch { /* ignore */ } }, [sign]);
+  const showPgpBar = Boolean(myKey?.key) || emailList.length > 0 && Object.keys(recipientKeys ?? {}).length > 0;
+
+  // Signing needs the exact bytes that leave, so the browser builds the MIME
+  // part (with the account signature and every attachment) and signs or
+  // encrypts it; the server only adds the envelope.
+  async function protectInBrowser(): Promise<{ mode: 'encrypted' | 'signed'; armored?: string; inner?: string; signature?: string }> {
+    const key = await requestKey(encrypt ? 'Sign and encrypt this message' : 'Sign this message');
+    const files = await Promise.all(attachments.map(async (a) => ({ name: a.filename, type: a.content_type, data: new Uint8Array(await (await fetch(`/api/mail/uploads/${a.id}`)).arrayBuffer()) })));
+    const body = html.current + (account?.signature_html?.trim() ? `<div class="tern-signature" style="margin-top:16px">${account.signature_html}</div>` : '');
+    const inner = buildMime({ html: body, text: htmlToPlain(body), attachments: files });
+    if (encrypt) {
+      const keys = [...emailList.map((e) => recipientKeys![e].publicKey), ...(myKey?.key ? [myKey.key.publicKey] : [])];
+      return { mode: 'encrypted', armored: await encryptText(inner, keys, key) };
+    }
+    return { mode: 'signed', inner, signature: await signDetached(inner, key) };
+  }
+
   useEffect(() => { if (accountId === null && accounts.length) setAccountId(accounts[0].id); }, [accounts, accountId]);
   const account = accounts.find((a) => a.id === accountId);
   const title = subject || (win.kind === 'reply' || win.kind === 'reply_all' ? 'Reply' : win.kind === 'forward' ? 'Forward' : 'New message');
@@ -62,9 +98,11 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
     if (!subject.trim() && !confirm('Send without a subject?')) return;
     setSending(true);
     try {
-      const r = await api.post<any>('/api/mail/send', { accountId, to, cc, bcc, subject, html: html.current, replyToEmailId: win.replyToEmailId ?? null, forwardOfEmailId: win.forwardOfEmailId ?? null, attachmentIds: attachments.map((a) => a.id), draftId, scheduleAt: opts.scheduleAt ?? null, humanize: Boolean(opts.humanize), contactId: win.contactId ?? null });
+      const pgp = sign && canSign ? await protectInBrowser() : null;
+      const r = await api.post<any>('/api/mail/send', { accountId, to, cc, bcc, subject, html: html.current, replyToEmailId: win.replyToEmailId ?? null, forwardOfEmailId: win.forwardOfEmailId ?? null, attachmentIds: pgp ? [] : attachments.map((a) => a.id), draftId, scheduleAt: opts.scheduleAt ?? null, humanize: Boolean(opts.humanize), contactId: win.contactId ?? null, encrypt: !pgp && encrypt ? 'always' : null, pgp });
+      if (pgp) for (const a of attachments) api.del(`/api/mail/uploads/${a.id}`).catch(() => {});
       if (r.scheduled) toast.success(opts.scheduleAt ? `Scheduled for ${new Date(r.sendAt).toLocaleString()}` : `Will send in a moment with a natural delay`);
-      else toast.success('Sent');
+      else toast.success(encrypt ? (sign ? 'Sent, signed and encrypted' : 'Sent encrypted') : sign ? 'Sent and signed' : 'Sent');
       qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] }); qc.invalidateQueries({ queryKey: ['outbox'] }); qc.invalidateQueries({ queryKey: ['drafts'] });
       close(win.key);
     } catch (e) { toast.error(e); } finally { setSending(false); }
@@ -129,6 +167,12 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
         <Editor ref={editor} initialHtml={html.current} placeholder="Write your message…" minHeight={120} onChange={(h) => { html.current = h; setDirty(true); }} />
         {attachments.length > 0 && (
           <div className="compose-attach">{attachments.map((a) => <span key={a.id} className="chip" title={a.scrubbed?.note ?? undefined}>{a.scrubbed?.changed ? <ShieldCheck size={12} style={{ color: 'var(--success)' }} /> : <Paperclip size={12} />}<span className="truncate">{a.filename}</span><span className="faint">{fmtBytes(a.size)}</span><button type="button" className="chip-x" onClick={() => { api.del(`/api/mail/uploads/${a.id}`).catch(() => {}); setAttachments((l) => l.filter((x) => x.id !== a.id)); setDirty(true); }}><X size={12} /></button></span>)}</div>
+        )}
+        {showPgpBar && (
+          <div className="pgp-bar">
+            <button type="button" className={cls('pgp-pill', encrypt && 'on', !canEncrypt && 'off')} disabled={!canEncrypt} title={canEncrypt ? (encrypt ? 'Encrypted to every recipient and to you. Click to send in the clear.' : 'Click to encrypt') : emailList.length ? `No key on file for ${missingKeys.join(', ')}. Add one on their contact card or under Settings → Encryption.` : 'Add recipients'} onClick={() => setEncryptPref(!encrypt)}>{encrypt ? <Lock size={13} /> : <LockOpen size={13} />}{encrypt ? 'Encrypted' : canEncrypt ? 'Not encrypted' : 'No key for recipient'}</button>
+            {myKey?.key && <button type="button" className={cls('pgp-pill', sign && canSign && 'on', !canSign && 'off')} disabled={!canSign} title={canSign ? 'Sign with your OpenPGP key in this browser' : 'Your private key is not available in this browser'} onClick={() => setSign((s) => !s)}><PenLine size={13} />{sign && canSign ? 'Signed' : 'Not signed'}</button>}
+          </div>
         )}
         {ai && <AiPanel context={aiContext} autoRun={Boolean(win.autoAi)} defaultMode={win.autoAi ?? undefined} getDraft={() => editor.current?.getHtml() ?? ''} onClose={() => setAi(false)} onSubject={(s) => { setSubject(s); setDirty(true); }} onInsert={(h, mode) => { if (mode === 'compose' || mode === 'reply') { const quote = win.quoteHtml ?? ''; editor.current?.setHtml(h + (quote ? `<p><br></p>${quote}` : '')); } else editor.current?.setHtml(h + (win.quoteHtml ? `<p><br></p>${win.quoteHtml}` : '')); html.current = editor.current?.getHtml() ?? ''; setDirty(true); }} />}
         <div className="compose-foot">

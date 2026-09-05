@@ -37,6 +37,7 @@ JMAP host) keeps the mail itself under its own rules.
 | `audit_log`: who did which admin action, when | Accountability for admin actions | 365 days; a deleted user's rows keep the action but lose details |
 | `invites` | Registration links | Purged 30 days after use or expiry |
 | Brand logos | BIMI | Until removed by an admin |
+| OpenPGP keys: your public key, your private key passphrase-protected and wrapped with the server key, other people's public keys | Encrypting mail, sign-in with the key | Until you remove them |
 
 Retention runs from the scheduler once an hour (`workers/scheduler.ts`,
 `housekeeping`).
@@ -60,7 +61,9 @@ Stalwart admin panel, for installs that run it, is a separate login with
 full access to every mailbox on that server; Tern records in the audit log
 each time an admin views that login.
 
-## Open work
+## Encrypted mail
 
-Encryption of the mail cache at rest is designed but not built; see
-[ENCRYPTION.md](ENCRYPTION.md).
+Mail encrypted with OpenPGP stays ciphertext in the cache and is decrypted
+only in your browser; the server never holds a usable private key. See
+[ENCRYPTION.md](ENCRYPTION.md) for what is built and what remains (at-rest
+encryption of the whole cache, sealed accounts).

@@ -318,6 +318,17 @@ mailRouter.post('/uploads', rawBody, async (req, res) => {
   res.json({ upload: { ...rows[0], scrubbed: scrub.handled ? { changed: scrub.changed, removed: scrub.removed, savedBytes: raw.length - data.length, note: describeScrub(scrub) } : null } });
 });
 
+// The bytes back, for a browser that signs or encrypts the message itself.
+mailRouter.get('/uploads/:id', async (req, res) => {
+  const u = await one<any>('SELECT filename, content_type, data FROM uploads WHERE id=$1 AND user_id=$2', [idParam(req.params.id), req.user!.id]);
+  if (!u) throw notFound('Upload not found');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(u.filename)}`);
+  res.send(u.data);
+});
+
 mailRouter.delete('/uploads/:id', async (req, res) => {
   await query('DELETE FROM uploads WHERE id=$1 AND user_id=$2', [idParam(req.params.id), req.user!.id]);
   res.json({ ok: true });
@@ -340,6 +351,8 @@ const sendSchema = z.object({
   scheduleAt: z.string().nullable().optional(),
   humanize: z.boolean().default(false),
   contactId: z.number().int().nullable().optional(),
+  encrypt: z.enum(['always', 'if_possible']).nullable().optional(),
+  pgp: z.object({ mode: z.enum(['encrypted', 'signed']), armored: z.string().max(30_000_000).optional(), inner: z.string().max(30_000_000).optional(), signature: z.string().max(20_000).optional() }).nullable().optional(),
 });
 
 mailRouter.post('/send', async (req, res) => {
@@ -347,7 +360,7 @@ mailRouter.post('/send', async (req, res) => {
   const acc = await getUserAccount(req.user!.id, b.accountId);
   if (!acc) throw notFound('Account not found');
   const kind = b.replyToEmailId ? 'reply' : b.forwardOfEmailId ? 'forward' : 'compose';
-  const payload = { to: b.to as any, cc: b.cc as any, bcc: b.bcc as any, subject: b.subject, html: b.html, replyToEmailId: b.replyToEmailId ?? null, forwardOfEmailId: b.forwardOfEmailId ?? null, attachmentIds: b.attachmentIds, includeSignature: b.includeSignature, kind, contactId: b.contactId ?? null } as const;
+  const payload = { to: b.to as any, cc: b.cc as any, bcc: b.bcc as any, subject: b.subject, html: b.html, replyToEmailId: b.replyToEmailId ?? null, forwardOfEmailId: b.forwardOfEmailId ?? null, attachmentIds: b.attachmentIds, includeSignature: b.includeSignature, kind, contactId: b.contactId ?? null, encrypt: b.encrypt ?? null, pgp: b.pgp ?? null } as const;
   if (b.scheduleAt || b.humanize) {
     let sendAt = b.scheduleAt ? new Date(b.scheduleAt) : new Date();
     if (Number.isNaN(sendAt.getTime())) throw badRequest('Invalid schedule time');

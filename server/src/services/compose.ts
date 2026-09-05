@@ -3,7 +3,8 @@
 // in send_log, and asks the sync manager to pull the sent copy back. Keeping
 // this single keeps the daily cap, logging and reply matching consistent.
 import { one, query } from '../db.js';
-import { sendMessage, type Address, type OutgoingAttachment, type SendOutcome } from '../jmap/send.js';
+import { buildInnerMime, sendMessage, type Address, type OutgoingAttachment, type PgpPayload, type SendOutcome } from '../jmap/send.js';
+import { encryptText, getUserKeys, recipientKeys } from './pgp.js';
 import { clientFor, type AccountRow } from './accounts.js';
 import { syncManager } from '../workers/syncManager.js';
 import { publish } from '../events.js';
@@ -35,6 +36,10 @@ export interface ComposeInput {
   references?: string[];
   extraHeaders?: Record<string, string>;
   unsubscribeFooter?: boolean;
+  // 'always': fail if any recipient has no key; 'if_possible': encrypt when every recipient has one.
+  encrypt?: 'always' | 'if_possible' | null;
+  // Already protected in the browser (signed, or signed and encrypted); sent as is.
+  pgp?: PgpPayload | null;
 }
 
 export interface SendLogRow {
@@ -113,6 +118,24 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     html += `<p style="margin-top:24px;font-size:12px;color:#6b7280">${escapeHtml(s.unsubscribeText)} <a href="${url}" style="color:#6b7280">${url}</a>${s.physicalAddress ? `<br>${escapeHtml(s.physicalAddress)}` : ''}</p>`;
   }
 
+  // OpenPGP: a browser-signed message arrives complete; otherwise encrypt here
+  // when the recipients' public keys are on file (plus the sender's own, so
+  // the Sent copy stays readable).
+  let pgp: PgpPayload | null = input.pgp ?? null;
+  let outgoingAttachments = attachments;
+  if (!pgp && input.encrypt) {
+    const emails = [...to, ...cc, ...bcc].map((a) => a.email.toLowerCase());
+    const keys = await recipientKeys(acc.user_id, emails);
+    const missing = emails.filter((e) => !keys.has(e));
+    if (missing.length && input.encrypt === 'always') throw badRequest(`No PGP key on file for ${missing.join(', ')}`);
+    if (!missing.length) {
+      const mine = await getUserKeys(acc.user_id);
+      const inner = await buildInnerMime({ html, text: input.text, attachments });
+      pgp = { mode: 'encrypted', armored: await encryptText(inner, [...[...keys.values()].map((k) => k.publicKey), ...(mine.publicKey ? [mine.publicKey] : [])]) };
+      outgoingAttachments = [];
+    }
+  }
+
   const primary = to[0]?.email ?? cc[0]?.email ?? bcc[0]?.email ?? '';
   let outcome: SendOutcome;
   try {
@@ -125,7 +148,8 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
       inReplyTo,
       references,
       headers,
-      attachments,
+      attachments: outgoingAttachments,
+      pgp,
     });
   } catch (e) {
     const msg = (e as Error).message;

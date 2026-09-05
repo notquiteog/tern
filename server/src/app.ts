@@ -24,6 +24,7 @@ import { respondersRouter } from './routes/responders.js';
 import { stalwartRouter } from './routes/stalwart.js';
 import { avatarsRouter } from './routes/avatars.js';
 import { brandRouter, bimiRouter } from './routes/brand.js';
+import { pgpRouter } from './routes/pgp.js';
 
 const log = logger('http');
 
@@ -54,7 +55,7 @@ export function createApp(): express.Express {
     res.status(allowed.has(d) ? 200 : 404).end();
   });
 
-  app.use('/api', express.json({ limit: '4mb' }), attachUser, csrfGuard);
+  app.use('/api', express.json({ limit: '40mb' }), attachUser, csrfGuard);
   app.use('/api/setup', setupRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/users', usersRouter);
@@ -69,6 +70,7 @@ export function createApp(): express.Express {
   app.use('/api/stalwart', stalwartRouter);
   app.use('/api/avatars', avatarsRouter);
   app.use('/api/brand', brandRouter);
+  app.use('/api/pgp', pgpRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/events', eventsRouter);

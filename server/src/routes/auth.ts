@@ -5,6 +5,7 @@ import { dummyHash, generateRecoveryCodes, generateTotpSecret, hashPassword, otp
 import { checkLoginAllowed, clearLoginFailures, clientIp, createSession, destroySession, destroyUserSessions, publicUser, recordLoginFailure, requireAuth, setSessionCookie, type UserRow } from '../auth.js';
 import { listAccounts } from '../services/accounts.js';
 import { syncManager } from '../workers/syncManager.js';
+import { createChallenge, createDecoyChallenge, encryptStream, getUserKeys, verifyChallenge } from '../services/pgp.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../errors.js';
 import { authSettings } from './users.js';
@@ -63,7 +64,7 @@ authRouter.get('/invite/:token', async (req, res) => {
   res.json({ valid: true, role: inv.role, note: inv.note, expiresAt: inv.expires_at });
 });
 
-const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional(), pow: powSchema.optional() });
+const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional(), pgpChallengeId: z.string().max(64).optional(), pgpResponse: z.string().max(200).optional(), pow: powSchema.optional() });
 
 // One response for "no such user", "wrong password" and "disabled", and
 // bcrypt-equivalent work in every branch, so the login form cannot be used
@@ -81,23 +82,67 @@ authRouter.post('/login', async (req, res) => {
     recordLoginFailure(key); powFail('login', username);
     throw unauthorized('Incorrect username or password');
   }
-  if (user.totp_enabled && user.totp_secret) {
-    if (!body.code) { res.json({ mfaRequired: true }); return; }
-    const code = body.code.trim();
-    let passed = verifyTotp(user.totp_secret, code);
-    if (!passed) {
+  // Second factors: an authenticator code, a recovery code, or the answer to
+  // a challenge encrypted to the user's OpenPGP key. Any one of the enabled
+  // methods passes. The stored private key is never released before the
+  // second factor succeeds, so a leaked password does not yield the key.
+  const methods: string[] = [];
+  if (user.totp_enabled && user.totp_secret) methods.push('totp');
+  const keys = await getUserKeys(user.id);
+  if (keys.publicKey && keys.auth !== 'off') methods.push('pgp');
+  if (methods.length) {
+    let passed = false;
+    const code = body.code?.trim();
+    if (code) {
+      if (methods.includes('totp') && verifyTotp(user.totp_secret!, code)) passed = true;
       const hashed = sha256hex(code.toLowerCase());
-      if (user.recovery_codes.includes(hashed)) {
+      if (!passed && user.recovery_codes.includes(hashed)) {
         passed = true;
         await query('UPDATE users SET recovery_codes = array_remove(recovery_codes, $2) WHERE id=$1', [user.id, hashed]);
       }
     }
-    if (!passed) { recordLoginFailure(key); powFail('login', username); throw unauthorized('That code was not accepted'); }
+    if (!passed && body.pgpResponse && methods.includes('pgp')) passed = verifyChallenge(body.pgpChallengeId, body.pgpResponse, 'login') === user.id;
+    if (!passed) {
+      if (code || body.pgpResponse) { recordLoginFailure(key); powFail('login', username); throw unauthorized('That code was not accepted'); }
+      const pgp = methods.includes('pgp') ? await createChallenge(user.id, keys.publicKey!, 'login') : null;
+      res.json({ mfaRequired: true, methods, pgp: pgp ? { challengeId: pgp.id, challenge: pgp.armored, fingerprint: keys.fingerprint } : null });
+      return;
+    }
   }
   clearLoginFailures(key); powClear('login', username);
   const sid = await createSession(user.id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
+  res.json({ user: publicUser(user) });
+});
+
+// Sign in with the key alone. The username gets a challenge whether or not
+// it exists or allows this, so the exchange reveals nothing; only a real,
+// enabled account's challenge can be answered. Proof of work applies as to
+// any sign-in attempt.
+authRouter.post('/pgp/start', async (req, res) => {
+  const b = parse(z.object({ username: z.string().min(1).max(64), pow: powSchema.optional() }), req.body);
+  const username = b.username.toLowerCase().trim();
+  checkLoginAllowed(sha256hex(`${username}|${clientIp(req)}`));
+  verifySolution('login', username, b.pow);
+  const user = await one<UserRow>('SELECT * FROM users WHERE username=$1', [username]);
+  const keys = user && !user.disabled ? await getUserKeys(user.id) : null;
+  const c = keys?.publicKey && keys.auth === 'passwordless' ? await createChallenge(user!.id, keys.publicKey, 'passwordless') : await createDecoyChallenge();
+  res.json({ challengeId: c.id, challenge: c.armored });
+});
+
+authRouter.post('/pgp/finish', async (req, res) => {
+  const b = parse(z.object({ username: z.string().min(1).max(64), challengeId: z.string().max(64), response: z.string().max(200) }), req.body);
+  const username = b.username.toLowerCase().trim();
+  const key = sha256hex(`${username}|${clientIp(req)}`);
+  const uid = verifyChallenge(b.challengeId, b.response, 'passwordless');
+  const user = uid ? await one<UserRow>('SELECT * FROM users WHERE id=$1 AND username=$2', [uid, username]) : null;
+  if (!user || user.disabled) { recordLoginFailure(key); powFail('login', username); throw unauthorized('That answer was not accepted'); }
+  clearLoginFailures(key); powClear('login', username);
+  const sid = await createSession(user.id, req.headers['user-agent']);
+  setSessionCookie(res, sid);
+  await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
+  await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.pgp_login')`, [user.id]);
   res.json({ user: publicUser(user) });
 });
 
@@ -212,33 +257,50 @@ const EXPORT_SECTIONS: { name: string; sql: string }[] = [
   { name: 'emails', sql: 'SELECT e.id, e.account_id, e.jmap_id, e.thread_id, e.mailbox_ids, e.keywords, e.size, e.received_at, e.sent_at, e.message_id, e.in_reply_to, e.references_ids, e.from_addr, e.to_addr, e.cc_addr, e.bcc_addr, e.reply_to, e.subject, e.preview, e.has_attachment, e.body_text, e.body_html, e.attachments FROM emails e JOIN accounts a ON a.id=e.account_id WHERE a.user_id=$1' },
 ];
 
-authRouter.get('/export', requireAuth, async (req, res) => {
-  const uid = req.user!.id;
-  const stamp = new Date().toISOString().slice(0, 10);
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="tern-export-${req.user!.username}-${stamp}.json"`);
-  res.setHeader('Cache-Control', 'no-store');
-  const write = (chunk: string) => new Promise<void>((resolve) => { if (res.write(chunk)) resolve(); else res.once('drain', () => resolve()); });
+async function* exportChunks(uid: number, user: UserRow): AsyncGenerator<string> {
   const avatar = await one<{ avatar: Buffer | null; avatar_type: string | null }>('SELECT avatar, avatar_type FROM users WHERE id=$1', [uid]);
-  const user = { ...publicUser(req.user!), avatar: avatar?.avatar ? `data:${avatar.avatar_type};base64,${avatar.avatar.toString('base64')}` : null };
-  await write(`{"format":"tern-export","version":1,"exportedAt":${JSON.stringify(new Date().toISOString())},"note":"Everything this server stores about you. Mailbox passwords, your password hash, two-factor secrets and recovery codes are never exported.","user":${JSON.stringify(user)}`);
+  const profile = { ...publicUser(user), avatar: avatar?.avatar ? `data:${avatar.avatar_type};base64,${avatar.avatar.toString('base64')}` : null };
+  yield `{"format":"tern-export","version":1,"exportedAt":${JSON.stringify(new Date().toISOString())},"note":"Everything this server stores about you. Mailbox passwords, your password hash, two-factor secrets, recovery codes and your private key are never exported.","user":${JSON.stringify(profile)}`;
   for (const section of EXPORT_SECTIONS) {
-    await write(`,\n${JSON.stringify(section.name)}:[`);
+    yield `,\n${JSON.stringify(section.name)}:[`;
     let last = 0, first = true;
     for (;;) {
       const rows = await query<any>(`SELECT * FROM (${section.sql}) t WHERE (t.id::text ~ '^[0-9]+$' AND t.id::bigint > $2) OR t.id::text !~ '^[0-9]+$' ORDER BY 1 LIMIT 500`, [uid, last]);
       if (!rows.length) break;
-      await write((first ? '' : ',') + rows.map((r) => JSON.stringify(r)).join(','));
+      yield (first ? '' : ',') + rows.map((r) => JSON.stringify(r)).join(',');
       first = false;
       const numeric = rows.filter((r) => /^[0-9]+$/.test(String(r.id)));
       if (numeric.length < rows.length || rows.length < 500) break;
       last = Math.max(...numeric.map((r) => Number(r.id)));
     }
-    await write(']');
+    yield ']';
   }
-  await write('\n}\n');
+  yield '\n}\n';
+}
+
+// `?pgp=1` encrypts the file to the user's OpenPGP key on the way out, so an
+// export made on a shared machine is readable only where the key is.
+authRouter.get('/export', requireAuth, async (req, res) => {
+  const uid = req.user!.id;
+  const stamp = new Date().toISOString().slice(0, 10);
+  const write = (chunk: string) => new Promise<void>((resolve) => { if (res.write(chunk)) resolve(); else res.once('drain', () => resolve()); });
+  res.setHeader('Cache-Control', 'no-store');
+  const wantPgp = String(req.query.pgp ?? '') === '1';
+  if (wantPgp) {
+    const keys = await getUserKeys(uid);
+    if (!keys.publicKey) throw badRequest('Add an OpenPGP key first to download an encrypted export');
+    res.setHeader('Content-Type', 'application/pgp-encrypted; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="tern-export-${req.user!.username}-${stamp}.json.asc"`);
+    const source = ReadableStream.from(exportChunks(uid, req.user!)) as ReadableStream<string>;
+    const encrypted = await encryptStream(source, [keys.publicKey]);
+    for await (const chunk of encrypted as any) await write(String(chunk));
+  } else {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="tern-export-${req.user!.username}-${stamp}.json"`);
+    for await (const chunk of exportChunks(uid, req.user!)) await write(chunk);
+  }
   res.end();
-  await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.data_exported')`, [uid]);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.data_exported',$2)`, [uid, JSON.stringify({ encrypted: wantPgp })]);
 });
 
 // Deleting the account removes the person and, through foreign keys, every

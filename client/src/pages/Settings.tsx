@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useToast } from '../state/toast';
@@ -16,6 +16,7 @@ import { useLocalStorage } from '../lib/hooks';
 import { fmtBytes, fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import MailAppsSettings from './MailApps';
+import EncryptionSettings from './Encryption';
 
 // Everyone gets the tabs about their own login, mailboxes and appearance.
 // Workspace-wide pages (general, users, the mail server) are admin only,
@@ -25,7 +26,7 @@ export default function SettingsPage() {
   const admin = user!.role === 'admin';
   const tabs: [string, string, ReactNode][] = [
     ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
-    ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />],
+    ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
   ];
   if (admin) tabs.push(['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />]);
   if (admin && stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
@@ -41,6 +42,7 @@ export default function SettingsPage() {
         <Route path="mailapps" element={<MailAppsSettings />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
+        <Route path="encryption" element={<EncryptionSettings />} />
         <Route path="appearance" element={<AppearanceSettings />} />
         <Route path="general" element={<AdminOnly><GeneralSettings /></AdminOnly>} />
         <Route path="users" element={<AdminOnly><UsersSettings /></AdminOnly>} />

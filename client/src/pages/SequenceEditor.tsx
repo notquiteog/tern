@@ -36,7 +36,7 @@ export default function SequenceEditorPage() {
   async function save() {
     setSaving(true);
     try {
-      await api.put(`/api/sequences/${sid}`, { name: seq.name, description: seq.description, account_id: seq.account_id, stop_on_reply: seq.stop_on_reply, ai_mode: seq.ai_mode, unsubscribe_footer: seq.unsubscribe_footer, steps });
+      await api.put(`/api/sequences/${sid}`, { name: seq.name, description: seq.description, account_id: seq.account_id, stop_on_reply: seq.stop_on_reply, ai_mode: seq.ai_mode, unsubscribe_footer: seq.unsubscribe_footer, encrypt_pgp: Boolean(seq.encrypt_pgp), steps });
       qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['sequences'] });
       setDirty(false); toast.success('Saved');
     } catch (e) { toast.error(e); } finally { setSaving(false); }
@@ -97,6 +97,7 @@ export default function SequenceEditorPage() {
           <Field label="Description"><Textarea value={seq.description ?? ''} onChange={(e) => { setSeq({ ...seq, description: e.target.value }); setDirty(true); }} style={{ minHeight: 60 }} /></Field>
           <div className="row mb-16"><Toggle checked={seq.stop_on_reply} onChange={(v) => { setSeq({ ...seq, stop_on_reply: v }); setDirty(true); }} /><div><div className="strong small">Stop when the contact replies</div><div className="help-text">Detected from reply headers and from the contact's address. Out-of-office auto-replies do not count.</div></div></div>
           <div className="row mb-16"><Toggle checked={seq.unsubscribe_footer} onChange={(v) => { setSeq({ ...seq, unsubscribe_footer: v }); setDirty(true); }} /><div><div className="strong small">Add an unsubscribe line and List-Unsubscribe headers</div><div className="help-text">One click removes the contact and adds them to the suppression list. Required by CAN-SPAM for commercial mail; the physical address is set in Settings → General.</div></div></div>
+          <div className="row mb-16"><Toggle checked={Boolean(seq.encrypt_pgp)} onChange={(v) => { setSeq({ ...seq, encrypt_pgp: v }); setDirty(true); }} /><div><div className="strong small">Encrypt to contacts who have an OpenPGP key</div><div className="help-text">Contacts with a key on file receive each step encrypted (to their key and yours); everyone else gets it as usual. Automated mail cannot be signed, because no browser holds your key when it goes out.</div></div></div>
           <Field label="AI personalisation" hint="Applies to steps with 'AI personalise' turned on.">
             <Select value={seq.ai_mode} onChange={(e) => { setSeq({ ...seq, ai_mode: e.target.value }); setDirty(true); }}>
               <option value="review">Review: drafts wait for approval in AI review</option>

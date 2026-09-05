@@ -694,3 +694,11 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .pow-foot svg { flex: none; }
 
 .callout + .callout, .callout + .card, .card + .callout { margin-top: 10px; }
+
+/* OpenPGP */
+.pgp-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 14px; border-top: 1px solid var(--border); }
+.pgp-pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-2); font-size: 12.5px; font-weight: 500; transition: background .12s, color .12s, border-color .12s; }
+.pgp-pill.on { background: var(--success-soft); color: var(--success); border-color: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent); }
+.pgp-pill.off { opacity: .6; cursor: not-allowed; }
+.pgp-pill:not(.off):hover { border-color: var(--border-strong); color: var(--text); }
+.pgp-locked { border: 1px dashed var(--border-strong); border-radius: 12px; padding: 14px 16px; background: var(--bg-sunken); }

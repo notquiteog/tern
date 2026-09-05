@@ -1,8 +1,10 @@
 # Encrypting mail in Tern: the plan
 
-This is a design, not a description of what runs today. It sets out what
-"encrypt the emails" can mean for an app like Tern, what each option
-protects against, what it costs in features, and the order to build it in.
+Layer 2 (OpenPGP: keys, encrypted and signed mail, decryption in the
+browser, sign-in with the key) is built; see "What runs today" at the end.
+Layers 1 and 3 remain designs. This document sets out what "encrypt the
+emails" can mean for an app like Tern, what each option protects against,
+what it costs in features, and the order to build it in.
 
 ## The constraint that shapes everything
 
@@ -185,3 +187,40 @@ for the private key rather than a password-derived wrap.
 Steps 2 and 3 are independent of step 1 and could ship first if PGP mail
 matters more to you than the at-rest copy. Say which, and that is where the
 next commit goes.
+
+## What runs today
+
+Settings → Encryption, `server/src/services/pgp.ts`, `routes/pgp.ts`,
+`client/src/lib/pgp.ts`, `client/src/lib/mime.ts`.
+
+- **Keys.** Generate a Curve25519 pair in the browser or import either half.
+  A private key is stored only passphrase-protected (OpenPGP's own S2K),
+  wrapped once more with the server master key, and released only to a fully
+  signed-in session; an unprotected import gets a passphrase in the browser
+  first. The browser can also remember the locked key locally. The
+  passphrase never leaves the browser.
+- **Sending.** When every recipient has a key on file (contact card, pasted,
+  or found over WKD / keys.openpgp.org) the composer encrypts by default,
+  one click to turn off. The server does the encryption (public keys only;
+  it already has the plaintext you typed) and always includes your own key so
+  Sent stays readable. Signing is per message and happens in the browser:
+  the browser builds the MIME part with attachments, signs or signs-and-
+  encrypts it, and the server adds only the RFC 3156 envelope.
+- **Automated mail.** Sequences have an "encrypt to contacts with keys"
+  switch; AI responders and approved AI replies encrypt whenever the
+  recipient has a key. None of it is signed, and the UI says so.
+- **Reading.** PGP/MIME and inline messages stay ciphertext in the cache and
+  are decrypted in the browser on open, with the sender's signature verified
+  against their key when one is on file. `multipart/signed` mail is verified
+  from the raw message. Search, rules and AI do not see inside encrypted
+  messages; threading, labels, snooze and replies work as usual.
+- **Sign-in.** The server encrypts a one-time token to the public key; the
+  browser decrypts it. As a second factor it runs after the password (an
+  authenticator code or recovery code also passes). As passwordless sign-in
+  the key and its passphrase are the whole proof. Unknown usernames get a
+  decoy challenge, every attempt costs the proof of work, and the challenge
+  can be answered with GnuPG for browsers that do not hold the key.
+- **Export.** `?pgp=1` streams the data export encrypted to your key.
+
+Still open from the plan: layer 1 (at-rest encryption of the cache with
+server-held keys and a blind search index) and layer 3 (sealed accounts).

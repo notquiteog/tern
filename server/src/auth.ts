@@ -14,6 +14,7 @@ export interface UserRow {
   totp_secret: string | null; totp_enabled: boolean; recovery_codes: string[]; prefs: Record<string, unknown>;
   disabled: boolean; password_changed_at: Date; created_at: Date; last_login_at: Date | null;
   avatar?: Buffer | null; avatar_type?: string | null; avatar_updated_at?: Date | null;
+  pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless';
 }
 export type PublicUser = Omit<UserRow, 'password_hash' | 'totp_secret' | 'recovery_codes' | 'avatar' | 'avatar_type'> & { avatar_version: number | null };
 
@@ -65,7 +66,7 @@ export async function attachUser(req: Request, _res: Response, next: NextFunctio
   const sid = parseCookies(req.headers.cookie)[COOKIE];
   if (!sid) return next();
   const row = await one<UserRow & { sid: string; last_seen_at: Date }>(
-    `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.totp_secret, u.totp_enabled, u.recovery_codes, u.prefs, u.disabled, u.password_changed_at, u.created_at, u.last_login_at, u.avatar_updated_at, s.id AS sid, s.last_seen_at
+    `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.totp_secret, u.totp_enabled, u.recovery_codes, u.prefs, u.disabled, u.password_changed_at, u.created_at, u.last_login_at, u.avatar_updated_at, u.pgp_fingerprint, u.pgp_auth, s.id AS sid, s.last_seen_at
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id=$1 AND s.expires_at > now()`,
     [sid],
   );

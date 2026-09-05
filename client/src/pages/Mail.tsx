@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink } from 'lucide-react';
+import { AlarmClock, Archive, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose } from '../state/compose';
@@ -214,7 +214,7 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
         {labels.length > 0 && <span className="t-labels">{labels.slice(0, 2).map((l) => <span key={l} className="t-label">{l}</span>)}</span>}
         {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
         <span className="t-subject">{t.latest?.subject || '(no subject)'}</span>
-        <span className="t-snippet">— {t.latest?.preview}</span>
+        <span className="t-snippet">— {/-----BEGIN PGP MESSAGE-----/.test(t.latest?.preview ?? '') || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>
       </div>
       <div className="t-meta">
         {t.has_attachment && <Paperclip size={14} />}

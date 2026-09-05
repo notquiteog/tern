@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './state/auth';
 import { ToastProvider } from './state/toast';
 import { ComposeProvider } from './state/compose';
+import { PgpProvider } from './state/pgp';
 import { Shell } from './components/Shell';
 import LoginPage from './pages/Login';
 import SetupPage from './pages/Setup';
@@ -51,9 +52,11 @@ export default function App() {
   return (
     <ToastProvider>
       <AuthProvider>
-        <ComposeProvider>
-          <Gate />
-        </ComposeProvider>
+        <PgpProvider>
+          <ComposeProvider>
+            <Gate />
+          </ComposeProvider>
+        </PgpProvider>
       </AuthProvider>
     </ToastProvider>
   );

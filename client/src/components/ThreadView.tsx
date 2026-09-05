@@ -9,6 +9,7 @@ import { useHotkeys } from '../lib/hooks';
 import { useMailboxes } from '../lib/queries';
 import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input } from './ui';
 import { MessageBody } from './MessageBody';
+import { EncryptedMessage, pgpKindOf } from './EncryptedMessage';
 import { addrFull, addrName, cls, fmtBytes, fmtDateTime, fmtDate, fmtRelative, localDateTimeValue, escapeHtml, type Addr } from '../lib/format';
 
 interface Msg { id: number; jmap_id: string; thread_id: string; mailbox_ids: string[]; keywords: string[]; received_at: string; sent_at: string | null; message_id: string[]; from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[]; subject: string; preview: string; has_attachment: boolean; body_text: string | null; body_html: string | null; attachments: any[]; is_unread: boolean; is_flagged: boolean; is_draft: boolean; from_email: string; size: number; blob_id: string; avatar_url?: string | null }
@@ -142,12 +143,13 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
             const open = expanded.has(m.jmap_id);
             const from = m.from_addr?.[0];
             const isDraft = m.is_draft;
+            const pgpKind = pgpKindOf(m);
             return (
               <div key={m.jmap_id} className={cls('msg', !open && 'collapsed')}>
                 <div className="msg-head" onClick={() => { if (!open || messages.length > 1) setExpanded((s) => { const n = new Set(s); if (n.has(m.jmap_id)) n.delete(m.jmap_id); else n.add(m.jmap_id); return n; }); }}>
                   <Avatar name={from?.name} email={from?.email} src={m.avatar_url} />
                   <div className="who">
-                    <div className="name"><span className="truncate">{addrName(from)}</span>{isDraft && <Badge kind="warning">Draft</Badge>}{m.from_email === account?.email?.toLowerCase() && <Badge>me</Badge>}{!open && m.has_attachment && <Paperclip size={13} className="faint" />}</div>
+                    <div className="name"><span className="truncate">{addrName(from)}</span>{isDraft && <Badge kind="warning">Draft</Badge>}{m.from_email === account?.email?.toLowerCase() && <Badge>me</Badge>}{!open && m.has_attachment && pgpKind !== 'pgp/mime' && <Paperclip size={13} className="faint" />}{pgpKind && pgpKind !== 'signed' && <Badge kind="accent">encrypted</Badge>}</div>
                     {open ? <Menu width={360} trigger={(o) => <div className="to" onClick={(e) => { e.stopPropagation(); o(); }} style={{ cursor: 'pointer' }}>to {m.to_addr.map(addrName).join(', ') || '—'}{m.cc_addr?.length ? `, cc ${m.cc_addr.map(addrName).join(', ')}` : ''} <ChevronDown size={12} /></div>}>
                       {() => <div style={{ padding: 8 }}><table className="details-table"><tbody>
                         <tr><td>from</td><td>{addrFull(from)}</td></tr>
@@ -159,7 +161,7 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
                         <tr><td>size</td><td>{fmtBytes(m.size)}</td></tr>
                         {m.blob_id && <tr><td>raw</td><td><a href={`/api/mail/blob/${accountId}/${m.blob_id}?name=message.eml&type=message/rfc822&download=1`}>Download .eml</a></td></tr>}
                       </tbody></table></div>}
-                    </Menu> : <div className="snippet">{m.preview}</div>}
+                    </Menu> : <div className="snippet">{pgpKind && pgpKind !== 'signed' ? 'Encrypted message' : m.preview}</div>}
                   </div>
                   <div className="when" title={fmtDateTime(m.received_at)}>{fmtDate(m.received_at, { always: false })} · {fmtRelative(m.received_at)}</div>
                   {open && <div className="row" style={{ gap: 0 }} onClick={(e) => e.stopPropagation()}>
@@ -176,10 +178,10 @@ export function ThreadView({ accountId, threadId, box, onBack }: { accountId: nu
                 </div>
                 {open && (
                   <>
-                    <div className="msg-body"><MessageBody html={m.body_html} text={m.body_text} attachments={m.attachments} accountId={accountId} /></div>
-                    {m.attachments?.filter((a: any) => !a.cid || a.disposition === 'attachment').length > 0 && (
+                    <div className="msg-body">{pgpKind ? <EncryptedMessage m={m} accountId={accountId} kind={pgpKind} /> : <MessageBody html={m.body_html} text={m.body_text} attachments={m.attachments} accountId={accountId} />}</div>
+                    {pgpKind !== 'pgp/mime' && m.attachments?.filter((a: any) => (!a.cid || a.disposition === 'attachment') && !(pgpKind === 'signed' && (a.type === 'application/pgp-signature' || /^signature\.asc$/i.test(a.name ?? '')))).length > 0 && (
                       <div className="attachments">
-                        {m.attachments.filter((a: any) => !a.cid || a.disposition === 'attachment').map((a: any, i: number) => {
+                        {m.attachments.filter((a: any) => (!a.cid || a.disposition === 'attachment') && !(pgpKind === 'signed' && (a.type === 'application/pgp-signature' || /^signature\.asc$/i.test(a.name ?? '')))).map((a: any, i: number) => {
                           const url = `/api/mail/blob/${accountId}/${encodeURIComponent(a.blobId)}?name=${encodeURIComponent(a.name ?? 'attachment')}&type=${encodeURIComponent(a.type ?? '')}`;
                           const isImg = /^image\/(png|jpe?g|gif|webp)/.test(a.type ?? '');
                           return <a key={i} className="attachment" href={`${url}&download=1`} title={a.name}>{isImg ? <img src={url} alt="" /> : <Paperclip size={15} className="faint" />}<span className="col" style={{ gap: 0, minWidth: 0 }}><span className="a-name">{a.name ?? 'attachment'}</span><span className="a-size">{fmtBytes(a.size)}</span></span><Download size={14} className="faint" /></a>;

@@ -486,4 +486,27 @@ ALTER TABLE brands ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'upload
 ALTER TABLE brands ADD COLUMN IF NOT EXISTS report JSONB NOT NULL DEFAULT '{}'::jsonb;
 `,
   },
+  {
+    id: '20260906_0007_openpgp',
+    up: `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pgp_public_key TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pgp_fingerprint TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pgp_private_key_enc TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pgp_auth TEXT NOT NULL DEFAULT 'off' CHECK (pgp_auth IN ('off','second_factor','passwordless'));
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pgp_updated_at TIMESTAMPTZ;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS pgp_public_key TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS pgp_fingerprint TEXT;
+CREATE TABLE IF NOT EXISTS pgp_keys (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, email)
+);
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS encrypt_pgp BOOLEAN NOT NULL DEFAULT false;
+`,
+  },
 ];

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff } from 'lucide-react';
+import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff, Lock } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose } from '../state/compose';
@@ -145,6 +145,9 @@ function ContactEditor({ contact, onClose, onSaved }: { contact: any | null | 'n
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (contact) setForm(contact === 'new' ? { email: '', first_name: '', last_name: '', company: '', title: '', phone: '', website: '', tags: [], notes: '', consent_source: '', fields: {} } : { ...contact, fields: contact.fields ?? {}, tags: contact.tags ?? [] }); }, [contact]);
   const [tagText, setTagText] = useState('');
+  const [keyText, setKeyText] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  useEffect(() => { setKeyText(contact && contact !== 'new' ? contact.pgp_public_key ?? '' : ''); }, [contact]);
   const [fieldKey, setFieldKey] = useState('');
   const [fieldVal, setFieldVal] = useState('');
   if (!contact) return null;
@@ -153,8 +156,13 @@ function ContactEditor({ contact, onClose, onSaved }: { contact: any | null | 'n
     setBusy(true);
     try {
       const tags = tagText.trim() ? [...form.tags, ...tagText.split(',').map((t) => t.trim()).filter(Boolean)] : form.tags;
-      const body = { ...form, tags };
+      const { pgp_public_key: _k, pgp_fingerprint: _f, ...body } = { ...form, tags };
       if (contact === 'new') await api.post('/api/contacts', body); else await api.put(`/api/contacts/${contact.id}`, body);
+      const before = contact === 'new' ? '' : (contact.pgp_public_key ?? '');
+      if (keyText.trim() !== before.trim() && form.email) {
+        if (keyText.trim()) await api.put(`/api/pgp/recipients/${encodeURIComponent(form.email)}`, { publicKey: keyText });
+        else await api.del(`/api/pgp/recipients/${encodeURIComponent(form.email)}`);
+      }
       onSaved(); onClose(); toast.success('Saved');
     } catch (e) { toast.error(e); } finally { setBusy(false); }
   }
@@ -177,6 +185,10 @@ function ContactEditor({ contact, onClose, onSaved }: { contact: any | null | 'n
         <div className="row"><Input className="input-sm" placeholder="field_name" value={fieldKey} onChange={(e) => setFieldKey(e.target.value.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase())} style={{ width: 160 }} /><Input className="input-sm" placeholder="value" value={fieldVal} onChange={(e) => setFieldVal(e.target.value)} /><Button size="sm" disabled={!fieldKey} onClick={() => { set('fields', { ...form.fields, [fieldKey]: fieldVal }); setFieldKey(''); setFieldVal(''); }}>Add</Button></div>
       </Field>
       <Field label="Notes" hint="Notes are given to the AI when it personalises a message for this contact."><Textarea value={form.notes ?? ''} onChange={(e) => set('notes', e.target.value)} /></Field>
+      <Field label="OpenPGP public key" hint="With a key on file, mail to this person is encrypted. Paste the armored key, or look it up from their Web Key Directory and keys.openpgp.org.">
+        <Textarea value={keyText} onChange={(e) => setKeyText(e.target.value)} placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" style={{ fontFamily: 'var(--mono)', fontSize: 11.5, minHeight: 70 }} />
+        <div className="row mt-8"><Button size="sm" icon={<Search size={13} />} loading={keyBusy} disabled={!form.email} onClick={async () => { setKeyBusy(true); try { const r = await api.post<any>('/api/pgp/lookup', { email: form.email }); setKeyText(r.key.publicKey); toast.success(`Found a key (${r.key.source})`); } catch (e) { toast.error(e); } finally { setKeyBusy(false); } }}>Look up</Button>{keyText && <Button size="sm" variant="ghost" onClick={() => setKeyText('')}>Remove</Button>}</div>
+      </Field>
     </Modal>
   );
 }
@@ -199,6 +211,7 @@ function ContactDrawer({ id, onClose, onEdit }: { id: number; onClose: () => voi
             {c.phone && <><dt>Phone</dt><dd>{c.phone}</dd></>}
             {c.website && <><dt>Website</dt><dd><a href={/^https?:/.test(c.website) ? c.website : `https://${c.website}`} target="_blank" rel="noreferrer">{c.website}</a></dd></>}
             <dt>Tags</dt><dd><div className="row wrap gap-4">{(c.tags ?? []).length ? c.tags.map((t: string) => <span key={t} className="tag">{t}</span>) : <span className="faint">none</span>}</div></dd>
+            {c.pgp_fingerprint && <><dt>OpenPGP</dt><dd className="row gap-4"><Lock size={12} /><span className="mono small" style={{ overflowWrap: 'anywhere' }}>{String(c.pgp_fingerprint).toUpperCase().replace(/(.{4})/g, '$1 ').trim()}</span></dd></>}
             <dt>Source</dt><dd>{c.source}{c.consent_source ? ` · ${c.consent_source}` : ''}</dd>
             <dt>Added</dt><dd>{fmtDateTime(c.created_at)}</dd>
             <dt>Last contacted</dt><dd>{c.last_contacted_at ? fmtDateTime(c.last_contacted_at) : <span className="faint">never</span>}</dd>
