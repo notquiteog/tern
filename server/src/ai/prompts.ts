@@ -11,6 +11,7 @@ export interface DraftInput {
   tone?: string;
   length?: 'short' | 'medium' | 'long';
   senderName?: string;
+  senderEmail?: string;
   senderCompany?: string;
   signatureHint?: string;
   recipient?: { name?: string; email?: string; company?: string; title?: string; notes?: string; fields?: Record<string, unknown> };
@@ -47,16 +48,32 @@ function recipientBlock(r?: DraftInput['recipient']): string {
   return lines.length ? `Recipient facts (use only these):\n${lines.join('\n')}` : '';
 }
 
-function threadBlock(t?: DraftInput['thread']): string {
+function threadBlock(t?: DraftInput['thread'], senderEmail?: string): string {
   if (!t?.length) return '';
-  const parts = t.slice(-6).map((m) => `--- From ${m.from} on ${m.date}\n${m.text.slice(0, 2500)}`);
+  const mine = (from: string) => Boolean(senderEmail && from.toLowerCase().includes(senderEmail.toLowerCase()));
+  const parts = t.slice(-6).map((m) => `--- From ${m.from}${mine(m.from) ? ' (this is the sender, you)' : ''} on ${m.date}\n${m.text.slice(0, 2500)}`);
   return `Conversation so far (oldest first):\n${parts.join('\n')}`;
+}
+
+// Who the email is to, stated once and plainly. Small models otherwise pick a
+// name out of the thread, or invent one, and greet the wrong person.
+function addressingBlock(input: DraftInput): string {
+  if (!['compose', 'reply', 'personalize'].includes(input.mode)) return '';
+  const r = input.recipient;
+  const name = r?.name?.trim();
+  if (name) {
+    const first = name.split(/\s+/)[0];
+    return `Write to ${name}${r?.email ? ` <${r.email}>` : ''}. The first line of the email is exactly "Hi ${first}," and no other name is used for them. Speak to them as "you".`;
+  }
+  if (r?.email) return `Write to ${r.email}. Their name is not known: the first line is exactly "Hi there," and no name is guessed or invented.`;
+  return `The recipient's name is not known: the first line is exactly "Hi there," and no name is guessed or invented.`;
 }
 
 export function buildMessages(input: DraftInput): ChatMessage[] {
   const tone = input.tone ? `Tone: ${input.tone}.` : 'Tone: friendly and professional.';
   const len = LENGTH[input.length ?? 'medium'];
-  const sender = [input.senderName ? `Sender: ${input.senderName}` : '', input.senderCompany ? `Sender's company: ${input.senderCompany}` : ''].filter(Boolean).join('\n');
+  const senderFirst = input.senderName?.trim().split(/\s+/)[0];
+  const sender = [input.senderName ? `You are writing as ${input.senderName}${input.senderEmail ? ` <${input.senderEmail}>` : ''}. If you sign off, use only "${senderFirst}".` : '', input.senderCompany ? `Sender's company: ${input.senderCompany}` : ''].filter(Boolean).join('\n');
   const parts: string[] = [];
   switch (input.mode) {
     case 'compose':
@@ -84,13 +101,14 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       parts.push(`Write one subject line for the email below. Under 8 words, no quotes, no trailing punctuation. Output the subject line only.`);
       break;
     case 'personalize':
-      parts.push(`Write this outreach email for the specific recipient. Use the brief as the message to deliver and the recipient facts to make it relevant. Do not mention that you have facts about them; use them naturally, at most twice.`, input.instruction ? `Extra direction: ${input.instruction}` : '', tone, len);
+      parts.push(`Write the email the sender will send to the recipient below, in the first person ("I", "we") and speaking to the recipient as "you". The brief is the message to deliver; say it in the sender's words, do not describe or summarise it. Use at most two of the recipient facts, naturally, without saying you have facts about them.`, input.instruction ? `Extra direction: ${input.instruction}` : '', tone, len);
       break;
   }
+  const ab = addressingBlock(input); if (ab) parts.push(ab);
   if (sender) parts.push(sender);
   if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these):\n${input.voice.trim()}`);
   const rb = recipientBlock(input.recipient); if (rb) parts.push(rb);
-  const tb = threadBlock(input.thread); if (tb) parts.push(tb);
+  const tb = threadBlock(input.thread, input.senderEmail); if (tb) parts.push(tb);
   if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
   if (input.template) parts.push(`Brief / template:\n${input.template}`);
   if (input.draft) parts.push(input.mode === 'subject' ? `Email:\n${input.draft}` : `Draft:\n${input.draft}`);
@@ -103,7 +121,7 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
 // Small models sometimes wrap output in quotes or add a label anyway.
 export function cleanOutput(text: string, mode: DraftMode): string {
   let t = text.trim();
-  t = t.replace(/^(here(?:'s| is) (?:the|a|your) (?:email|draft|reply|subject line|summary)[^\n]*:?\s*)/i, '');
+  t = t.replace(/^(?:sure[,!.]?\s*)?(here(?:'s| is) (?:the|a|an|your|my) [^:\n]{0,80}:\s*)/i, '');
   t = t.replace(/^```[a-z]*\n?|\n?```$/g, '');
   // Small models like to add a speaker label or markdown emphasis; email is plain text.
   t = t.replace(/^\*{0,2}[A-Z][A-Za-z .'-]{0,40}:\*{0,2}\s*(?=\S)/, (m) => (/^\*{0,2}(subject|re|dear|hi|hello|hey)\b/i.test(m) ? m : ''));
@@ -114,3 +132,78 @@ export function cleanOutput(text: string, mode: DraftMode): string {
   }
   return t.trim();
 }
+
+
+// ---------- Guarantees the model cannot be trusted with ----------
+
+const GREETING_RE = /^\s*(hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[\s,]*([^\n,!.:]*)/i;
+const NEUTRAL = new Set(['there', 'all', 'team', 'everyone', 'both', 'folks', 'friend', 'sir', 'madam', 'sir or madam', '']);
+
+export interface FinalizeContext { recipient?: DraftInput['recipient']; senderName?: string; senderEmail?: string }
+
+// The salutation always names the actual recipient. A small model will
+// sometimes skip the greeting, greet the sender, or borrow a name from the
+// thread; this rewrites the first line so the person who receives the mail
+// is the one addressed. Only for modes that produce a whole email.
+export function ensureGreeting(text: string, mode: DraftMode, recipient?: DraftInput['recipient']): string {
+  if (!['compose', 'reply', 'personalize'].includes(mode)) return text;
+  const first = recipient?.name?.trim().split(/\s+/)[0] ?? '';
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => l.trim());
+  if (i < 0) return first ? `Hi ${first},` : 'Hi there,';
+  const line = lines[i];
+  const m = line.match(GREETING_RE);
+  const bareName = first && new RegExp(`^\\s*${escapeRe(first)}[,:]?\\s*$`, 'i').test(line);
+  if (first) {
+    if (bareName) return text;
+    if (m) {
+      const named = m[2].trim();
+      if (named.toLowerCase() === first.toLowerCase() || named.toLowerCase().startsWith(first.toLowerCase() + ' ')) return text;
+      const rest = line.slice(m[0].length).replace(/^[,!.:]\s*/, '');
+      lines[i] = `Hi ${first},${rest ? ' ' + rest : ''}`;
+      return lines.join('\n');
+    }
+    return [...lines.slice(0, i), `Hi ${first},`, '', ...lines.slice(i)].join('\n');
+  }
+  // Unknown recipient: never a guessed name.
+  if (m && !NEUTRAL.has(m[2].trim().toLowerCase())) {
+    const rest = line.slice(m[0].length).replace(/^[,!.:]\s*/, '');
+    lines[i] = `Hi there,${rest ? ' ' + rest : ''}`;
+    return lines.join('\n');
+  }
+  if (!m) return [...lines.slice(0, i), 'Hi there,', '', ...lines.slice(i)].join('\n');
+  return text;
+}
+
+// The client appends the account's signature, so a sign-off block the model
+// added (name plus address, title, company) is removed down to the plain
+// closing line.
+export function stripModelSignature(text: string, ctx: FinalizeContext): string {
+  const lines = text.split('\n');
+  const email = ctx.senderEmail?.toLowerCase();
+  while (lines.length) {
+    const last = lines[lines.length - 1].trim();
+    if (!last) { lines.pop(); continue; }
+    if (email && last.toLowerCase().includes(email)) { lines.pop(); continue; }
+    if (/^(\[?(your|sender'?s?) (name|company|title|phone)\]?|\[.*\])$/i.test(last)) { lines.pop(); continue; }
+    break;
+  }
+  // "Alex" followed by "Alex Rivera": keep one sign-off name.
+  const name = ctx.senderName?.trim();
+  if (name) {
+    const first = name.split(/\s+/)[0];
+    const isName = (l: string) => { const t = l.trim().replace(/^[-–—]\s*/, ''); return t === name || t === first || t === `${name},` || t === `${first},`; };
+    const idx = lines.map((l) => l.trim()).reduce<number[]>((acc, l, i) => (l ? [...acc, i] : acc), []);
+    if (idx.length >= 2 && isName(lines[idx[idx.length - 1]]) && isName(lines[idx[idx.length - 2]])) lines.splice(idx[idx.length - 1], 1);
+  }
+  return lines.join('\n');
+}
+
+export function finalizeOutput(raw: string, mode: DraftMode, ctx: FinalizeContext = {}): string {
+  let t = cleanOutput(raw, mode);
+  if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish'].includes(mode)) t = stripModelSignature(t, ctx);
+  t = ensureGreeting(t, mode, ctx.recipient);
+  return t.trim();
+}
+
+function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

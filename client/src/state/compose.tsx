@@ -13,7 +13,7 @@ export interface ComposeSeed {
   threadKey?: string | null;
   contactId?: number | null;
   draftId?: number | null;
-  attachments?: { id: number; filename: string; size: number; content_type: string }[];
+  attachments?: { id: number; filename: string; size: number; content_type: string; scrubbed?: { changed: boolean; removed: string[]; note: string | null } | null }[];
   autoAi?: 'reply' | 'compose' | null;
 }
 export interface ComposeWindow extends ComposeSeed { key: number; minimized: boolean; maximized: boolean }

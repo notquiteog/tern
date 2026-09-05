@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Maximize2, Minimize2, Minus, Paperclip, Send, Sparkles, Trash2, X, Clock, Shuffle, FileText } from 'lucide-react';
+import { ChevronDown, Maximize2, Minimize2, Minus, Paperclip, Send, Sparkles, Trash2, X, Clock, Shuffle, FileText, ShieldCheck } from 'lucide-react';
 import { api } from '../api';
 import { useCompose, type ComposeWindow } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -80,6 +80,7 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
       try {
         const r = await api.upload<{ upload: any }>(`/api/mail/uploads?filename=${encodeURIComponent(f.name)}&type=${encodeURIComponent(f.type || 'application/octet-stream')}`, f, f.type || 'application/octet-stream');
         setAttachments((a) => [...a, r.upload]); setDirty(true);
+        if (r.upload.scrubbed?.changed) toast.success(`${f.name}: ${r.upload.scrubbed.note}`);
       } catch (e) { toast.error(e); }
     }
   }
@@ -95,7 +96,8 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
     setDirty(true);
   }
   const recipientEmail = to[0]?.email;
-  const aiContext = useMemo(() => ({ accountId, contactId: win.contactId, threadKey: win.threadKey, subject, recipientEmail }), [accountId, win.contactId, win.threadKey, subject, recipientEmail]);
+  const recipientName = to[0]?.name ?? undefined;
+  const aiContext = useMemo(() => ({ accountId, contactId: win.contactId, threadKey: win.threadKey, subject, recipientEmail, recipientName }), [accountId, win.contactId, win.threadKey, subject, recipientEmail, recipientName]);
 
   if (win.minimized) {
     return (
@@ -126,7 +128,7 @@ function ComposeWin({ win }: { win: ComposeWindow }) {
         <div className="subject-row"><input value={subject} onChange={(e) => { setSubject(e.target.value); setDirty(true); }} placeholder="Subject" /></div>
         <Editor ref={editor} initialHtml={html.current} placeholder="Write your message…" minHeight={120} onChange={(h) => { html.current = h; setDirty(true); }} />
         {attachments.length > 0 && (
-          <div className="compose-attach">{attachments.map((a) => <span key={a.id} className="chip"><Paperclip size={12} /><span className="truncate">{a.filename}</span><span className="faint">{fmtBytes(a.size)}</span><button type="button" className="chip-x" onClick={() => { api.del(`/api/mail/uploads/${a.id}`).catch(() => {}); setAttachments((l) => l.filter((x) => x.id !== a.id)); setDirty(true); }}><X size={12} /></button></span>)}</div>
+          <div className="compose-attach">{attachments.map((a) => <span key={a.id} className="chip" title={a.scrubbed?.note ?? undefined}>{a.scrubbed?.changed ? <ShieldCheck size={12} style={{ color: 'var(--success)' }} /> : <Paperclip size={12} />}<span className="truncate">{a.filename}</span><span className="faint">{fmtBytes(a.size)}</span><button type="button" className="chip-x" onClick={() => { api.del(`/api/mail/uploads/${a.id}`).catch(() => {}); setAttachments((l) => l.filter((x) => x.id !== a.id)); setDirty(true); }}><X size={12} /></button></span>)}</div>
         )}
         {ai && <AiPanel context={aiContext} autoRun={Boolean(win.autoAi)} defaultMode={win.autoAi ?? undefined} getDraft={() => editor.current?.getHtml() ?? ''} onClose={() => setAi(false)} onSubject={(s) => { setSubject(s); setDirty(true); }} onInsert={(h, mode) => { if (mode === 'compose' || mode === 'reply') { const quote = win.quoteHtml ?? ''; editor.current?.setHtml(h + (quote ? `<p><br></p>${quote}` : '')); } else editor.current?.setHtml(h + (win.quoteHtml ? `<p><br></p>${win.quoteHtml}` : '')); html.current = editor.current?.getHtml() ?? ''; setDirty(true); }} />}
         <div className="compose-foot">

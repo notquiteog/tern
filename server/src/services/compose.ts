@@ -11,6 +11,7 @@ import { config } from '../config.js';
 import { signPayload } from '../crypto.js';
 import { escapeHtml } from './merge.js';
 import { badRequest } from '../errors.js';
+import { scrubMedia } from './scrub.js';
 
 export interface ComposeInput {
   to: Address[];
@@ -95,6 +96,9 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
       attachments.push({ filename: a.name ?? 'attachment', content: Buffer.from(await res.arrayBuffer()), contentType: a.type ?? 'application/octet-stream', cid: a.cid ?? undefined });
     }
   }
+  // Uploads were scrubbed when stored; forwarded files were not, and this is
+  // the one place every outgoing attachment passes through.
+  for (const a of attachments) a.content = scrubMedia(a.content, a.contentType, a.filename).data;
 
   let html = input.html || '<p></p>';
   if (input.includeSignature !== false && acc.signature_html?.trim()) {

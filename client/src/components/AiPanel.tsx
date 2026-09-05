@@ -13,7 +13,7 @@ const MODES: { value: AiMode; label: string; needsDraft?: boolean }[] = [
 const TONES = ['friendly', 'professional', 'casual', 'direct', 'warm', 'formal', 'enthusiastic'];
 
 export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, getDraft, autoRun }: {
-  context: { accountId?: number | null; contactId?: number | null; threadKey?: string | null; subject?: string; recipientEmail?: string };
+  context: { accountId?: number | null; contactId?: number | null; threadKey?: string | null; subject?: string; recipientEmail?: string; recipientName?: string };
   onInsert: (html: string, mode: AiMode) => void; onSubject: (s: string) => void; onClose: () => void; defaultMode?: AiMode; getDraft: () => string; autoRun?: boolean;
 }) {
   const { data: ai } = useAiStatus();
@@ -36,7 +36,7 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
     abort.current?.abort();
     abort.current = new AbortController();
     try {
-      await apiStream('/api/ai/draft', { mode, instruction: instruction || undefined, tone, length, accountId: context.accountId ?? null, contactId: context.contactId ?? null, threadKey: context.threadKey ?? null, draft: getDraft() || undefined, subject: context.subject, recipientEmail: context.recipientEmail }, {
+      await apiStream('/api/ai/draft', { mode, instruction: instruction || undefined, tone, length, accountId: context.accountId ?? null, contactId: context.contactId ?? null, threadKey: context.threadKey ?? null, draft: getDraft() || undefined, subject: context.subject, recipientEmail: context.recipientEmail, recipientName: context.recipientName }, {
         signal: abort.current.signal,
         onEvent: (ev, data) => {
           if (ev === 'token') setOut((o) => o + data.t);

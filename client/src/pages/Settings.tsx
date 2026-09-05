@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, Info, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useToast } from '../state/toast';
@@ -13,27 +13,38 @@ import { getAppearance, setAppearance, onAppearance, type Theme, type Appearance
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { Avatar } from '../components/ui';
 import { useLocalStorage } from '../lib/hooks';
-import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
+import { fmtBytes, fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
+import { DataTable } from '../components/DataTable';
+import MailAppsSettings from './MailApps';
 
+// Everyone gets the tabs about their own login, mailboxes and appearance.
+// Workspace-wide pages (general, users, the mail server) are admin only,
+// and the server refuses their endpoints regardless of what the UI shows.
 export default function SettingsPage() {
   const { user, stalwartProvisioning } = useAuth();
-  const tabs = [['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['general', 'General', <SettingsIcon size={15} />]] as const;
+  const admin = user!.role === 'admin';
+  const tabs: [string, string, ReactNode][] = [
+    ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
+    ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />],
+  ];
+  if (admin) tabs.push(['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />]);
+  if (admin && stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
+  const AdminOnly = ({ children }: { children: ReactNode }) => (admin ? <>{children}</> : <Navigate to="/settings/profile" replace />);
   return (
     <div className="page">
-      <div className="tabs">
+      <div className="tabs settings-tabs">
         {tabs.map(([k, l, i]) => <NavLink key={k} to={`/settings/${k}`} className={({ isActive }) => cls(isActive && 'active')}>{i}{l}</NavLink>)}
-        {user!.role === 'admin' && <NavLink to="/settings/users" className={({ isActive }) => cls(isActive && 'active')}><Users size={15} />Users</NavLink>}
-        {stalwartProvisioning && <NavLink to="/settings/mailserver" className={({ isActive }) => cls(isActive && 'active')}><Server size={15} />Mail server</NavLink>}
       </div>
       <Routes>
         <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
+        <Route path="mailapps" element={<MailAppsSettings />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
         <Route path="appearance" element={<AppearanceSettings />} />
-        <Route path="general" element={<GeneralSettings />} />
-        <Route path="users" element={<UsersSettings />} />
-        <Route path="mailserver" element={<MailServerSettings />} />
+        <Route path="general" element={<AdminOnly><GeneralSettings /></AdminOnly>} />
+        <Route path="users" element={<AdminOnly><UsersSettings /></AdminOnly>} />
+        <Route path="mailserver" element={<AdminOnly><MailServerSettings /></AdminOnly>} />
         <Route path="*" element={<Navigate to="/settings/accounts" replace />} />
       </Routes>
     </div>
@@ -66,7 +77,7 @@ function AccountCard({ a, onEdit }: { a: Account; onEdit: () => void }) {
   const [del, setDel] = useState(false);
   return (
     <div className="card">
-      <div className="row" style={{ alignItems: 'flex-start' }}>
+      <div className="row wrap" style={{ alignItems: 'flex-start' }}>
         <span className="avatar" style={{ background: a.color }}>{a.name.slice(0, 1).toUpperCase()}</span>
         <div className="flex-1">
           <div className="row wrap gap-4"><span className="strong">{a.name}</span><span className="muted">{a.email}</span><Badge>{a.provider}</Badge>{!a.enabled && <Badge kind="warning">paused</Badge>}</div>
@@ -85,7 +96,7 @@ function AccountCard({ a, onEdit }: { a: Account; onEdit: () => void }) {
             </div>
           )}
         </div>
-        <div className="row gap-4">
+        <div className="row gap-4 card-actions">
           <IconButton label="Sync now" onClick={() => api.post(`/api/accounts/${a.id}/resync`).then(() => toast.toast('Sync started'))}><RefreshCw size={16} /></IconButton>
           <Button size="sm" icon={<Pencil size={14} />} onClick={onEdit}>Edit</Button>
           <IconButton label="Remove" onClick={() => setDel(true)}><Trash2 size={16} /></IconButton>
@@ -286,17 +297,26 @@ function AiSettings() {
     try { await apiStream('/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
   if (isLoading || !data || !f) return <Spinner />;
-  const installed = new Set(data.models.map((m: any) => m.name));
-  const isInstalled = (n: string) => installed.has(n) || installed.has(`${n}:latest`);
+  const findInstalled = (n: string) => data.models.find((x: any) => x.name === n || x.name === `${n}:latest`);
+  const modelRows: { name: string; inst: any; active: boolean; note: string; sizeGB?: number }[] = [
+    ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
+    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => ({ name: x.name, inst: x, active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+  ];
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI assistant" sub="Drafts, replies, rewrites, summaries and per-contact personalisation, generated on this server." />
       <div className="card mb-16">
-        <div className="row mb-8"><span className={cls('sync-dot', data.health.ok ? 'idle' : 'error')} /><span className="strong">{data.settings.provider === 'ollama' ? 'Ollama' : 'OpenAI-compatible endpoint'}</span><span className="muted small">{data.health.ok ? `reachable${data.health.version ? `, v${data.health.version}` : ''}` : `unreachable: ${data.health.error}`}</span><span className="ml-auto small muted">{data.totalMemGiB} GB RAM on this machine</span></div>
-        <div className="row wrap gap-12 small">
-          <span>Model in use: <b>{data.settings.model}</b> {data.settings.provider === 'ollama' && (data.modelInstalled ? <Badge kind="success">installed</Badge> : <Badge kind="danger">not downloaded</Badge>)}</span>
-          {data.loaded?.length > 0 && <span className="muted">loaded in memory: {data.loaded.map((m: any) => m.name).join(', ')}</span>}
-        </div>
+        {admin ? (
+          <>
+            <div className="row mb-8 wrap"><span className={cls('sync-dot', data.health.ok ? 'idle' : 'error')} /><span className="strong">{data.settings.provider === 'ollama' ? 'Ollama' : 'OpenAI-compatible endpoint'}</span><span className="muted small">{data.health.ok ? `reachable${data.health.version ? `, v${data.health.version}` : ''}` : `unreachable: ${data.health.error}`}</span><span className="ml-auto small muted">{data.totalMemGiB} GB RAM on this machine</span></div>
+            <div className="row wrap gap-12 small">
+              <span>Model in use: <b>{data.settings.model}</b> {data.settings.provider === 'ollama' && (data.modelInstalled ? <Badge kind="success">installed</Badge> : <Badge kind="danger">not downloaded</Badge>)}</span>
+              {data.loaded?.length > 0 && <span className="muted">loaded in memory: {data.loaded.map((m: any) => m.name).join(', ')}</span>}
+            </div>
+          </>
+        ) : (
+          <div className="row wrap"><span className={cls('sync-dot', data.settings.enabled && data.health.ok && data.modelInstalled ? 'idle' : 'error')} /><span className="strong">{data.settings.enabled && data.health.ok && data.modelInstalled ? 'The assistant is available' : 'The assistant is unavailable right now'}</span><span className="muted small">{data.settings.enabled ? `model ${data.settings.model}` : 'turned off by an admin'}</span></div>
+        )}
       </div>
       <div className="card mb-16">
         <div className="card-title"><h2>Playground</h2><span className="small muted">Uses the saved system prompt and tuning</span></div>
@@ -342,14 +362,12 @@ function AiSettings() {
               <div className="card-title"><h2>Models</h2><span className="small muted">Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b></span></div>
               <Callout>{data.recommended.note} Pulling downloads from the Ollama registry once; models live in the <code>ollama</code> volume.</Callout>
               {pull && <div className="mt-16"><div className="row small mb-8"><Loader2 size={14} className="spin" /> Pulling {pull.name}: {pull.status} {pull.pct ? `${pull.pct}%` : ''}</div><Progress value={pull.pct} max={100} /></div>}
-              <div className="table-wrap mt-16"><table className="table"><thead><tr><th>Model</th><th>Size</th><th>Note</th><th /></tr></thead><tbody>
-                {data.curated.map((m: any) => {
-                  const inst = data.models.find((x: any) => x.name === m.name || x.name === `${m.name}:latest`);
-                  const active = data.settings.model === m.name;
-                  return <tr key={m.name}><td className="strong">{m.name} {active && <Badge kind="accent">in use</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</td><td className="muted">{inst ? fmtBytes(inst.size) : `~${m.sizeGB} GB`}</td><td className="muted small">{m.note}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{inst ? <><Button size="sm" disabled={active} onClick={() => save({ model: m.name })}>{active ? 'Selected' : 'Use'}</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(m.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button>}</div></td></tr>;
-                })}
-                {data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => <tr key={x.name}><td className="strong">{x.name} {data.settings.model === x.name && <Badge kind="accent">in use</Badge>}</td><td className="muted">{fmtBytes(x.size)}</td><td className="muted small">{x.parameterSize} {x.quantization}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}><Button size="sm" disabled={data.settings.model === x.name} onClick={() => save({ model: x.name })}>Use</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(x.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></div></td></tr>)}
-              </tbody></table></div>
+              <div className="mt-16"><DataTable rows={modelRows} rowKey={(m) => m.name} columns={[
+                { key: 'model', header: 'Model', primary: true, cell: (m) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</span> },
+                { key: 'size', header: 'Size', className: 'muted', nowrap: true, cell: (m) => m.inst ? fmtBytes(m.inst.size) : `~${m.sizeGB} GB` },
+                { key: 'note', header: 'Note', secondary: true, className: 'muted small', cell: (m) => m.note },
+                { key: 'act', actions: true, cell: (m) => m.inst ? <><Button size="sm" disabled={m.active} onClick={() => save({ model: m.name })}>{m.active ? 'Selected' : 'Use'}</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(m.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
+              ]} /></div>
               <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || Boolean(pull)} onClick={() => { doPull(customModel); setCustomModel(''); }}>Pull</Button></div>
             </div>
           )}
@@ -362,8 +380,15 @@ function AiSettings() {
 // ---------------- Security ----------------
 
 function SecuritySettings() {
-  const { user, refresh } = useAuth();
+  const { user, refresh, setUser } = useAuth();
   const toast = useToast();
+  const [delOpen, setDelOpen] = useState(false);
+  const [delPw, setDelPw] = useState(''); const [delCode, setDelCode] = useState(''); const [delConfirm, setDelConfirm] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  async function deleteAccount() {
+    setDeleting(true);
+    try { await api.post('/api/auth/delete-account', { password: delPw, code: delCode || undefined, confirm: delConfirm }); toast.success('Your account has been deleted'); setUser(null); } catch (e) { toast.error(e); } finally { setDeleting(false); }
+  }
   const [cur, setCur] = useState(''); const [next, setNext] = useState(''); const [conf, setConf] = useState('');
   const [setup, setSetup] = useState<{ secret: string; otpauth: string; qr: string } | null>(null);
   const [code, setCode] = useState('');
@@ -410,8 +435,28 @@ function SecuritySettings() {
       </div>
       <div className="card">
         <div className="card-title"><h2>Sessions</h2><Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { all: true }).then(() => { refetch(); toast.success('Other sessions signed out'); })}>Sign out everywhere else</Button></div>
-        <div className="table-wrap"><table className="table"><tbody>{(sessions?.sessions ?? []).map((s) => <tr key={s.id}><td>{s.current ? <Badge kind="success">this device</Badge> : <Badge>other</Badge>}</td><td className="small muted truncate" style={{ maxWidth: 320 }}>{s.user_agent || 'unknown client'}</td><td className="small muted">active {fmtRelative(s.last_seen_at)}</td><td>{!s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.fullId }).then(() => refetch())}>Sign out</Button>}</td></tr>)}</tbody></table></div>
+        <DataTable rows={sessions?.sessions ?? []} rowKey={(s) => s.id} cardSize="sm" columns={[
+          { key: 'client', header: 'Client', primary: true, cell: (s) => <span className="row gap-4 wrap"><span>{describeUa(s.user_agent)}</span>{s.current ? <Badge kind="success">this device</Badge> : null}</span> },
+          { key: 'ua', secondary: true, className: 'small muted', cell: (s) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 320, verticalAlign: 'bottom' }} title={s.user_agent}>{s.user_agent || 'unknown client'}</span> },
+          { key: 'seen', header: 'Last active', className: 'small muted', nowrap: true, cell: (s) => fmtRelative(s.last_seen_at) },
+          { key: 'started', header: 'Signed in', className: 'small muted', nowrap: true, cell: (s) => fmtDateTime(s.created_at) },
+          { key: 'act', actions: true, cell: (s) => !s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.fullId }).then(() => refetch())}>Sign out</Button> },
+        ]} />
       </div>
+      <div className="card mt-16">
+        <div className="card-title"><h2>Your data</h2></div>
+        <p className="muted small">Everything this server stores about you, as one JSON file: connected mailboxes and their local mail copy, contacts, templates, sequences, drafts, send history, settings and sessions. Passwords, two-factor secrets and mailbox credentials are never included. Deleting the account removes all of it from Tern; mail on the mail server itself is untouched.</p>
+        <div className="row wrap">
+          <a className="btn" href="/api/auth/export" download><Download size={15} />Export my data</a>
+          <Button variant="danger" icon={<Trash2 size={15} />} onClick={() => { setDelPw(''); setDelCode(''); setDelConfirm(''); setDelOpen(true); }}>Delete my account</Button>
+        </div>
+      </div>
+      <Modal open={delOpen} onClose={() => setDelOpen(false)} title="Delete your account" footer={<><Button onClick={() => setDelOpen(false)}>Cancel</Button><Button variant="danger" loading={deleting} disabled={!delPw || delConfirm.trim().toLowerCase() !== user!.username.toLowerCase() || (user!.totp_enabled && !delCode)} onClick={deleteAccount}>Delete everything</Button></>}>
+        <Callout kind="danger">This removes your login and, with it, every mailbox connection, the local copy of that mail, your contacts, sequences, templates, drafts and history. It cannot be undone. Export first if you want a copy.</Callout>
+        <Field label="Password" className="mt-16"><Input type="password" value={delPw} onChange={(e) => setDelPw(e.target.value)} autoComplete="current-password" /></Field>
+        {user!.totp_enabled && <Field label="Two-factor code"><Input inputMode="numeric" value={delCode} onChange={(e) => setDelCode(e.target.value)} placeholder="123456 or a recovery code" /></Field>}
+        <Field label={`Type your username (${user!.username}) to confirm`}><Input value={delConfirm} onChange={(e) => setDelConfirm(e.target.value)} autoCapitalize="none" /></Field>
+      </Modal>
     </div>
   );
 }
@@ -534,7 +579,12 @@ function GeneralSettings() {
       {user!.role === 'admin' && (
         <div className="card">
           <h2 className="mb-8">Audit log</h2>
-          <div className="table-wrap"><table className="table"><tbody>{(audit?.entries ?? []).slice(0, 60).map((e) => <tr key={e.id}><td className="small muted" style={{ whiteSpace: 'nowrap' }}>{fmtDateTime(e.created_at)}</td><td className="small">{e.username ?? 'system'}</td><td className="small strong">{e.action}</td><td className="small muted truncate" style={{ maxWidth: 300 }}>{e.target ?? ''} {Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}</td></tr>)}</tbody></table></div>
+          <DataTable rows={(audit?.entries ?? []).slice(0, 60)} rowKey={(e) => e.id} cardSize="sm" dense columns={[
+            { key: 'when', header: 'When', className: 'small muted', nowrap: true, cell: (e) => fmtDateTime(e.created_at) },
+            { key: 'who', header: 'Who', className: 'small', cell: (e) => e.username ?? 'system' },
+            { key: 'action', header: 'Action', primary: true, className: 'small strong', cell: (e) => e.action },
+            { key: 'details', header: 'Details', secondary: true, className: 'small muted', cell: (e) => { const d = `${e.target ?? ''} ${Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}`.trim(); return d ? <span className="truncate" style={{ display: 'inline-block', maxWidth: 320, verticalAlign: 'bottom' }} title={d}>{d}</span> : null; } },
+          ]} />
         </div>
       )}
     </div>
@@ -567,20 +617,18 @@ function UsersSettings() {
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="Users" sub="Everyone signs in with a username and password; there is no email-based reset by design." actions={<Button variant="primary" icon={<Plus size={15} />} onClick={() => setCreate(true)}>Add user</Button>} />
-      <div className="table-wrap"><table className="table"><thead><tr><th>User</th><th>Role</th><th>Accounts</th><th>2FA</th><th>Last sign-in</th><th /></tr></thead><tbody>
-        {(data?.users ?? []).map((u) => <tr key={u.id}>
-          <td><div className="strong">{u.display_name}</div><div className="small muted">@{u.username}{u.disabled && <Badge kind="danger">disabled</Badge>}</div></td>
-          <td><Select className="input-sm" value={u.role} disabled={u.id === me!.id} onChange={(e) => api.put(`/api/users/${u.id}`, { role: e.target.value }).then(invalidate).catch((err) => toast.error(err))}><option value="admin">admin</option><option value="member">member</option></Select></td>
-          <td>{u.account_count}</td>
-          <td>{u.totp_enabled ? <Badge kind="success">on</Badge> : <Badge>off</Badge>}</td>
-          <td className="small muted">{u.last_login_at ? fmtRelative(u.last_login_at) : 'never'}</td>
-          <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-            <Button size="sm" onClick={() => { setReset(u); setNewPw(''); }}>Set password</Button>
-            {u.id !== me!.id && <Button size="sm" variant="ghost" onClick={() => api.put(`/api/users/${u.id}`, { disabled: !u.disabled }).then(invalidate)}>{u.disabled ? 'Enable' : 'Disable'}</Button>}
-            {u.id !== me!.id && <IconButton label="Delete" className="btn-sm" onClick={() => setDel(u)}><Trash2 size={14} /></IconButton>}
-          </div></td>
-        </tr>)}
-      </tbody></table></div>
+      <DataTable rows={data?.users ?? []} rowKey={(u) => u.id} minWidth={720} columns={[
+        { key: 'user', header: 'User', primary: true, cell: (u) => <div className="row"><Avatar name={u.display_name} email={u.username} size="sm" src={u.avatar_version ? `/api/avatars/user/${u.id}?v=${u.avatar_version}` : null} /><div><div className="strong">{u.display_name}</div><div className="small muted">@{u.username} {u.disabled && <Badge kind="danger">disabled</Badge>}</div></div></div> },
+        { key: 'role', header: 'Role', cell: (u) => <Select className="input-sm" style={{ width: 110 }} value={u.role} disabled={u.id === me!.id} onChange={(e) => api.put(`/api/users/${u.id}`, { role: e.target.value }).then(invalidate).catch((err) => toast.error(err))}><option value="admin">admin</option><option value="member">member</option></Select> },
+        { key: 'accounts', header: 'Mailboxes', cell: (u) => u.account_count },
+        { key: 'totp', header: '2FA', cell: (u) => u.totp_enabled ? <Badge kind="success">on</Badge> : <Badge>off</Badge> },
+        { key: 'last', header: 'Last sign-in', className: 'small muted', nowrap: true, cell: (u) => u.last_login_at ? fmtRelative(u.last_login_at) : 'never' },
+        { key: 'act', actions: true, cell: (u) => <>
+          <Button size="sm" onClick={() => { setReset(u); setNewPw(''); }}>Set password</Button>
+          {u.id !== me!.id && <Button size="sm" variant="ghost" onClick={() => api.put(`/api/users/${u.id}`, { disabled: !u.disabled }).then(invalidate)}>{u.disabled ? 'Enable' : 'Disable'}</Button>}
+          {u.id !== me!.id && <IconButton label="Delete" className="btn-sm" onClick={() => setDel(u)}><Trash2 size={14} /></IconButton>}
+        </> },
+      ]} />
       <div className="card mt-24">
         <div className="card-title"><h2>Registration</h2></div>
         <div className="row mb-8"><Toggle checked={Boolean(authSettings?.allowRegistration)} onChange={(v) => saveAuth({ allowRegistration: v })} /><div><div className="strong small">Allow anyone who reaches the sign-in page to create an account</div><div className="help-text">Off by default. Invite links below work either way.</div></div></div>
@@ -589,7 +637,12 @@ function UsersSettings() {
       <div className="card mt-16">
         <div className="card-title"><h2>Invite links</h2></div>
         <div className="row wrap mb-16"><Select className="input-sm" style={{ width: 130 }} value={inviteRole} onChange={(e) => setInviteRole(e.target.value as any)}><option value="member">Member</option><option value="admin">Admin</option></Select><Input className="input-sm" style={{ maxWidth: 260 }} value={inviteNote} onChange={(e) => setInviteNote(e.target.value)} placeholder="Note, e.g. for Sam" /><Input className="input-sm" type="number" min={1} max={365} style={{ width: 90 }} value={inviteDays} onChange={(e) => setInviteDays(Number(e.target.value))} /><span className="small muted">days valid</span><Button size="sm" variant="primary" icon={<Plus size={13} />} onClick={makeInvite}>Create link</Button></div>
-        {invites?.length ? <div className="table-wrap"><table className="table"><tbody>{invites.map((i) => <tr key={i.id}><td><Badge>{i.role}</Badge></td><td className="small">{i.note}</td><td className="small muted">{i.used_at ? `used by @${i.used_by_username}` : new Date(i.expires_at) < new Date() ? 'expired' : `expires ${fmtRelative(i.expires_at)}`}</td><td className="small mono truncate" style={{ maxWidth: 320 }}>{i.used_at ? '' : i.url}</td><td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{!i.used_at && <Button size="sm" onClick={() => { navigator.clipboard?.writeText(i.url); toast.success('Link copied'); }}>Copy</Button>}<IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/users/invites/${i.id}`).then(() => qc.invalidateQueries({ queryKey: ['invites'] }))}><Trash2 size={14} /></IconButton></div></td></tr>)}</tbody></table></div> : <div className="small muted">No invite links yet.</div>}
+        {invites?.length ? <DataTable rows={invites} rowKey={(i) => i.id} cardSize="sm" columns={[
+          { key: 'note', header: 'For', primary: true, cell: (i) => <span className="row gap-4 wrap"><Badge>{i.role}</Badge><span className="small">{i.note || <span className="faint">no note</span>}</span></span> },
+          { key: 'state', header: 'Status', secondary: true, className: 'small muted', cell: (i) => i.used_at ? `used by @${i.used_by_username}` : new Date(i.expires_at) < new Date() ? 'expired' : `expires ${fmtRelative(i.expires_at)}` },
+          { key: 'url', header: 'Link', hideOnMobile: true, className: 'small mono', cell: (i) => i.used_at ? '' : <span className="truncate" style={{ display: 'inline-block', maxWidth: 320, verticalAlign: 'bottom' }}>{i.url}</span> },
+          { key: 'act', actions: true, cell: (i) => <>{!i.used_at && <Button size="sm" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(i.url); toast.success('Link copied'); }}>Copy link</Button>}<IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/users/invites/${i.id}`).then(() => qc.invalidateQueries({ queryKey: ['invites'] }))}><Trash2 size={14} /></IconButton></> },
+        ]} /> : <div className="small muted">No invite links yet.</div>}
       </div>
       <Modal open={create} onClose={() => setCreate(false)} title="Add user" footer={<><Button onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" disabled={!f.username || !f.displayName || f.password.length < 10} onClick={add}>Create</Button></>}>
         <div className="form-row"><Field label="Name"><Input value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} /></Field><Field label="Username"><Input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} /></Field><Field label="Temporary password" hint="At least 10 characters; they can change it later."><Input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" /></Field><Field label="Role"><Select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}><option value="member">Member</option><option value="admin">Admin</option></Select></Field></div>
@@ -664,17 +717,12 @@ function MailServerSettings() {
         <div className="card">
           <div className="card-title"><h2>Mailboxes</h2><span className="small muted">{data.mailboxes.length} on the server</span></div>
           {!data.mailboxes.length ? <div className="small muted">No mailboxes yet. Create one with the button above; it can also create the person's Tern login and connect the two.</div> : (
-            <div className="table-wrap"><table className="table"><thead><tr><th>Address</th><th>Name</th><th>Connected in Tern</th><th /></tr></thead><tbody>
-              {data.mailboxes.map((m: any) => <tr key={m.id}>
-                <td className="strong">{m.email}{m.aliases?.length ? <div className="small muted">aliases: {m.aliases.join(', ')}</div> : null}</td>
-                <td className="muted">{m.description ?? ''}</td>
-                <td>{m.connections.length ? m.connections.map((c: any) => <Badge key={c.accountId} kind="success">@{c.username}</Badge>) : <span className="faint small">not connected</span>}</td>
-                <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-                  <Button size="sm" icon={<KeySquare size={13} />} onClick={() => setReset(m)}>Reset password</Button>
-                  <IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton>
-                </div></td>
-              </tr>)}
-            </tbody></table></div>
+            <DataTable rows={data.mailboxes} rowKey={(m: any) => m.id} columns={[
+              { key: 'email', header: 'Address', primary: true, className: 'strong', cell: (m: any) => <>{m.email}{m.aliases?.length ? <div className="small muted" style={{ fontWeight: 400 }}>aliases: {m.aliases.join(', ')}</div> : null}</> },
+              { key: 'name', header: 'Name', secondary: true, className: 'muted', cell: (m: any) => m.description ?? '' },
+              { key: 'conn', header: 'Connected in Tern', cell: (m: any) => m.connections.length ? <span className="row gap-4 wrap">{m.connections.map((c: any) => <Badge key={c.accountId} kind="success">@{c.username}</Badge>)}</span> : <span className="faint small">not connected</span> },
+              { key: 'act', actions: true, cell: (m: any) => <><Button size="sm" icon={<KeySquare size={13} />} onClick={() => setReset(m)}>Reset password</Button><IconButton label="Delete mailbox" className="btn-sm" onClick={() => setDel(m)}><Trash2 size={14} /></IconButton></> },
+            ]} />
           )}
         </div>
       )}
@@ -759,20 +807,13 @@ function DnsSetup({ data }: { data: any }) {
       {groups.map((g) => (g !== 'clients' || showClients) && (
         <div key={g} className="card">
           <div className="card-title"><h2>{GROUP_TITLES[g][0]}</h2><span className="small muted">{GROUP_TITLES[g][1]}</span></div>
-          <div className="table-wrap"><table className="table"><thead><tr><th style={{ width: 70 }}>Type</th><th>Name</th><th>Value</th><th style={{ width: 90 }}>Status</th><th /></tr></thead><tbody>
-            {dns.records.filter((r: any) => r.group === g).map((r: any) => {
-              const c = checks[r.id];
-              return (
-                <tr key={r.id}>
-                  <td><Badge>{r.type}</Badge></td>
-                  <td className="mono small" style={{ maxWidth: 260, wordBreak: 'break-all' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{r.purpose}</div>}</td>
-                  <td className="mono small" style={{ maxWidth: 360, wordBreak: 'break-all' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</td>
-                  <td>{c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>}</td>
-                  <td><div className="row gap-4" style={{ justifyContent: 'flex-end' }}>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></div></td>
-                </tr>
-              );
-            })}
-          </tbody></table></div>
+          <DataTable rows={dns.records.filter((r: any) => r.group === g)} rowKey={(r: any) => r.id} minWidth={720} columns={[
+            { key: 'type', header: 'Type', width: 70, cell: (r: any) => <Badge>{r.type}</Badge> },
+            { key: 'name', header: 'Name', primary: true, className: 'mono small', cell: (r: any) => <span style={{ display: 'block', maxWidth: 260, overflowWrap: 'anywhere' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)', fontWeight: 400 }}>{r.purpose}</div>}</span> },
+            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
+            { key: 'status', header: 'Status', width: 100, cell: (r: any) => { const c = checks[r.id]; return c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>; } },
+            { key: 'act', actions: true, cell: (r: any) => <>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></> },
+          ]} />
           {g === 'recommended' && sts && (
             <div className="row mt-16 wrap">
               <span className="small strong">MTA-STS mode:</span>
@@ -898,7 +939,7 @@ function BrandLogo({ domain }: { domain: string }) {
         {brand ? (
           <>
             <div className="small mb-8">Publish this TXT record at <code>default._bimi.{domain}</code> (it is also listed under DNS setup):</div>
-            <div className="row"><code className="small" style={{ wordBreak: 'break-all', flex: 1 }}>{brand.record}</code><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.record); toast.success('Copied'); }}>Copy</Button></div>
+            <div className="row"><code className="small" style={{ overflowWrap: 'anywhere', flex: 1 }}>{brand.record}</code><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.record); toast.success('Copied'); }}>Copy</Button></div>
             <Field label="Verified Mark Certificate URL (optional)" hint="Gmail and Apple Mail only show the logo with a VMC or CMC from DigiCert or Entrust. Host the .pem at a public https address and paste it here; it fills the a= part of the record." className="mt-16"><div className="row"><Input value={vmc} onChange={(e) => setVmc(e.target.value)} placeholder="https://outreach.example.com/bimi/vmc.pem" /><Button onClick={() => api.put(`/api/brand/${domain}/options`, { vmcUrl: vmc.trim() }).then(() => { done(); toast.success('Record updated'); }).catch((e) => toast.error(e))}>Save</Button></div></Field>
           </>
         ) : <div className="small muted">The record appears once a logo exists.</div>}

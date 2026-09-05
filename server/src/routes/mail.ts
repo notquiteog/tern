@@ -10,6 +10,7 @@ import { composeAndSend } from '../services/compose.js';
 import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
 import { brandDomains } from '../services/brand.js';
+import { describeScrub, scrubMedia } from '../services/scrub.js';
 
 export const mailRouter = Router();
 mailRouter.use(requireAuth);
@@ -308,10 +309,13 @@ const rawBody = raw({ type: () => true, limit: '25mb' });
 mailRouter.post('/uploads', rawBody, async (req, res) => {
   const filename = String(req.query.filename ?? 'file').slice(0, 255);
   const type = String(req.query.type ?? 'application/octet-stream').slice(0, 120);
-  const data: Buffer = req.body;
-  if (!Buffer.isBuffer(data) || !data.length) throw badRequest('Empty upload');
+  const raw: Buffer = req.body;
+  if (!Buffer.isBuffer(raw) || !raw.length) throw badRequest('Empty upload');
+  // Photos and videos lose their metadata here, before they are ever stored.
+  const scrub = scrubMedia(raw, type, filename);
+  const data = scrub.data;
   const rows = await query<any>('INSERT INTO uploads (user_id, filename, content_type, size, data) VALUES ($1,$2,$3,$4,$5) RETURNING id, filename, content_type, size', [req.user!.id, filename, type, data.length, data]);
-  res.json({ upload: rows[0] });
+  res.json({ upload: { ...rows[0], scrubbed: scrub.handled ? { changed: scrub.changed, removed: scrub.removed, savedBytes: raw.length - data.length, note: describeScrub(scrub) } : null } });
 });
 
 mailRouter.delete('/uploads/:id', async (req, res) => {

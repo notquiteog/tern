@@ -3,23 +3,30 @@ import { one, query } from '../db.js';
 import { config } from '../config.js';
 import { dummyHash, generateRecoveryCodes, generateTotpSecret, hashPassword, otpauthUrl, sha256hex, verifyPassword, verifyTotp } from '../crypto.js';
 import { checkLoginAllowed, clearLoginFailures, clientIp, createSession, destroySession, destroyUserSessions, publicUser, recordLoginFailure, requireAuth, setSessionCookie, type UserRow } from '../auth.js';
+import { listAccounts } from '../services/accounts.js';
+import { syncManager } from '../workers/syncManager.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../errors.js';
 import { authSettings } from './users.js';
+import { clearFailures as powClear, issueChallenge, recordFailure as powFail, verifySolution, type PowPurpose } from '../pow.js';
 
 export const authRouter = Router();
+
+const powSchema = z.object({ challenge: z.string().max(600), nonce: z.string().max(64) });
 
 const registerSchema = z.object({
   username: z.string().min(2).max(64).regex(/^[a-zA-Z0-9._@-]+$/, 'letters, numbers, dots, dashes'),
   password: z.string().min(10).max(200),
   displayName: z.string().min(1).max(120),
   invite: z.string().max(200).optional(),
+  pow: powSchema.optional(),
 });
 
 // Self-registration is off unless an admin opens it or hands out an invite
 // link. Either way the new account gets the role the admin decided on.
 authRouter.post('/register', async (req, res) => {
   const body = parse(registerSchema, req.body);
+  verifySolution('register', body.username, body.pow);
   const settings = await authSettings();
   let role: 'admin' | 'member' = settings.defaultRole;
   let invite: any = null;
@@ -40,13 +47,23 @@ authRouter.post('/register', async (req, res) => {
   res.json({ user: publicUser(rows[0]) });
 });
 
+// Step one of every sign-in or registration: a signed, single-use challenge
+// whose difficulty reflects recent failures for that username. See pow.ts.
+authRouter.get('/pow', (req, res) => {
+  const purpose = String(req.query.purpose ?? 'login') as PowPurpose;
+  if (!['login', 'register', 'setup'].includes(purpose)) throw badRequest('Unknown purpose');
+  const username = String(req.query.username ?? '').slice(0, 64);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(issueChallenge(purpose, username));
+});
+
 authRouter.get('/invite/:token', async (req, res) => {
   const inv = await one<any>('SELECT role, note, expires_at FROM invites WHERE token=$1 AND used_at IS NULL AND expires_at > now()', [String(req.params.token)]);
   if (!inv) throw notFound('This invite link is invalid or has expired');
   res.json({ valid: true, role: inv.role, note: inv.note, expiresAt: inv.expires_at });
 });
 
-const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional() });
+const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional(), pow: powSchema.optional() });
 
 // One response for "no such user", "wrong password" and "disabled", and
 // bcrypt-equivalent work in every branch, so the login form cannot be used
@@ -54,12 +71,14 @@ const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.
 authRouter.post('/login', async (req, res) => {
   const body = parse(loginSchema, req.body);
   const username = body.username.toLowerCase().trim();
-  const key = `${username}|${clientIp(req)}`;
+  // Throttle keys are hashed so not even the in-memory map holds a raw address.
+  const key = sha256hex(`${username}|${clientIp(req)}`);
   checkLoginAllowed(key);
+  verifySolution('login', username, body.pow);
   const user = await one<UserRow>('SELECT * FROM users WHERE username=$1', [username]);
   const ok = user ? await verifyPassword(body.password, user.password_hash) : (await verifyPassword(body.password, await dummyHash()), false);
   if (!ok || !user || user.disabled) {
-    recordLoginFailure(key);
+    recordLoginFailure(key); powFail('login', username);
     throw unauthorized('Incorrect username or password');
   }
   if (user.totp_enabled && user.totp_secret) {
@@ -73,9 +92,9 @@ authRouter.post('/login', async (req, res) => {
         await query('UPDATE users SET recovery_codes = array_remove(recovery_codes, $2) WHERE id=$1', [user.id, hashed]);
       }
     }
-    if (!passed) { recordLoginFailure(key); throw unauthorized('That code was not accepted'); }
+    if (!passed) { recordLoginFailure(key); powFail('login', username); throw unauthorized('That code was not accepted'); }
   }
-  clearLoginFailures(key);
+  clearLoginFailures(key); powClear('login', username);
   const sid = await createSession(user.id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
@@ -159,5 +178,92 @@ authRouter.post('/sessions/revoke', requireAuth, async (req, res) => {
   const { id, all } = parse(z.object({ id: z.string().optional(), all: z.boolean().optional() }), req.body);
   if (all) await destroyUserSessions(req.user!.id, req.sessionId);
   else if (id) await query('DELETE FROM sessions WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
+  res.json({ ok: true });
+});
+
+
+// ---------- Your data: export and delete ----------
+
+// Everything the server holds about the signed-in person, as one JSON
+// document streamed table by table (the mail cache can be large). Secrets
+// are left out: password hash, TOTP secret, recovery codes, mailbox
+// credentials. Attachment bytes staged for sending are transient and omitted.
+const EXPORT_SECTIONS: { name: string; sql: string }[] = [
+  { name: 'accounts', sql: 'SELECT id, name, email, provider, session_url, auth_type, auth_user, color, signature_html, voice, daily_cap, jitter_enabled, jitter_min_s, jitter_max_s, send_window, sync_limit, enabled, send_via, created_at FROM accounts WHERE user_id=$1' },
+  { name: 'mailboxes', sql: 'SELECT m.id, m.account_id, m.jmap_id, m.name, m.parent_id, m.role, m.color FROM mailboxes m JOIN accounts a ON a.id=m.account_id WHERE a.user_id=$1' },
+  { name: 'contacts', sql: 'SELECT id, email, first_name, last_name, company, title, phone, website, fields, tags, notes, source, consent_source, status, timezone, last_contacted_at, last_replied_at, created_at, updated_at FROM contacts WHERE user_id=$1' },
+  { name: 'suppressions', sql: 'SELECT id, email, reason, source, created_at FROM suppressions WHERE user_id=$1' },
+  { name: 'templates', sql: 'SELECT id, name, subject, body_html, category, ai_brief, description, include_signature, starred, library_key, use_count, created_at, updated_at FROM templates WHERE user_id=$1' },
+  { name: 'sequences', sql: 'SELECT id, account_id, name, description, status, stop_on_reply, ai_mode, unsubscribe_footer, created_at, updated_at FROM sequences WHERE user_id=$1' },
+  { name: 'sequence_steps', sql: 'SELECT st.id, st.sequence_id, st.position, st.kind, st.template_id, st.subject, st.body_html, st.wait_days, st.wait_hours, st.ai_personalize, st.ai_instructions, st.reply_in_thread FROM sequence_steps st JOIN sequences s ON s.id=st.sequence_id WHERE s.user_id=$1' },
+  { name: 'enrollments', sql: 'SELECT e.id, e.sequence_id, e.contact_id, e.account_id, e.status, e.current_step, e.next_run_at, e.thread_id, e.last_message_id, e.last_subject, e.error, e.created_at, e.updated_at, e.finished_at FROM enrollments e JOIN sequences s ON s.id=e.sequence_id WHERE s.user_id=$1' },
+  { name: 'send_log', sql: 'SELECT id, account_id, contact_id, sequence_id, step_id, enrollment_id, responder_id, template_id, message_id, jmap_email_id, thread_id, to_email, subject, kind, status, error, sent_at, replied_at, bounced_at FROM send_log WHERE user_id=$1' },
+  { name: 'review_queue', sql: 'SELECT id, kind, enrollment_id, account_id, contact_id, step_id, responder_id, reply_to_email_id, thread_id, to_addr, subject, body_html, context, ai_model, status, created_at, decided_at FROM review_queue WHERE user_id=$1' },
+  { name: 'rules', sql: 'SELECT id, account_id, name, enabled, match, conditions, actions, position, hits, created_at, updated_at FROM rules WHERE user_id=$1' },
+  { name: 'responders', sql: 'SELECT id, account_id, name, enabled, mode, match, conditions, only_contacts, skip_lists, instructions, tone, length, reply_all, humanize, daily_cap, cooldown_hours, position, hits, created_at, updated_at FROM responders WHERE user_id=$1' },
+  { name: 'drafts', sql: 'SELECT id, account_id, kind, reply_to_email_id, thread_id, to_addr, cc_addr, bcc_addr, subject, body_html, attachment_ids, source, responder_id, created_at, updated_at FROM drafts WHERE user_id=$1' },
+  { name: 'outbox', sql: 'SELECT id, account_id, payload, send_at, status, error, attempts, created_at, sent_at FROM outbox WHERE user_id=$1' },
+  { name: 'snoozes', sql: 'SELECT id, account_id, thread_id, until_at, restored, created_at FROM snoozes WHERE user_id=$1' },
+  { name: 'ai_jobs', sql: 'SELECT id, kind, payload, status, attempts, error, result, created_at, updated_at FROM ai_jobs WHERE user_id=$1' },
+  { name: 'uploads', sql: 'SELECT id, filename, content_type, size, created_at FROM uploads WHERE user_id=$1' },
+  { name: 'sessions', sql: "SELECT left(id, 8) || '…' AS id, created_at, last_seen_at, user_agent FROM sessions WHERE user_id=$1" },
+  { name: 'audit_log', sql: 'SELECT id, action, target, details, created_at FROM audit_log WHERE user_id=$1' },
+  { name: 'invites_created', sql: 'SELECT id, role, note, expires_at, used_at, created_at FROM invites WHERE created_by=$1' },
+  { name: 'emails', sql: 'SELECT e.id, e.account_id, e.jmap_id, e.thread_id, e.mailbox_ids, e.keywords, e.size, e.received_at, e.sent_at, e.message_id, e.in_reply_to, e.references_ids, e.from_addr, e.to_addr, e.cc_addr, e.bcc_addr, e.reply_to, e.subject, e.preview, e.has_attachment, e.body_text, e.body_html, e.attachments FROM emails e JOIN accounts a ON a.id=e.account_id WHERE a.user_id=$1' },
+];
+
+authRouter.get('/export', requireAuth, async (req, res) => {
+  const uid = req.user!.id;
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="tern-export-${req.user!.username}-${stamp}.json"`);
+  res.setHeader('Cache-Control', 'no-store');
+  const write = (chunk: string) => new Promise<void>((resolve) => { if (res.write(chunk)) resolve(); else res.once('drain', () => resolve()); });
+  const avatar = await one<{ avatar: Buffer | null; avatar_type: string | null }>('SELECT avatar, avatar_type FROM users WHERE id=$1', [uid]);
+  const user = { ...publicUser(req.user!), avatar: avatar?.avatar ? `data:${avatar.avatar_type};base64,${avatar.avatar.toString('base64')}` : null };
+  await write(`{"format":"tern-export","version":1,"exportedAt":${JSON.stringify(new Date().toISOString())},"note":"Everything this server stores about you. Mailbox passwords, your password hash, two-factor secrets and recovery codes are never exported.","user":${JSON.stringify(user)}`);
+  for (const section of EXPORT_SECTIONS) {
+    await write(`,\n${JSON.stringify(section.name)}:[`);
+    let last = 0, first = true;
+    for (;;) {
+      const rows = await query<any>(`SELECT * FROM (${section.sql}) t WHERE (t.id::text ~ '^[0-9]+$' AND t.id::bigint > $2) OR t.id::text !~ '^[0-9]+$' ORDER BY 1 LIMIT 500`, [uid, last]);
+      if (!rows.length) break;
+      await write((first ? '' : ',') + rows.map((r) => JSON.stringify(r)).join(','));
+      first = false;
+      const numeric = rows.filter((r) => /^[0-9]+$/.test(String(r.id)));
+      if (numeric.length < rows.length || rows.length < 500) break;
+      last = Math.max(...numeric.map((r) => Number(r.id)));
+    }
+    await write(']');
+  }
+  await write('\n}\n');
+  res.end();
+  await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.data_exported')`, [uid]);
+});
+
+// Deleting the account removes the person and, through foreign keys, every
+// row that belongs to them: mailboxes and the cached mail, contacts,
+// sequences, templates, drafts, logs. Their earlier audit entries stay for
+// accountability but lose their details. Nothing changes on the mail server.
+authRouter.post('/delete-account', requireAuth, async (req, res) => {
+  const b = parse(z.object({ password: z.string().min(1), code: z.string().max(32).optional(), confirm: z.string().max(64) }), req.body);
+  const me = req.user!;
+  if (b.confirm.trim().toLowerCase() !== me.username.toLowerCase()) throw badRequest('Type your username to confirm');
+  if (!(await verifyPassword(b.password, me.password_hash))) throw badRequest('Password is incorrect');
+  if (me.totp_enabled && me.totp_secret) {
+    const code = (b.code ?? '').trim();
+    const ok = verifyTotp(me.totp_secret, code) || me.recovery_codes.includes(sha256hex(code.toLowerCase()));
+    if (!ok) throw badRequest('Two-factor code is required');
+  }
+  if (me.role === 'admin') {
+    const others = await one<{ n: number }>(`SELECT count(*)::int AS n FROM users WHERE role='admin' AND NOT disabled AND id <> $1`, [me.id]);
+    if (!others?.n) throw badRequest('You are the only admin. Make someone else an admin before deleting your account.');
+  }
+  const accounts = await listAccounts(me.id);
+  for (const a of accounts) syncManager.remove(a.id);
+  await query(`UPDATE audit_log SET details='{}'::jsonb, target=NULL WHERE user_id=$1`, [me.id]);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES (NULL,'auth.account_deleted',$1)`, [JSON.stringify({ role: me.role, accounts: accounts.length })]);
+  await query('DELETE FROM users WHERE id=$1', [me.id]);
+  setSessionCookie(res, null);
   res.json({ ok: true });
 });

@@ -57,6 +57,32 @@ Nothing leaves your server except the mail itself.
   session management, audit log. Registration is by invite link, or open
   self-registration if an admin turns it on. No email-based password reset
   by design.
+- Sign-in, registration and first-run setup are protected by an adaptive
+  browser proof of work instead of IP rate limits or CAPTCHAs: every attempt
+  costs the client CPU, and the cost climbs with failed attempts for that
+  username and with server-wide load.
+- Members see only their own mailboxes, contacts, sequences and settings;
+  admins additionally manage users, invites, the app-wide settings and the
+  bundled mail server. Admins do not see other people's mail.
+- A **Mail apps** tab gives every user the IMAP, SMTP and JMAP details for
+  their mailboxes with step-by-step instructions for Thunderbird, Apple Mail,
+  iPhone, Outlook, Android and Windows Mail.
+
+**Privacy**
+- Photos and videos attached to a message lose their metadata before they
+  are stored or sent: EXIF (camera, GPS, time), XMP, IPTC, ICC profiles,
+  comments, embedded thumbnails, and the location and device boxes in MP4
+  and MOV files. Forwarded attachments are scrubbed too.
+- Every user can export everything the server holds about them as one JSON
+  file, and delete their account with all of it, from Settings → Security.
+- No IP addresses are stored anywhere. Staged attachments, finished AI jobs,
+  decided reviews, sent outbox copies and expired sessions are purged on a
+  schedule. The full inventory is in [docs/PRIVACY.md](docs/PRIVACY.md);
+  the plan for encrypting the mail cache and adding OpenPGP is in
+  [docs/ENCRYPTION.md](docs/ENCRYPTION.md).
+- AI drafts always open with a greeting to the actual recipient: the
+  salutation is checked and corrected after generation, so a small model
+  cannot greet the wrong person or invent a name.
 - Optional Stalwart mail server on the same box, bootstrapped by the
   installer, with mailbox creation, password resets, a guided DNS setup with
   live verification (A, reverse DNS, MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT,

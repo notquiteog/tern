@@ -9,7 +9,7 @@ import { composeAndSend, type ComposeInput } from '../services/compose.js';
 import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '../services/merge.js';
 import { jitterMs, reserveSendSlot } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
-import { buildMessages, cleanOutput } from '../ai/prompts.js';
+import { buildMessages, cleanOutput, finalizeOutput } from '../ai/prompts.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
@@ -32,6 +32,7 @@ export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
+    await housekeeping();
     await processSnoozes();
     await processOutbox();
     await processEnrollments();
@@ -41,6 +42,31 @@ export async function tick(): Promise<void> {
   } finally {
     ticking = false;
   }
+}
+
+// ---------- Retention ----------
+// Nothing is kept longer than the feature that needs it. Staged attachments
+// live a day, sent outbox copies a week (the mailbox has the real copy),
+// decided reviews and finished AI jobs a month, audit entries a year.
+let lastHousekeeping = 0;
+export async function housekeeping(force = false): Promise<Record<string, number>> {
+  if (!force && Date.now() - lastHousekeeping < 3600_000) return {};
+  lastHousekeeping = Date.now();
+  const jobs: [string, string][] = [
+    ['uploads', `DELETE FROM uploads WHERE created_at < now() - interval '1 day'`],
+    ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - interval '7 days'`],
+    ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - interval '30 days'`],
+    ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '30 days'`],
+    ['sessions', `DELETE FROM sessions WHERE expires_at < now()`],
+    ['invites', `DELETE FROM invites WHERE (used_at IS NOT NULL AND used_at < now() - interval '30 days') OR (used_at IS NULL AND expires_at < now() - interval '30 days')`],
+    ['audit_log', `DELETE FROM audit_log WHERE created_at < now() - interval '365 days'`],
+  ];
+  const counts: Record<string, number> = {};
+  for (const [name, sql] of jobs) {
+    try { const r = await query(`WITH d AS (${sql} RETURNING 1) SELECT count(*)::int AS n FROM d`); counts[name] = (r[0] as any)?.n ?? 0; } catch (e) { log.warn(`housekeeping ${name} failed`, { err: (e as Error).message }); }
+  }
+  if (Object.values(counts).some((n) => n > 0)) log.info('housekeeping', counts);
+  return counts;
 }
 
 // ---------- Snoozes ----------
@@ -252,7 +278,8 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     subject: rendered.subject,
     length: 'medium',
   });
-  const body = cleanOutput(await chat({ messages, maxTokens: 600 }), 'personalize');
+  const recipient = { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email };
+  const body = finalizeOutput(await chat({ messages, maxTokens: 600 }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
   let subject = rendered.subject;
   if (!subject.trim()) {
     subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: 40, temperature: 0.4 }), 'subject');
@@ -293,13 +320,15 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
     tone: responder.tone || undefined,
     length: responder.length || 'medium',
     senderName: acc.name,
+    senderEmail: acc.email,
     subject: email.subject,
     systemPrompt: settings.systemPrompt,
     voice: acc.voice,
     recipient: contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email },
     thread: thread.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() })),
   });
-  const text = cleanOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply');
+  const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
+  const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
   const me = acc.email.toLowerCase();
   const replyTo: any[] = email.reply_to?.length ? email.reply_to : email.from_addr ?? [];
   let to = replyTo.filter((a: any) => String(a.email).toLowerCase() !== me).map((a: any) => ({ name: a.name ?? null, email: a.email }));

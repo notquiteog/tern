@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMessages, cleanOutput, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { buildMessages, cleanOutput, ensureGreeting, finalizeOutput, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -16,4 +16,48 @@ test('buildMessages uses the custom system prompt and voice', () => {
   assert.ok(m[1].content.includes('No greetings.'));
   const d = buildMessages({ mode: 'compose', instruction: 'say hi' });
   assert.equal(d[0].content, DEFAULT_SYSTEM_PROMPT);
+});
+
+test('buildMessages names the recipient once and refuses to guess when unknown', () => {
+  const known = buildMessages({ mode: 'compose', instruction: 'say hi', recipient: { name: 'Dana Osei', email: 'dana@acme.example' }, senderName: 'Alex Rivera', senderEmail: 'alex@team.example' })[1].content;
+  assert.ok(known.includes('Write to Dana Osei <dana@acme.example>'));
+  assert.ok(known.includes('exactly "Hi Dana,"'));
+  assert.ok(known.includes('You are writing as Alex Rivera <alex@team.example>'));
+  assert.ok(known.includes('use only "Alex"'));
+  const unknown = buildMessages({ mode: 'reply', recipient: { email: 'someone@example.org' } })[1].content;
+  assert.ok(unknown.includes('name is not known') && unknown.includes('guessed or invented'));
+  const none = buildMessages({ mode: 'rewrite', draft: 'x', recipient: { name: 'Dana' } })[1].content;
+  assert.ok(!none.includes('Write to'));
+});
+
+test('thread messages from the sender are marked so the model knows which side it is on', () => {
+  const m = buildMessages({ mode: 'reply', senderEmail: 'alex@team.example', thread: [{ from: 'Dana <dana@acme.example>', date: 'Mon', text: 'Can we talk?' }, { from: 'Alex <alex@team.example>', date: 'Tue', text: 'Sure.' }] })[1].content;
+  assert.ok(m.includes('From Alex <alex@team.example> (this is the sender, you)'));
+  assert.ok(!m.includes('Dana <dana@acme.example> (this is the sender'));
+});
+
+test('cleanOutput preamble stripping stops at the colon and keeps a one-line draft', () => {
+  assert.equal(cleanOutput("Here's the corrected draft: Hi Dana, thanks for your time. Best, Alex", 'polish'), 'Hi Dana, thanks for your time. Best, Alex');
+  assert.equal(cleanOutput('Sure! Here is a reply you could send:\n\nHi Dana,\n\nYes.', 'reply'), 'Hi Dana,\n\nYes.');
+  assert.equal(cleanOutput("I've sent it. Let me know if there's anything else.", 'reply'), "I've sent it. Let me know if there's anything else.");
+});
+
+test('ensureGreeting addresses the actual recipient and never a guessed one', () => {
+  const dana = { name: 'Dana Osei', email: 'dana@acme.example' };
+  assert.equal(ensureGreeting('Sure thing! Tuesday works.\nAlex', 'reply', dana), 'Hi Dana,\n\nSure thing! Tuesday works.\nAlex');
+  assert.equal(ensureGreeting('Hi Alex,\n\nTuesday works.', 'reply', dana), 'Hi Dana,\n\nTuesday works.');
+  assert.equal(ensureGreeting('Hello Sam, thanks.', 'compose', dana), 'Hi Dana, thanks.');
+  assert.equal(ensureGreeting('Dana,\n\nGreat to hear.', 'reply', dana), 'Dana,\n\nGreat to hear.');
+  assert.equal(ensureGreeting('Dear Dana Osei,\n\nGreat.', 'compose', dana), 'Dear Dana Osei,\n\nGreat.');
+  assert.equal(ensureGreeting('Hi Marcus,\n\nWe launched.', 'compose', { email: 'hello@bluefin.example' }), 'Hi there,\n\nWe launched.');
+  assert.equal(ensureGreeting('Hi there,\n\nWe launched.', 'compose', { email: 'x@y.z' }), 'Hi there,\n\nWe launched.');
+  assert.equal(ensureGreeting('We launched.', 'compose', undefined), 'Hi there,\n\nWe launched.');
+  assert.equal(ensureGreeting('Quick question about pricing', 'subject', dana), 'Quick question about pricing');
+});
+
+test('finalizeOutput removes the signature block the model added', () => {
+  const out = finalizeOutput('Hi Dana,\n\nFrom 400 a month.\n\nBest regards,\nAlex Rivera\nalex@team.example\n', 'reply', { recipient: { name: 'Dana Osei' }, senderName: 'Alex Rivera', senderEmail: 'alex@team.example' });
+  assert.equal(out, 'Hi Dana,\n\nFrom 400 a month.\n\nBest regards,\nAlex Rivera');
+  assert.equal(finalizeOutput('Hi Dana,\n\nOk.\n\n[Your Name]', 'compose', { recipient: { name: 'Dana' } }), 'Hi Dana,\n\nOk.');
+  assert.equal(finalizeOutput('Hi Lee,\n\nLooking forward to it.\n\nAlex\nAlex Rivera', 'personalize', { recipient: { name: 'Lee Park' }, senderName: 'Alex Rivera' }), 'Hi Lee,\n\nLooking forward to it.\n\nAlex');
 });

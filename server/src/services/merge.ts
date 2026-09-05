@@ -45,8 +45,11 @@ function truthy(v: unknown): boolean {
 // Deterministic when a seed is given (previews stay stable); random per send otherwise.
 function rng(seed?: number): () => number {
   if (seed === undefined) return Math.random;
+  // Scramble first: a plain LCG's first outputs move only slightly between
+  // nearby seeds, so consecutive enrollments would all pick the same option.
   let s = (seed >>> 0) || 1;
-  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  s ^= s >>> 16; s = Math.imul(s, 0x45d9f3b) >>> 0; s ^= s >>> 16; s = Math.imul(s, 0x45d9f3b) >>> 0; s ^= s >>> 16;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; s ^= s >>> 13; s = Math.imul(s, 0x5bd1e995) >>> 0; s ^= s >>> 15; return (s >>> 0) / 4294967296; };
 }
 
 export interface RenderOptions { html?: boolean; seed?: number }
