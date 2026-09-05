@@ -590,4 +590,8 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .stats-row { grid-template-columns: 1fr 1fr; }
   .swatches { grid-template-columns: repeat(2, 1fr); }
   .search { height: 36px; }
+  .list-filters { overflow-x: auto; }
+  .list-filters > .small { display: none; }
+  .list-filters .segmented button { padding: 0 9px; }
+  .page-header .row > * { flex: 1 1 calc(50% - 8px); }
 }
