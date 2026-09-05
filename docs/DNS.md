@@ -78,14 +78,24 @@ anyone failed to connect securely.
 ## 4. Brand logo (BIMI)
 
 BIMI shows your logo beside your messages in mail clients that support it.
-Three things are needed:
+Tern hosts and prepares the logo for you; three things are needed:
 
 1. **DMARC** at `p=quarantine` or `p=reject` with `pct=100` (the default).
-2. **The logo** as an SVG in the "Tiny Portable/Secure" profile: square,
-   no scripts, no external references, under 32 KB. Upload your own SVG in
-   Settings → Mail server → Brand logo, or let Tern generate a default
-   avatar from initials and a colour. Tern hosts it at
-   `https://<your web host>/bimi/example.com.svg`.
+2. **The logo.** Settings → Mail server → Brand logo accepts anything:
+   - An **SVG** is rebuilt as SVG Tiny Portable/Secure: every piece of
+     metadata is removed (editor namespaces such as Inkscape and Illustrator,
+     comments, `<metadata>`, `<desc>`, ids, classes, data attributes), CSS
+     `style` attributes are converted to presentation attributes, external
+     references, bitmaps, scripts and fonts are dropped, a `<title>` is set,
+     and coordinates are rounded until the file is under 32 KB.
+   - A **PNG, JPEG, WebP or GIF** is traced in your browser into real vector
+     shapes (bitmaps are not allowed in BIMI logos). Adjust colours, detail
+     and smoothing, pick a background, and the tracer keeps lowering
+     resolution and colours until the result fits. Original files never
+     leave your browser; only the traced SVG is stored.
+   - Or generate a default avatar from initials and a colour.
+   The stored file is served at `https://<your web host>/bimi/example.com.svg`
+   and also used inside Tern as the avatar for senders on the domain.
 3. **The record**:
 
 | Type | Name | Value |
@@ -94,12 +104,12 @@ Three things are needed:
 
 Yahoo, Fastmail, La Poste and others display the logo from this alone.
 Gmail and Apple Mail also require a Verified Mark Certificate (VMC) or
-Common Mark Certificate (CMC) from DigiCert or Entrust, which is a paid
-certificate tied to a registered trademark (VMC) or a logo in use for a
-year (CMC). If you buy one, upload the `.pem` to a public URL and add it as
-`a=https://…/vmc.pem` in the record. Without it the logo still appears in
-the clients that do not require one, and inside Tern for every message from
-your domain.
+Common Mark Certificate (CMC) from DigiCert or Entrust, a paid certificate
+tied to a registered trademark (VMC) or a logo in use for a year (CMC). If
+you buy one, host the `.pem` at a public https address and paste the URL
+into the Brand logo tab; it fills the `a=` part of the record. Without it
+the logo still appears in the clients that do not require one, and inside
+Tern for every message from your domain.
 
 ## 5. Mail apps configure themselves
 

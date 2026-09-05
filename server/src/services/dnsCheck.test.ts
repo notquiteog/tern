@@ -40,10 +40,13 @@ test('sanitizeSvg accepts clean logos and rejects unsafe ones', () => {
   const ok = sanitizeSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#f00"/></svg>');
   assert.ok(ok.ok && ok.svg.includes('baseProfile="tiny-ps"') && ok.svg.includes('<title>'));
   assert.equal(sanitizeSvg('<svg><script>alert(1)</script></svg>').ok, false);
-  assert.equal(sanitizeSvg('<svg><image href="https://x/y.png"/></svg>').ok, false);
-  assert.equal(sanitizeSvg('<svg><a href="https://x"/></svg>').ok, false);
+  assert.equal(sanitizeSvg('<svg><iframe src="x"/></svg>').ok, false);
   assert.equal(sanitizeSvg('<div>no</div>').ok, false);
-  assert.equal(sanitizeSvg('<svg><rect onclick="x"/></svg>').ok, false);
+  // bitmaps, links and handlers are stripped by the Tiny PS pass rather than refused
+  assert.ok(sanitizeSvg('<svg><image href="https://x/y.png"/></svg>').ok);
+  assert.ok(sanitizeSvg('<svg><a href="https://x"/></svg>').ok);
+  const handlers = sanitizeSvg('<svg><rect onclick="x"/></svg>');
+  assert.ok(handlers.ok, 'event handlers are stripped later, not a reason to refuse');
 });
 
 test('generateDefaultSvg is a valid tiny-ps document with escaped text', () => {

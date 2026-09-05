@@ -92,7 +92,7 @@ async function main(): Promise<void> {
       const primary = domains.find((d) => d.name === config.stalwartDomain) ?? domains[0];
       if (!primary) throw new Error('no domain on the mail server');
       const brand = await getBrand(primary.name);
-      const records = buildRecords({ zone: await sw.dnsZone(primary.id), domain: primary.name, mailHost: config.stalwartHost, serverIp: detectServerIp(), bimiUrl: brand ? `${config.appUrl}/bimi/${primary.name}.svg` : null });
+      const records = buildRecords({ zone: await sw.dnsZone(primary.id), domain: primary.name, mailHost: config.stalwartHost, serverIp: detectServerIp(), bimiUrl: brand ? `${config.appUrl}/bimi/${primary.name}.svg` : null, vmcUrl: brand?.vmc_url || null });
       const results = await checkAll(records, detectServerIp());
       const icon: Record<string, string> = { ok: 'OK ', missing: 'MISSING', mismatch: 'DIFFERS', error: 'ERROR', skipped: 'SKIP' };
       for (const r of records) {

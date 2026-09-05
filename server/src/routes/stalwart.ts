@@ -131,7 +131,7 @@ async function expectedRecords(): Promise<{ domain: string; mailHost: string; re
   const brand = await getBrand(primary.name);
   const bimiUrl = brand ? bimiUrlFor(primary.name) : null;
   const serverIp = detectServerIp();
-  return { domain: primary.name, mailHost: config.stalwartHost, records: buildRecords({ zone, domain: primary.name, mailHost: config.stalwartHost, serverIp, bimiUrl }), serverIp, bimiUrl };
+  return { domain: primary.name, mailHost: config.stalwartHost, records: buildRecords({ zone, domain: primary.name, mailHost: config.stalwartHost, serverIp, bimiUrl, vmcUrl: brand?.vmc_url || null }), serverIp, bimiUrl };
 }
 
 stalwartRouter.get('/dns', requireAdmin, async (_req, res) => {

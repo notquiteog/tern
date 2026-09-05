@@ -63,7 +63,7 @@ function purposeFor(name: string, type: RecordType, value: string, domain: strin
   return { group: 'recommended', purpose: '' };
 }
 
-export function buildRecords(input: { zone: string; domain: string; mailHost: string; serverIp?: string | null; bimiUrl?: string | null }): DnsRecord[] {
+export function buildRecords(input: { zone: string; domain: string; mailHost: string; serverIp?: string | null; bimiUrl?: string | null; vmcUrl?: string | null }): DnsRecord[] {
   const { zone, domain, mailHost } = input;
   const out: DnsRecord[] = [];
   out.push({ id: 'a-mail', group: 'required', type: 'A', name: mailHost, value: input.serverIp || '<this server\'s IPv4>', purpose: 'The mail server\'s address. Every other record points here.' });
@@ -74,7 +74,7 @@ export function buildRecords(input: { zone: string; domain: string; mailHost: st
     out.push({ id: `z${i++}`, group, type: r.type, name: r.name, value: r.value, priority: r.priority, srv: r.srv, purpose });
   }
   if (input.bimiUrl) {
-    out.push({ id: 'bimi', group: 'brand', type: 'TXT', name: `default._bimi.${domain}`, value: `v=BIMI1; l=${input.bimiUrl}; a=;`, purpose: 'BIMI: points mail clients at your brand logo so it appears beside your messages. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also want a paid Verified Mark Certificate (a=).' });
+    out.push({ id: 'bimi', group: 'brand', type: 'TXT', name: `default._bimi.${domain}`, value: `v=BIMI1; l=${input.bimiUrl}; a=${input.vmcUrl ?? ''};`, purpose: 'BIMI: points mail clients at your brand logo so it appears beside your messages. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also want a paid Verified Mark Certificate (a=).' });
   }
   const order: Group[] = ['required', 'recommended', 'brand', 'clients'];
   return out.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));

@@ -790,39 +790,118 @@ function DnsSetup({ data }: { data: any }) {
 function BrandLogo({ domain }: { domain: string }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const { data, refetch } = useQuery({ queryKey: ['brand', domain], queryFn: () => api.get<{ brand: any }>(`/api/brand/${domain}`), enabled: Boolean(domain) });
+  const { data, refetch } = useQuery({ queryKey: ['brand', domain], queryFn: () => api.get<{ brand: any; maxBytes?: number }>(`/api/brand/${domain}`), enabled: Boolean(domain) });
   const [initials, setInitials] = useState('');
   const [name, setName] = useState('');
   const [color, setColor] = useState('#ffffff');
   const [bg, setBg] = useState('#4f6df5');
   const [busy, setBusy] = useState(false);
+  const [vmc, setVmc] = useState('');
+  const [trace, setTrace] = useState<null | { svg: string; bytes: number; colors: number; paths: number; step: { size: number; colors: number; tolerance: number }; sourceUrl: string; kind: 'raster' | 'svg' }>(null);
+  const [traceOpts, setTraceOpts] = useState({ colors: 8, size: 96, tolerance: 1.2, background: '' });
+  const [tracing, setTracing] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (data?.brand) { setInitials(data.brand.initials || ''); setName(data.brand.name || ''); setColor(data.brand.color); setBg(data.brand.bg); } else if (domain) { setInitials(domain.slice(0, 2).toUpperCase()); setName(domain); } }, [data, domain]);
   const brand = data?.brand;
+  useEffect(() => { if (brand) { setInitials(brand.initials || ''); setName(brand.name || ''); setColor(brand.color); setBg(brand.bg); setVmc(brand.vmc_url || ''); } else if (domain) { setInitials(domain.slice(0, 2).toUpperCase()); setName(domain); } }, [brand, domain]);
   const done = () => { refetch(); qc.invalidateQueries({ queryKey: ['dns'] }); qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['thread'] }); };
+  const maxBytes = data?.maxBytes ?? brand?.maxBytes ?? 32768;
+
   async function generate() {
     setBusy(true);
     try { await api.put(`/api/brand/${domain}`, { name, initials, color, bg }); done(); toast.success('Default logo generated'); } catch (e) { toast.error(e); } finally { setBusy(false); }
   }
-  async function upload(f: File) {
+  async function saveSvg(svg: string, source: string) {
     setBusy(true);
-    try { await api.upload(`/api/brand/${domain}`, await f.text(), 'image/svg+xml'); done(); toast.success('Logo uploaded'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+    try {
+      const r = await api.upload<any>(`/api/brand/${domain}?source=${source}`, svg, 'image/svg+xml');
+      const rep = r.brand.report ?? {};
+      const removed = Object.values(rep.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0);
+      done(); setTrace(null);
+      toast.success(`Logo saved: ${Math.round(r.brand.size / 1024 * 10) / 10} KB${rep.originalBytes ? ` (from ${Math.round(rep.originalBytes / 1024 * 10) / 10} KB)` : ''}${removed || rep.removedAttributes ? `, stripped ${removed} element${removed === 1 ? '' : 's'} and ${rep.removedAttributes ?? 0} attributes of metadata` : ''}`);
+    } catch (e: any) {
+      if (e?.status === 413 && trace?.kind !== 'raster') {
+        toast.toast(`${e.message}`, { kind: 'error', ttl: 9000 });
+      } else toast.error(e);
+    } finally { setBusy(false); }
+  }
+  // Raster (or heavy SVG) -> traced vector paths, fitted under the limit.
+  async function runTrace(source: Blob | string, kind: 'raster' | 'svg', start?: { size: number; colors: number; tolerance: number }) {
+    const { traceToFit } = await import('../lib/vectorize');
+    setTracing('Tracing…');
+    try {
+      const r = await traceToFit(source, { title: name || domain, background: traceOpts.background || null, maxBytes: maxBytes - 2048, start }, (step, bytes) => setTracing(`Tracing at ${step.size}px, ${step.colors} colours: ${Math.round(bytes / 1024 * 10) / 10} KB`));
+      const sourceUrl = typeof source === 'string' ? source : URL.createObjectURL(source);
+      setTrace({ svg: r.svg, bytes: r.bytes, colors: r.colors, paths: r.paths, step: r.step, sourceUrl, kind });
+      setTraceOpts((o) => ({ ...o, colors: r.step.colors, size: r.step.size, tolerance: r.step.tolerance }));
+    } catch (e) { toast.error(e); } finally { setTracing(null); }
+  }
+  async function onFile(f: File) {
+    if (f.type === 'image/svg+xml' || f.name.toLowerCase().endsWith('.svg')) {
+      const text = await f.text();
+      setBusy(true);
+      try {
+        const r = await api.upload<any>(`/api/brand/${domain}?source=upload`, text, 'image/svg+xml');
+        const rep = r.brand.report ?? {};
+        const removed = Object.values(rep.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0);
+        done();
+        toast.success(`SVG cleaned and saved: ${Math.round(r.brand.size / 1024 * 10) / 10} KB (was ${Math.round((rep.originalBytes ?? 0) / 1024 * 10) / 10} KB); removed ${removed} metadata element${removed === 1 ? '' : 's'}, ${rep.removedAttributes ?? 0} attributes, converted ${rep.stylesConverted ?? 0} style rules`);
+      } catch (e: any) {
+        if (e?.status === 413) {
+          toast.toast('Too large even after cleaning; tracing it into simpler shapes instead', { ttl: 6000 });
+          await runTrace(f, 'svg');
+        } else toast.error(e);
+      } finally { setBusy(false); }
+      return;
+    }
+    if (!/^image\//.test(f.type)) { toast.error('Choose an SVG, PNG, JPEG, WebP or GIF'); return; }
+    await runTrace(f, 'raster');
   }
   if (!domain) return <Callout>No mail domain yet.</Callout>;
+  const previewUrl = trace ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(trace.svg)}` : null;
   return (
     <div className="col gap-16">
-      <Callout>Your logo appears beside messages from <b>@{domain}</b> inside Tern right away, and in mail clients that support <b>BIMI</b> once the DNS record from the setup tab is published and DMARC is at quarantine or reject. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also require a paid Verified Mark Certificate.</Callout>
-      <div className="card">
-        <div className="card-title"><h2>Current logo</h2>{brand && <span className="small muted">{Math.round(brand.size / 1024 * 10) / 10} KB · updated {fmtRelative(brand.updated_at)}</span>}</div>
+      <Callout>Your logo appears beside messages from <b>@{domain}</b> inside Tern right away, and in mail clients that support <b>BIMI</b> once the DNS record from the setup tab is published and DMARC is at quarantine or reject. Drop in any image: SVGs are stripped of every trace of metadata and shrunk to fit; PNG, JPEG, WebP and GIF are converted to real vector shapes. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also need a Verified Mark Certificate (below).</Callout>
+      <div className="card" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void onFile(f); }}>
+        <div className="card-title"><h2>Current logo</h2>{brand && <span className="small muted">{Math.round(brand.size / 1024 * 10) / 10} KB of {Math.round(maxBytes / 1024)} KB · {brand.source} · updated {fmtRelative(brand.updated_at)}</span>}</div>
         <div className="row gap-16 wrap" style={{ alignItems: 'center' }}>
-          <div style={{ width: 96, height: 96, borderRadius: 20, overflow: 'hidden', background: 'var(--bg-sunken)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--glow-soft)' }}>{brand ? <img src={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} alt="Brand logo" style={{ width: '100%', height: '100%' }} /> : <span className="faint small">none</span>}</div>
-          <div className="col gap-4">
-            {brand ? <div className="small">Hosted at <code>{brand.url}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.url); toast.success('Copied'); }}>Copy</Button></div> : <div className="small muted">No logo yet. Upload an SVG or generate a default avatar below.</div>}
-            <div className="row gap-4"><Button size="sm" icon={<Upload size={13} />} loading={busy} onClick={() => input.current?.click()}>Upload SVG</Button>{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
-            <div className="help-text">Square SVG, no scripts, no external references, under 32 KB (the BIMI "Tiny PS" profile). Tern checks and adjusts the file.</div>
-            <input ref={input} type="file" accept=".svg,image/svg+xml" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void upload(f); }} />
+          <div style={{ width: 112, height: 112, borderRadius: 24, overflow: 'hidden', background: 'var(--bg-sunken)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--glow-soft)' }}>{brand ? <img src={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} alt="Brand logo" style={{ width: '100%', height: '100%' }} /> : <span className="faint small">none</span>}</div>
+          <div className="col gap-4 flex-1">
+            {brand ? <div className="small">Hosted at <code>{brand.url}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.url); toast.success('Copied'); }}>Copy</Button></div> : <div className="small muted">No logo yet. Drop an image here, upload one, or generate a default avatar below.</div>}
+            {brand?.report?.removedAttributes !== undefined && <div className="small muted">Last import: {Object.values(brand.report.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0)} metadata elements and {brand.report.removedAttributes} attributes removed, {brand.report.stylesConverted ?? 0} style rules converted, coordinates rounded to {brand.report.precision ?? 3} decimals.</div>}
+            <div className="row gap-4 wrap"><Button size="sm" icon={<Upload size={13} />} loading={busy || Boolean(tracing)} onClick={() => input.current?.click()}>Upload image or SVG</Button>{brand && <Button size="sm" variant="ghost" onClick={() => runTrace(`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`, 'svg')}>Simplify by tracing</Button>}{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
+            <div className="help-text">Square works best. The result is SVG Tiny PS: no scripts, no external references, no bitmaps, no metadata, under {Math.round(maxBytes / 1024)} KB.</div>
+            <input ref={input} type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void onFile(f); }} />
           </div>
         </div>
+        {tracing && <div className="row small mt-16"><Spinner size={14} /> {tracing}</div>}
+        {trace && (
+          <div className="mt-16" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: 14 }}>
+            <div className="row wrap gap-16" style={{ alignItems: 'flex-start' }}>
+              <div className="col" style={{ alignItems: 'center' }}><div className="small muted mb-8">Original</div><img src={trace.sourceUrl} alt="" style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 16, background: 'var(--bg-sunken)' }} /></div>
+              <div className="col" style={{ alignItems: 'center' }}><div className="small muted mb-8">Traced vector</div><img src={previewUrl!} alt="" style={{ width: 128, height: 128, borderRadius: 16, background: 'var(--bg-sunken)' }} /></div>
+              <div className="flex-1 col gap-4" style={{ minWidth: 240 }}>
+                <div className="small"><b>{Math.round(trace.bytes / 1024 * 10) / 10} KB</b> · {trace.colors} colours · {trace.paths} paths · traced at {trace.step.size}px{trace.bytes > maxBytes ? <span style={{ color: 'var(--danger)' }}> · still over the limit</span> : ''}</div>
+                <div className="form-grid-3">
+                  <Field label={`Colours: ${traceOpts.colors}`}><input className="range" type="range" min={2} max={16} value={traceOpts.colors} onChange={(e) => setTraceOpts({ ...traceOpts, colors: Number(e.target.value) })} /></Field>
+                  <Field label={`Detail: ${traceOpts.size}px`}><input className="range" type="range" min={32} max={160} step={8} value={traceOpts.size} onChange={(e) => setTraceOpts({ ...traceOpts, size: Number(e.target.value) })} /></Field>
+                  <Field label={`Smoothing: ${traceOpts.tolerance}`}><input className="range" type="range" min={0.3} max={3} step={0.1} value={traceOpts.tolerance} onChange={(e) => setTraceOpts({ ...traceOpts, tolerance: Number(e.target.value) })} /></Field>
+                </div>
+                <div className="row wrap gap-4"><span className="small muted">Background:</span><Button size="sm" variant={traceOpts.background ? 'default' : 'soft'} onClick={() => setTraceOpts({ ...traceOpts, background: '' })}>transparent</Button><input type="color" value={traceOpts.background || '#ffffff'} onChange={(e) => setTraceOpts({ ...traceOpts, background: e.target.value })} style={{ width: 36, height: 28, border: 0, background: 'none' }} /></div>
+                <div className="row gap-4 wrap"><Button size="sm" onClick={() => runTrace(trace.sourceUrl, trace.kind, { size: traceOpts.size, colors: traceOpts.colors, tolerance: traceOpts.tolerance })} loading={Boolean(tracing)}>Re-trace with these settings</Button><Button size="sm" variant="primary" icon={<Check size={13} />} loading={busy} disabled={trace.bytes > maxBytes} onClick={() => saveSvg(trace.svg, 'traced')}>Use this logo</Button><Button size="sm" variant="ghost" onClick={() => setTrace(null)}>Discard</Button></div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <div className="card-title"><h2>BIMI record</h2></div>
+        {brand ? (
+          <>
+            <div className="small mb-8">Publish this TXT record at <code>default._bimi.{domain}</code> (it is also listed under DNS setup):</div>
+            <div className="row"><code className="small" style={{ wordBreak: 'break-all', flex: 1 }}>{brand.record}</code><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.record); toast.success('Copied'); }}>Copy</Button></div>
+            <Field label="Verified Mark Certificate URL (optional)" hint="Gmail and Apple Mail only show the logo with a VMC or CMC from DigiCert or Entrust. Host the .pem at a public https address and paste it here; it fills the a= part of the record." className="mt-16"><div className="row"><Input value={vmc} onChange={(e) => setVmc(e.target.value)} placeholder="https://outreach.example.com/bimi/vmc.pem" /><Button onClick={() => api.put(`/api/brand/${domain}/options`, { vmcUrl: vmc.trim() }).then(() => { done(); toast.success('Record updated'); }).catch((e) => toast.error(e))}>Save</Button></div></Field>
+          </>
+        ) : <div className="small muted">The record appears once a logo exists.</div>}
       </div>
       <div className="card">
         <div className="card-title"><h2>Generate a default avatar</h2></div>

@@ -478,4 +478,12 @@ CREATE TABLE IF NOT EXISTS brands (
 );
 `,
   },
+  {
+    id: '20260905_0006_brand_bimi_options',
+    up: `
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS vmc_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'upload';
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS report JSONB NOT NULL DEFAULT '{}'::jsonb;
+`,
+  },
 ];
