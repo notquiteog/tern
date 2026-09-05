@@ -71,7 +71,8 @@ export function htmlToText(html: string): string {
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6]|tr|blockquote)>/gi, '\n')
+    .replace(/<\/(p|h[1-6]|blockquote)>/gi, '\n\n')
+    .replace(/<\/(div|li|tr)>/gi, '\n')
     .replace(/<li[^>]*>/gi, '• ')
     .replace(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, text: string) => {
       const t = text.replace(/<[^>]+>/g, '').trim();
