@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { BrandLogo, useAppName } from '../components/Brand';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Feather } from 'lucide-react';
 import { Background } from '../components/Background';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
@@ -9,6 +9,7 @@ import { PowFootnote, PowStatus } from '../components/PowStatus';
 import { withPow, type PowProgress } from '../lib/pow';
 
 export default function RegisterPage() {
+  const appName = useAppName();
   const { refresh, registrationOpen } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
@@ -41,7 +42,7 @@ export default function RegisterPage() {
     <div className="auth-page">
       <Background />
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 440 }}>
-        <div className="brand"><span className="brand-logo"><Feather size={16} /></span>Tern</div>
+        <div className="brand"><BrandLogo />{appName}</div>
         <h1 style={{ marginBottom: 4 }}>Create your account</h1>
         {invite && inviteInfo?.valid && <p className="muted" style={{ marginBottom: 18 }}>You were invited{inviteInfo.note ? ` (${inviteInfo.note})` : ''} as a {inviteInfo.role}.</p>}
         {invite && inviteError && <Callout kind="danger">{inviteError}</Callout>}

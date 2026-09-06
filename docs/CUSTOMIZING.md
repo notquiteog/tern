@@ -207,6 +207,15 @@ Message bodies follow the theme: plain correspondence is drawn in the theme's
 text colours, while designed newsletters keep their own colours on a light
 card in dark mode with a "Match theme" switch that inverts them.
 
+## Name and logo
+
+Settings → General → **Name and logo** (admins). The name replaces "Tern" in
+the top bar, on the sign-in and registration pages and in the browser tab;
+the logo replaces the feather and becomes the favicon. Upload an SVG, PNG,
+JPEG or WebP up to 1 MB. SVGs are cleaned the same way as mail logos
+(scripts, external references and metadata removed); rasters have their
+metadata stripped. Remove the logo to return to the default.
+
 ## Profile pictures
 
 Settings → Profile: upload a picture (squared and shrunk to 256 px in the

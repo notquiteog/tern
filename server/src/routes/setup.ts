@@ -9,6 +9,7 @@ import { recommendModel } from '../ai/models.js';
 import { authSettings } from './users.js';
 import { stalwartEnabled } from '../services/stalwart.js';
 import { verifySolution } from '../pow.js';
+import { getBranding, publicBranding } from '../services/branding.js';
 
 export const setupRouter = Router();
 
@@ -23,10 +24,12 @@ async function needsSetup(): Promise<boolean> {
 setupRouter.get('/status', async (_req, res) => {
   const auth = await authSettings();
   const fresh = await needsSetup();
+  const branding = publicBranding(await getBranding());
   res.setHeader('Cache-Control', 'no-store');
-  if (!fresh) { res.json({ needsSetup: false, registrationOpen: auth.allowRegistration, version: config.version }); return; }
+  if (!fresh) { res.json({ needsSetup: false, registrationOpen: auth.allowRegistration, version: config.version, branding }); return; }
   res.json({
     needsSetup: true,
+    branding,
     registrationOpen: auth.allowRegistration,
     version: config.version,
     appUrl: config.appUrl,

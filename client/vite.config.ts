@@ -12,6 +12,8 @@ export default defineConfig({
     proxy: {
       '/api': { target: process.env.TERN_API || 'http://127.0.0.1:3080', changeOrigin: false },
       '/u': { target: process.env.TERN_API || 'http://127.0.0.1:3080' },
+      '/logo': { target: process.env.TERN_API || 'http://127.0.0.1:3080' },
+      '/bimi': { target: process.env.TERN_API || 'http://127.0.0.1:3080' },
     },
   },
   build: { outDir: 'dist', sourcemap: false, chunkSizeWarningLimit: 900 },

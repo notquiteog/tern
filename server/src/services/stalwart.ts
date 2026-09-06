@@ -87,7 +87,9 @@ export function generateMailboxPassword(): string {
 }
 
 export async function getMtaStsMode(): Promise<string> {
-  const [[, r]] = await call([['x:MtaSts/get', {}, 'c1']]);
+  // Without the explicit id Stalwart answers with an empty list (verified on
+  // 0.16), which made this always report "testing" whatever was set.
+  const [[, r]] = await call([['x:MtaSts/get', { ids: ['singleton'] }, 'c1']]);
   return String(r.list?.[0]?.mode ?? 'testing').toLowerCase();
 }
 export async function setMtaStsMode(mode: 'enforce' | 'testing' | 'disable'): Promise<void> {

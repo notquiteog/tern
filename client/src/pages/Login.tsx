@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
+import { BrandLogo, useAppName } from '../components/Brand';
 import { Link, useNavigate } from 'react-router-dom';
-import { Feather, KeyRound, Copy } from 'lucide-react';
+import { KeyRound, Copy } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { usePgp } from '../state/pgp';
@@ -14,6 +15,7 @@ interface Challenge { challengeId: string; challenge: string; fingerprint?: stri
 interface LoginResponse { mfaRequired?: boolean; methods?: string[]; pgp?: Challenge | null; user?: any }
 
 export default function LoginPage() {
+  const appName = useAppName();
   const { setUser, refresh, registrationOpen } = useAuth();
   const { requestKey } = usePgp();
   const nav = useNavigate();
@@ -98,7 +100,7 @@ export default function LoginPage() {
     <div className="auth-page">
       <Background />
       <div className="auth-card">
-        <div className="brand"><span className="brand-logo"><Feather size={16} /></span>Tern</div>
+        <div className="brand"><BrandLogo />{appName}</div>
         <h1 style={{ marginBottom: 4 }}>{title}</h1>
 
         {step === 'credentials' && mode === 'password' && (

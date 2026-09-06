@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { BrandLogo, useAppName } from './Brand';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Feather, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
+import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
 import { useAuth } from '../state/auth';
 import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
@@ -17,6 +18,7 @@ import { Palette as PaletteIcon, Check } from 'lucide-react';
 import { cls } from '../lib/format';
 
 export function Shell({ children }: { children: ReactNode }) {
+  const appName = useAppName();
   const { user, logout } = useAuth();
   const compose = useCompose();
   const nav = useNavigate();
@@ -82,7 +84,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <Background />
       <header className="topbar">
         <IconButton label="Menu" className="mobile-only" onClick={() => setSidebarOpen((o) => !o)}>{sidebarOpen ? <X size={20} /> : <MenuIcon size={20} />}</IconButton>
-        <NavLink to="/mail/inbox" className="brand"><span className="brand-logo"><Feather size={16} /></span><span className="desktop-only">Tern</span></NavLink>
+        <NavLink to="/mail/inbox" className="brand"><BrandLogo /><span className="desktop-only">{appName}</span></NavLink>
         <form className="search" onSubmit={submitSearch}>
           <Search size={16} className="faint" />
           <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mail" title="Operators: from: to: subject: is:unread is:starred has:attachment label: newer_than:7d older_than:30d before:2026-01-01" />

@@ -1,9 +1,11 @@
-import { Router } from 'express';
+import { Router, raw } from 'express';
 import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { config } from '../config.js';
 import { appSettings } from '../services/compose.js';
+import { clearLogo, getBranding, getLogo, LOGO_MAX_BYTES, LOGO_TYPES, publicBranding, setAppName, setLogo } from '../services/branding.js';
+import { badRequest, notFound } from '../errors.js';
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
@@ -19,6 +21,46 @@ settingsRouter.put('/', requireAdmin, async (req, res) => {
   const next = { ...current, ...b };
   await query(`INSERT INTO settings (key, value, updated_at) VALUES ('app', $1, now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [JSON.stringify(next)]);
   res.json({ app: next });
+});
+
+// ---- Name and logo of the web app itself (admins) ----
+function brandingView(b: Awaited<ReturnType<typeof getBranding>>) {
+  return { ...publicBranding(b), logoType: b.logo?.type ?? null, logoBytes: b.logo?.bytes ?? null, maxBytes: LOGO_MAX_BYTES };
+}
+settingsRouter.get('/branding', requireAdmin, async (_req, res) => {
+  res.json({ branding: brandingView(await getBranding()) });
+});
+settingsRouter.put('/branding', requireAdmin, async (req, res) => {
+  const b = parse(z.object({ name: z.string().trim().min(1, 'Give the app a name').max(40) }), req.body);
+  const next = await setAppName(b.name);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'branding.name',$2)`, [req.user!.id, JSON.stringify({ name: next.name })]);
+  res.json({ branding: brandingView(next) });
+});
+const logoBody = raw({ type: [...LOGO_TYPES], limit: LOGO_MAX_BYTES });
+settingsRouter.post('/branding/logo', requireAdmin, logoBody, async (req, res) => {
+  if (!Buffer.isBuffer(req.body)) throw badRequest('Send the image as the request body with its content type (SVG, PNG, JPEG or WebP)');
+  let result;
+  try { result = await setLogo(req.body, String(req.headers['content-type'] ?? '')); } catch (e) { throw badRequest((e as Error).message); }
+  const { branding, prepared } = result;
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'branding.logo',$2)`, [req.user!.id, JSON.stringify({ type: prepared.type, bytes: prepared.bytes, originalBytes: prepared.originalBytes })]);
+  res.json({ branding: brandingView(branding), bytes: prepared.bytes, originalBytes: prepared.originalBytes, note: prepared.note });
+});
+settingsRouter.delete('/branding/logo', requireAdmin, async (req, res) => {
+  const next = await clearLogo();
+  await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'branding.logo_removed')`, [req.user!.id]);
+  res.json({ branding: brandingView(next) });
+});
+
+// Public: the logo file, referenced from the setup/status payload as /logo?v=N.
+export const logoRouter = Router();
+logoRouter.get('/', async (_req, res) => {
+  const logo = await getLogo();
+  if (!logo) throw notFound('No logo set');
+  res.setHeader('Content-Type', logo.type);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (logo.type === 'image/svg+xml') res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.send(logo.data);
 });
 
 settingsRouter.get('/audit', requireAdmin, async (_req, res) => {

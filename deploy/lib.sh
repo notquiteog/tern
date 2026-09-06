@@ -3,10 +3,13 @@
 
 # up -d for the whole stack. podman-compose 1.0.x tries to create every
 # container even when it already exists, prints "name ... is already in use"
-# and then simply starts it; hide that line so real errors stand out. Callers
-# verify the result themselves, since older podman-compose does not fail.
+# and then simply starts it; and when the config changed it stops and removes
+# every container first, complaining about ones we already removed. Hide
+# those lines so real errors stand out. Callers verify the result themselves,
+# since older podman-compose does not fail.
 compose_up() {
-  compose up -d --remove-orphans "$@" 2>&1 >/dev/null | grep -v 'container name .* is already in use' || true
+  compose up -d --remove-orphans "$@" 2>&1 >/dev/null \
+    | grep -Ev 'container name .* is already in use|no container with (name or ID|ID or name) .* found' || true
 }
 
 # podman-compose (1.0.x and 1.x alike) leaves a container alone when its

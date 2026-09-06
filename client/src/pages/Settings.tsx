@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Feather } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
+import { useAppName } from '../components/Brand';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle, Tabs } from '../components/ui';
@@ -561,6 +562,7 @@ function ProfileSettings() {
 
 function GeneralSettings() {
   const { user, version } = useAuth();
+  const appName = useAppName();
   const toast = useToast();
   const { data, refetch } = useQuery({ queryKey: ['app-settings'], queryFn: () => api.get<any>('/api/settings') });
   const { data: audit } = useQuery({ queryKey: ['audit'], queryFn: () => api.get<{ entries: any[] }>('/api/settings/audit'), enabled: user!.role === 'admin' });
@@ -569,7 +571,8 @@ function GeneralSettings() {
   if (!data || !f) return <Spinner />;
   return (
     <div style={{ maxWidth: 760 }}>
-      <PageHeader title="General" sub={`Tern ${version || data.version} · ${data.appUrl}`} />
+      <PageHeader title="General" sub={`${appName} ${version || data.version} · ${data.appUrl}`} />
+      {user!.role === 'admin' && <BrandingCard />}
       <div className="card mb-16">
         <h2 className="mb-8">Compliance footer</h2>
         <p className="muted small">Added below sequence emails when the sequence's unsubscribe footer is on. CAN-SPAM requires a valid physical postal address in commercial email.</p>
@@ -589,6 +592,60 @@ function GeneralSettings() {
           ]} />
         </div>
       )}
+    </div>
+  );
+}
+
+// The app's own name and logo (admins). Saving refreshes the auth context so
+// the top bar, tab title and favicon change immediately.
+const LOGO_TYPES = ['image/svg+xml', 'image/png', 'image/jpeg', 'image/webp'];
+function BrandingCard() {
+  const toast = useToast();
+  const { refresh } = useAuth();
+  const { data, refetch } = useQuery({ queryKey: ['branding'], queryFn: () => api.get<{ branding: any }>('/api/settings/branding') });
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (data) setName(data.branding.name); }, [data]);
+  const done = async () => { await refetch(); await refresh(); };
+  async function saveName() {
+    try { await api.put('/api/settings/branding', { name }); await done(); toast.success('Name saved'); } catch (e) { toast.error(e); }
+  }
+  async function onFile(f: File) {
+    const type = f.type || (f.name.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : '');
+    if (!LOGO_TYPES.includes(type)) { toast.error('Choose an SVG, PNG, JPEG or WebP image'); return; }
+    setBusy(true);
+    try {
+      const r = await api.upload<any>('/api/settings/branding/logo', f, type);
+      await done();
+      toast.success(`Logo saved: ${fmtBytes(r.bytes)}${r.note ? ` (${r.note})` : ''}`);
+    } catch (e) { toast.error(e); } finally { setBusy(false); if (input.current) input.current.value = ''; }
+  }
+  async function remove() {
+    setBusy(true);
+    try { await api.del('/api/settings/branding/logo'); await done(); toast.success('Logo removed'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  if (!data) return null;
+  const b = data.branding;
+  return (
+    <div className="card mb-16">
+      <h2 className="mb-8">Name and logo</h2>
+      <p className="muted small">Shown in the top bar, on the sign-in page and as the browser tab title for everyone here. SVGs are cleaned of scripts and metadata; PNG, JPEG and WebP have their metadata stripped. Up to {fmtBytes(b.maxBytes)}.</p>
+      <div className="row gap-16 wrap" style={{ alignItems: 'flex-end' }}>
+        <Field label="App name"><Input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} /></Field>
+        <Button variant="primary" onClick={saveName} disabled={!name.trim() || name.trim() === b.name}>Save name</Button>
+      </div>
+      <div className="row gap-16 mt-16" style={{ alignItems: 'center' }}>
+        <span className={b.logo ? 'brand-logo custom' : 'brand-logo'} style={{ width: 56, height: 56, borderRadius: 14 }}>{b.logo ? <img src={b.logo} alt="" /> : <Feather size={26} />}</span>
+        <div className="col gap-8">
+          <div className="small muted">{b.logo ? `${String(b.logoType).replace('image/', '').replace('svg+xml', 'SVG').toUpperCase()} · ${fmtBytes(b.logoBytes)}` : 'Default logo'}</div>
+          <div className="row gap-8">
+            <input ref={input} type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void onFile(f); }} />
+            <Button icon={<Upload size={15} />} onClick={() => input.current?.click()} disabled={busy}>Upload logo</Button>
+            {b.logo && <Button variant="ghost" icon={<Trash2 size={15} />} onClick={remove} disabled={busy}>Remove</Button>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

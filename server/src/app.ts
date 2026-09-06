@@ -17,7 +17,7 @@ import { sequencesRouter } from './routes/sequences.js';
 import { reviewRouter } from './routes/review.js';
 import { rulesRouter } from './routes/rules.js';
 import { aiRouter } from './routes/ai.js';
-import { settingsRouter } from './routes/settings.js';
+import { settingsRouter, logoRouter } from './routes/settings.js';
 import { eventsRouter } from './routes/events.js';
 import { publicRouter } from './routes/public.js';
 import { respondersRouter } from './routes/responders.js';
@@ -43,6 +43,7 @@ export function createApp(): express.Express {
 
   app.use('/u', express.urlencoded({ extended: false }), publicRouter);
   app.use('/bimi', bimiRouter);
+  app.use('/logo', logoRouter);
   app.get('/healthz', (_req, res) => { res.json({ ok: true, version: config.version }); });
   // Caddy asks here before issuing an on-demand certificate, so only names
   // that belong to this install get certificates.

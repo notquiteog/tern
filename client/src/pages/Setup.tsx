@@ -1,14 +1,15 @@
 import { useState, type FormEvent } from 'react';
+import { BrandLogo, useAppName } from '../components/Brand';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { Button, Field, Input } from '../components/ui';
-import { Feather } from 'lucide-react';
 import { Background } from '../components/Background';
 import { PowStatus } from '../components/PowStatus';
 import { withPow, type PowProgress } from '../lib/pow';
 
 export default function SetupPage() {
+  const appName = useAppName();
   const { refresh } = useAuth();
   const nav = useNavigate();
   const [displayName, setDisplayName] = useState('');
@@ -34,7 +35,7 @@ export default function SetupPage() {
     <div className="auth-page">
       <Background />
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 440 }}>
-        <div className="brand"><span className="brand-logo"><Feather size={16} /></span>Tern</div>
+        <div className="brand"><BrandLogo />{appName}</div>
         <h1 style={{ marginBottom: 4 }}>Create the admin account</h1>
         <p className="muted" style={{ marginBottom: 18 }}>This is the first and only time this screen appears. Afterwards, admins add people from Settings → Users.</p>
         <Field label="Your name"><Input autoFocus value={displayName} onChange={(e) => setDisplayName(e.target.value)} required placeholder="Alex Rivera" /></Field>
