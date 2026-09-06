@@ -72,6 +72,12 @@ on purpose.
 
 - Admin panel over an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 server`, then
   `http://127.0.0.1:8080/admin`.
+- `https://mx1.example.com/admin` (or the MTA-STS policy) answers **502** while
+  mail still flows: Stalwart has auto-banned Caddy's container address after
+  someone's failed logins or a bot probing the panel (`Blocked IP address` in
+  `./bin/tern logs stalwart`). Run `./bin/tern stalwart-trust-proxy` once so
+  our own containers are never banned and bans land on the real client, then
+  `./bin/tern stalwart-unban` to lift the existing bans and restart Stalwart.
 - Lost the admin password: set `STALWART_RECOVERY_MODE=1` and
   `STALWART_RECOVERY_ADMIN=recovery:newpass` in `.env`, `./bin/tern up`,
   fix things via the panel on port 8080, then clear both and `./bin/tern up`.

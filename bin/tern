@@ -6,6 +6,8 @@
 #   ./bin/tern dns-check [--port25]  verify the mail domain's DNS records from this box
 #   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
 #   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
+#   ./bin/tern stalwart-unban [ip…]  lift Stalwart's automatic IP bans (all, or the given addresses) and restart it
+#   ./bin/tern stalwart-trust-proxy  never ban our own containers; trust X-Forwarded-For from them
 #   ./bin/tern backup [dir]          dump the database and the .env into a dated tarball
 #   ./bin/tern restore <tarball>     restore a backup made by `backup`
 #   ./bin/tern update                same as ./update.sh
@@ -21,6 +23,9 @@ set -a; . ./.env; set +a
 export COMPOSE_FILE="${COMPOSE_FILE:-compose.yml}"
 compose() { podman-compose --env-file "$ROOT/.env" "$@"; }
 . "$ROOT/deploy/lib.sh"
+# One JMAP management call to the bundled Stalwart, as its admin. Usage: sw_call '<methodCalls json>'
+sw_call() { curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}"; }
+stalwart_container() { podman ps -q --filter label=com.docker.compose.service=stalwart --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1; }
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
@@ -28,13 +33,46 @@ case "$cmd" in
   down)      compose down "$@" ;;
   restart)   compose restart "$@" ;;
   ps)        compose ps "$@" ;;
-  logs)      compose logs -f --tail=200 "$@" ;;
+  logs)      if [ -t 1 ]; then compose logs -f --tail=200 "$@"; else compose logs --tail=200 "$@"; fi ;;  # follow only on a terminal, so `| tail` works
   build)     compose build app "$@" ;;
   compose)   compose "$@" ;;
   cli)       compose exec -T app tern-cli "$@" ;;
   pull-model) compose exec -T ollama ollama pull "${1:?model name}" ;;
   dns-check) compose exec -T app tern-cli dns-check "$@" ;;
   update)    exec "$ROOT/update.sh" "$@" ;;
+  stalwart-trust-proxy)
+    # Caddy proxies every browser request to Stalwart, so without this one
+    # visitor's failed logins (or a bot probing /admin) get Caddy's own
+    # address banned and the admin panel answers 502 for everyone. Allow-list
+    # the container network and trust X-Forwarded-For from it, so bans land
+    # on the real client instead. Idempotent; install.sh runs it.
+    [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled."; exit 0; }
+    command -v python3 >/dev/null || { echo "python3 is required for this command." >&2; exit 1; }
+    SUBNETS="$(stack_subnets | tr '\n' ' ')"; [ -n "${SUBNETS// }" ] || SUBNETS="10.89.0.0/16"
+    ALLOWED="$(sw_call '[["x:AllowedIp/get",{"ids":null,"properties":["address"]},"c1"]]')"
+    for net in $SUBNETS; do
+      if ! printf '%s' "$ALLOWED" | grep -q "\"address\":\"$net\""; then
+        sw_call "[[\"x:AllowedIp/set\",{\"create\":{\"a\":{\"address\":\"$net\",\"reason\":\"Tern containers (Caddy, app)\"}}},\"c1\"]]" | grep -q '"created"' || { echo "could not allow-list $net" >&2; exit 1; }
+      fi
+    done
+    CUR="$(sw_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["proxyTrustedNetworks"]},"c1"]]')"
+    MERGED="$(printf '%s' "$CUR" | python3 -c 'import json,sys; m=(json.load(sys.stdin)["methodResponses"][0][1]["list"][0].get("proxyTrustedNetworks") or {}); m.update({n: True for n in sys.argv[1:]}); print(json.dumps(m))' $SUBNETS)"
+    sw_call "[[\"x:SystemSettings/set\",{\"update\":{\"singleton\":{\"proxyTrustedNetworks\":$MERGED}}},\"c1\"]]" | grep -q '"updated"' || { echo "could not set the trusted proxy networks" >&2; exit 1; }
+    echo "Stalwart never bans and trusts X-Forwarded-For from: $SUBNETS" ;;
+  stalwart-unban)
+    # Stalwart keeps banned addresses in memory until it restarts, so
+    # removing the entries alone is not enough.
+    [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled."; exit 0; }
+    command -v python3 >/dev/null || { echo "python3 is required for this command." >&2; exit 1; }
+    ROWS="$(sw_call '[["x:BlockedIp/get",{"ids":null,"properties":["address","reason"]},"c1"]]' | python3 -c 'import json,sys; want=set(sys.argv[1:]); l=json.load(sys.stdin)["methodResponses"][0][1]["list"]; [print(e["id"], e["address"], e.get("reason") or "-") for e in l if not want or e["address"] in want]' "$@")"
+    [ -n "$ROWS" ] || { echo "No banned addresses${1:+ matching $*}."; exit 0; }
+    printf '%s\n' "$ROWS" | while read -r _ addr reason; do echo "lifting ban on $addr ($reason)"; done
+    IDS="$(printf '%s\n' "$ROWS" | awk '{ printf "%s\"%s\"", (NR > 1 ? "," : ""), $1 }')"
+    sw_call "[[\"x:BlockedIp/set\",{\"destroy\":[$IDS]},\"c1\"]]" | grep -q '"destroyed"' || { echo "could not remove the bans" >&2; exit 1; }
+    CID="$(stalwart_container)"
+    echo "Restarting Stalwart so the lifted bans take effect…"
+    if [ -n "$CID" ]; then podman restart "$CID" >/dev/null; else compose restart stalwart >/dev/null; fi
+    echo "Done." ;;
   stalwart-api)
     [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled." >&2; exit 1; }
     curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" \

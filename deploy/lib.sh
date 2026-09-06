@@ -37,3 +37,14 @@ replace_stale_containers() { # app-image
     for id in $(podman rm -f --depend "$full" 2>/dev/null); do echo "${names[$id]:-$id}"; done
   done
 }
+
+# CIDRs of the compose networks the stack's containers sit on, one per line.
+# Used to tell Stalwart which addresses are our own proxies. Empty when the
+# stack is not running or podman cannot describe the network.
+stack_subnets() {
+  local id nets n
+  id="$(podman ps -a --format '{{.ID}}\t{{.Image}}' | awk -F'\t' '$2 == "localhost/tern:latest" { print $1; exit }')"
+  [ -n "$id" ] || return 0
+  nets="$(podman inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$id" 2>/dev/null || true)"
+  for n in $nets; do podman network inspect --format '{{range .Subnets}}{{.Subnet}} {{end}}' "$n" 2>/dev/null || true; done | tr ' ' '\n' | grep -v '^$' | sort -u
+}
