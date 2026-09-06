@@ -3,8 +3,8 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, deleteModel, getAiSettings, isValidKeepAlive, listModels, loadedModels, ollamaHealth, pullModel, saveAiSettings, aiDefaults } from '../ai/llm.js';
-import { buildMessages, finalizeOutput, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
+import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, ollamaHealth, pullModel, saveAiSettings, aiDefaults } from '../ai/llm.js';
+import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
 import { getUserAccount } from '../services/accounts.js';
@@ -55,13 +55,15 @@ aiRouter.get('/status', async (req, res) => {
 });
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
-  const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(32768).optional(), keepAlive: z.string().max(20).optional(), allowThinking: z.boolean().optional(),
+  const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(), allowThinking: z.boolean().optional(),
+    thinkEffort: z.enum(['low', 'medium', 'high']).optional(), thinkingBudget: z.number().int().min(0).max(8192).optional(),
     systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(), maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
   if (b.keepAlive !== undefined && !isValidKeepAlive(b.keepAlive)) {
     throw badRequest('Keep model loaded needs a duration with a unit (30s, 10m, 1h), or a number of seconds (-1 to never unload, 0 to unload at once)');
   }
+  if (b.model !== undefined || b.baseUrl !== undefined || b.provider !== undefined) forgetModelCapabilities();
   const next = await saveAiSettings(b);
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
@@ -114,7 +116,11 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
   const s = await getAiSettings();
   if (!s.enabled) throw badRequest('AI drafting is turned off');
   const acc = b.accountId ? await getUserAccount(req.user!.id, b.accountId) : null;
-  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: DRAFT_MODES.has(b.mode) && b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice };
+  // How this mode is tuned, and how much of a conversation it may be given:
+  // the same numbers the scheduler uses for responders and campaigns.
+  const tuning = modeTuning(b.mode);
+  const threadChars = Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity);
+  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: DRAFT_MODES.has(b.mode) && b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice, threadChars };
   if (b.contactId) {
     const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [b.contactId, req.user!.id]);
     if (c) input.recipient = { name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email, company: c.company, title: c.title, notes: c.notes, fields: c.fields };
@@ -140,10 +146,10 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
   let full = '';
   try {
     send('start', { model: s.model });
-    for await (const piece of chatStream({ messages: buildMessages(input), signal: abort.signal, // Short modes have their own ceiling; a full draft uses the reply length
-    // set in Admin → AI model, which is what the "empty answer" message tells
-    // people to raise.
-    maxTokens: b.mode === 'subject' ? 40 : b.mode === 'summarize' ? 300 : b.mode === 'quick_replies' ? 120 : undefined, temperature: b.mode === 'subject' || b.mode === 'polish' ? 0.3 : b.mode === 'quick_replies' ? 0.9 : undefined })) {
+    // Short modes have their own ceiling; a full draft uses the reply length
+    // set in Admin → AI model, which is what the "empty answer" message
+    // tells people to raise.
+    for await (const piece of chatStream({ messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature })) {
       full += piece;
       send('token', { t: piece });
     }

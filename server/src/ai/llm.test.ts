@@ -35,11 +35,13 @@ test('the admin field refuses what Ollama would refuse', () => {
   for (const v of ['', 'forever', '10 minutes', '1d', 'm10', '10m30s']) assert.equal(isValidKeepAlive(v), false, v);
 });
 
-test('an empty answer after thinking names the cause and the fix', () => {
+test('an empty answer after thinking says the retry was tried too', () => {
+  // Thinking is retried once with reasoning off before anyone is told
+  // anything, so by the time this message is shown the budget is the fix.
   const msg = emptyAnswer('qwen3.5:4b', 3031, 700);
-  assert.match(msg, /reasoning model/);
-  assert.match(msg, /700-token budget/);
-  assert.match(msg, /Let reasoning models think/);
+  assert.match(msg, /only its reasoning/);
+  assert.match(msg, /above 700 tokens/);
+  assert.match(msg, /Admin → AI model/);
 });
 
 test('an empty answer with no thinking says something different', () => {

@@ -25,6 +25,10 @@ export const CURATED_MODELS = [
   { name: 'qwen2.5:3b', sizeGB: 1.9, note: 'medium' },
   { name: 'qwen2.5:7b', sizeGB: 4.7, note: 'large' },
   { name: 'qwen2.5:14b', sizeGB: 9.0, note: 'extra large' },
+  // Reasoning-capable. Good at holding a long thread; leave thinking off
+  // unless there is a GPU, and give it the thinking budget if you turn it on.
+  { name: 'qwen3.5:4b', sizeGB: 3.4, note: 'medium, best long-thread recall; can think' },
+  { name: 'qwen3.5:8b', sizeGB: 6.6, note: 'large, can think' },
   { name: 'llama3.2:1b', sizeGB: 1.3, note: 'small alternative' },
   { name: 'llama3.2:3b', sizeGB: 2.0, note: 'medium alternative' },
   { name: 'gemma3:1b', sizeGB: 0.8, note: 'small alternative' },

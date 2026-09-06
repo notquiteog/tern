@@ -175,8 +175,20 @@ polish, shorten, expand, subject).
 - **Provider**: Ollama (bundled) or any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional API key.
 - **Model**: pull curated models with one click or type any name from
   ollama.com/library. The page shows the RAM-based recommendation.
-- **Temperature** and **context window**: 0.7 and 4096 by default. A larger
-  context lets summaries see more of a long thread at the cost of memory.
+- **Temperature** and **context window**: 0.7 and 8192 by default. The
+  conversation given to the model is sized to the context window: a long
+  thread keeps its newest messages and its opening ones, where the dates and
+  the figures were agreed, and drops the middle, saying how many went. A
+  smaller window costs less memory and drops more.
+- **Let reasoning models think** (off by default): qwen3 and deepseek-r1
+  work an answer out before writing it. The reasoning never reaches a draft
+  and is paid for out of its own **thinking budget** on top of the reply
+  length, so it cannot leave the email empty; if the model spends it all
+  and writes nothing anyway, Tern asks again with thinking off rather than
+  showing an error. It is several times slower without a GPU and rarely
+  reads better for email. Models that cannot reason ignore the setting —
+  Ollama refuses `think` outright on them, so it is only sent to models
+  that report the capability.
 - Ollama keeps the model loaded for 10 minutes after use (`OLLAMA_KEEP_ALIVE`
   in `.env`); on a small VPS this is what keeps memory free between drafts.
 - **GPU**: re-run the installer and answer yes, or add `compose.gpu.yml` to
@@ -184,6 +196,26 @@ polish, shorten, expand, subject).
 
 Prompts live in `server/src/ai/prompts.ts`. They are short on purpose; small
 models follow short instructions best.
+
+Two evaluation scripts run against a real model rather than a mock, and
+grade what comes back with deterministic checks:
+
+```bash
+cd server && npx tsx --env-file=../.env.dev src/ai/live.eval.ts
+```
+
+covers every mode — names, long threads, quick replies, summaries, the
+editing modes and campaign personalisation (`MODEL=`, `RUNS=`, `ONLY=`,
+`THINK=on|off`, `VERBOSE=1`). And
+
+```bash
+cd server && npx tsx --env-file=../.env.dev src/ai/campaign.eval.ts
+```
+
+runs the whole mass-generation flow: a CSV through the import parser, an AI
+campaign over the contacts it created, the scheduler generating one email
+per contact, the guard, and the pacing the approved ones would leave
+under (`N=`, `MODE=review|auto`).
 
 ## Inbox rules
 

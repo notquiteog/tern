@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertFreshConversation, buildMessages, cleanOutput, ensureGreeting, finalizeOutput, parseQuickReplies, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, threadBudgetChars, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -83,8 +83,16 @@ test('quick replies: three clean one-liners whatever the model decorated them wi
   assert.deepEqual(parseQuickReplies(''), []);
   assert.deepEqual(parseQuickReplies('Alice, the update sounds good to me.\nBob\nDana, could we talk Friday?\nYes, Tuesday works.', ['Dana Osei', 'Alice Probe']), ['The update sounds good to me.', 'Could we talk Friday?', 'Yes, Tuesday works.']);
   assert.deepEqual(parseQuickReplies('```\nSure thing.\n```'), ['Sure thing.']);
-  const long = parseQuickReplies('word '.repeat(60).trim());
-  assert.ok(long[0].length <= 140 && long[0].endsWith('…'));
+  // A paragraph is not a quick reply, and a truncated one is worse than
+  // none: it would go into the composer half-finished.
+  assert.deepEqual(parseQuickReplies('word '.repeat(60).trim()), []);
+  assert.deepEqual(parseQuickReplies('Yes, that works.\n' + 'word '.repeat(40).trim() + '\nCould we do Friday?'), ['Yes, that works.', 'Could we do Friday?']);
+});
+
+test('a quick reply carrying a placeholder is dropped, not offered', () => {
+  assert.deepEqual(parseQuickReplies('I will confirm [insert specific facts] shortly.\nYes, Tuesday works.\nCould we do Friday?'), ['Yes, Tuesday works.', 'Could we do Friday?']);
+  assert.deepEqual(parseQuickReplies('Thanks {{first_name}}, will do.\nSounds good to me.'), ['Sounds good to me.']);
+  assert.deepEqual(parseQuickReplies('Sure, see you at <time>.\nSounds good to me.'), ['Sounds good to me.']);
 });
 
 test('finalizeOutput joins quick replies with newlines and never adds a greeting to them', () => {
@@ -103,4 +111,103 @@ test('cleanOutput cuts an echoed prompt off the end of a reply', () => {
   assert.equal(cleanOutput('Hi Bob,\n\nThank you! I will get back to you shortly.\n\n---\n\nBob Probe: Got it.\n--- From Alice <a@x> on Sun\nHi Bob, pricing?\nSubject of this email: Pricing', 'reply'), 'Hi Bob,\n\nThank you! I will get back to you shortly.');
   assert.equal(cleanOutput('Hi Bob,\n\nSee you Tuesday.\n\nSubject of this email: Meeting', 'reply'), 'Hi Bob,\n\nSee you Tuesday.');
   assert.equal(cleanOutput('A dash --- in the middle of a line stays.', 'reply'), 'A dash --- in the middle of a line stays.');
+});
+
+test('a long thread keeps both ends: the opening terms and the newest messages', () => {
+  const thread = Array.from({ length: 24 }, (_, i) => ({ from: i % 2 ? 'Alex <alex@team.example>' : 'Dana <dana@acme.example>', date: `Day ${i}`, text: `Message ${i}. ${'filler '.repeat(30)}` }));
+  thread[0].text = 'Message 0. Our fiscal year ends 30 September.';
+  thread[12].text = 'Message 12. The middle of the conversation.';
+  const m = buildMessages({ mode: 'reply', thread, threadChars: 2500 })[1].content;
+  assert.ok(m.includes('30 September'), 'the opening message survives');
+  assert.ok(m.includes('Message 23'), 'the newest message survives');
+  assert.ok(!m.includes('Message 12'), 'the middle is what gets dropped');
+  assert.match(m, /24 messages in total/);
+  assert.match(m, /messages? in the middle of the thread omitted/);
+});
+
+test('a thread that fits is shown whole, with no omission notice', () => {
+  const thread = Array.from({ length: 24 }, (_, i) => ({ from: 'Dana <dana@acme.example>', date: `Day ${i}`, text: `Message ${i}.` }));
+  const m = buildMessages({ mode: 'reply', thread, threadChars: 14_000 })[1].content;
+  for (let i = 0; i < 24; i++) assert.ok(m.includes(`Message ${i}.`), `message ${i} is present`);
+  assert.ok(!m.includes('omitted'));
+  assert.ok(!m.includes('in total'));
+});
+
+test('the newest message is kept at greater length than the older ones', () => {
+  const long = (n: number) => `M${n} ` + 'x'.repeat(3000);
+  const thread = [{ from: 'Dana <d@x.test>', date: 'Mon', text: long(1) }, { from: 'Dana <d@x.test>', date: 'Tue', text: long(2) }, { from: 'Dana <d@x.test>', date: 'Wed', text: long(3) }];
+  const m = buildMessages({ mode: 'reply', thread, threadChars: 14_000 })[1].content;
+  const newest = m.slice(m.lastIndexOf('M3'));
+  assert.ok(newest.length > 2900, 'the message being replied to is kept nearly whole');
+  assert.match(m, /\[…\]/, 'the older ones are trimmed');
+});
+
+test('the thread budget shrinks with the context window and never goes to nothing', () => {
+  assert.ok(threadBudgetChars(8192, 700) > threadBudgetChars(4096, 700));
+  assert.equal(threadBudgetChars(8192, 700), 14_000); // capped
+  assert.ok(threadBudgetChars(2048, 700) >= 2_400);
+  assert.ok(threadBudgetChars(512, 4096) >= 2_400);
+});
+
+test('reasoning left inline in <think> tags never reaches the draft', () => {
+  assert.equal(cleanOutput('<think>She asked about pricing. I should quote 950.</think>\nHi Dana,\n\nIt is 950 a month.', 'reply'), 'Hi Dana,\n\nIt is 950 a month.');
+  assert.equal(cleanOutput('<thinking>hmm</thinking>Hi Dana,', 'reply'), 'Hi Dana,');
+  // A budget that ran out mid-thought leaves the tag unclosed.
+  assert.equal(cleanOutput('Hi Dana,\n\nYes.\n<think>wait, should I also', 'reply'), 'Hi Dana,\n\nYes.');
+  assert.equal(cleanOutput('I think we should meet Tuesday.', 'reply'), 'I think we should meet Tuesday.');
+});
+
+test('the editing modes are anchored to the length of the draft they were given', () => {
+  const draft = 'word '.repeat(50).trim();
+  assert.match(buildMessages({ mode: 'shorten', draft })[1].content, /draft is 50 words; your answer is at most 30 words/);
+  assert.match(buildMessages({ mode: 'expand', draft })[1].content, /at most 100 words/);
+  assert.match(buildMessages({ mode: 'polish', draft })[1].content, /at most 55 words/);
+  assert.ok(!buildMessages({ mode: 'compose', instruction: 'hi' })[1].content.includes('The draft is'));
+});
+
+test('each mode is tuned the same way wherever it is called from', () => {
+  assert.equal(modeTuning('polish').temperature, 0.2);
+  assert.equal(modeTuning('subject').maxTokens, 60);
+  assert.equal(modeTuning('quick_replies').maxTokens, 220);
+  assert.deepEqual(modeTuning('compose'), {});
+});
+
+test('a From name is tidied into something a greeting can use', () => {
+  assert.equal(firstNameOf('Dana Osei'), 'Dana');
+  assert.equal(firstNameOf('Osei, Dana'), 'Dana');            // the directory-export form
+  assert.equal(firstNameOf('DANA OSEI'), 'Dana');             // shouting
+  assert.equal(firstNameOf('dana osei'), 'Dana');
+  assert.equal(firstNameOf('Dr Dana Osei'), 'Dana');
+  assert.equal(firstNameOf('Dana Osei, ACA'), 'Dana');
+  assert.equal(firstNameOf('Dana Osei | Northwind Supply'), 'Dana');
+  assert.equal(firstNameOf('Dana Osei (Northwind)'), 'Dana');
+  assert.equal(firstNameOf('"Dana Osei"'), 'Dana');
+  // Nothing usable: better no name than the wrong one.
+  assert.equal(firstNameOf('dana@northwind.example'), '');
+  assert.equal(firstNameOf(''), '');
+  assert.equal(firstNameOf(undefined), '');
+  assert.equal(firstNameOf('   '), '');
+  assert.equal(cleanRecipientName('Osei, Dana'), 'Dana Osei');
+});
+
+test('a display name that is really an address never becomes a greeting', () => {
+  const m = buildMessages({ mode: 'reply', recipient: { name: 'dana@northwind.example', email: 'dana@northwind.example' } })[1].content;
+  assert.ok(m.includes('name is not known'), 'the prompt asks for "Hi there,"');
+  assert.ok(!m.includes('Hi dana@'));
+  assert.equal(ensureGreeting('Hi dana@northwind.example,\n\nYes.', 'reply', { name: 'dana@northwind.example' }), 'Hi there,\n\nYes.');
+});
+
+test('the greeting uses the tidied name, whatever shape it arrived in', () => {
+  assert.equal(ensureGreeting('Thanks for that.', 'reply', { name: 'Osei, Dana' }), 'Hi Dana,\n\nThanks for that.');
+  assert.equal(ensureGreeting('Hi Osei,\n\nThanks.', 'reply', { name: 'Osei, Dana' }), 'Hi Dana,\n\nThanks.');
+  assert.equal(ensureGreeting('Hi DANA,\n\nThanks.', 'reply', { name: 'DANA OSEI' }), 'Hi Dana,\n\nThanks.');
+  assert.equal(finalizeOutput('Hi Dana,\n\nSee you then.', 'reply', { recipient: { name: 'Dana Osei | Northwind Supply' } }), 'Hi Dana,\n\nSee you then.');
+});
+
+test('when strictness would leave nothing, the wordier suggestions are kept', () => {
+  const wordy = 'I have confirmed those details and the fixed fee is 4,800 pounds as we discussed earlier this month.\nThe monthly close after that is 950 a month on a rolling three month term as agreed.';
+  const got = parseQuickReplies(wordy);
+  assert.equal(got.length, 2, 'two long-but-usable suggestions beat none');
+  // A placeholder is still refused in the lenient pass.
+  assert.deepEqual(parseQuickReplies('I will send [insert date] once I have confirmed it with the team and checked the calendar.'), []);
 });

@@ -203,6 +203,11 @@ function AuditSettings() {
 
 // ---------------- AI model (admin) ----------------
 
+// This button sits in the Tuning card, so it resets tuning: the provider,
+// model and base URL above it are left alone.
+const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'repeatPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
+const pick = (o: any, keys: readonly string[]) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
+
 function AiAdminSettings() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -239,7 +244,7 @@ function AiAdminSettings() {
           {f.provider === 'openai' && <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => setF({ ...f, apiKey: e.target.value })} /></Field>}
           <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
-          <Field label="Context window (tokens)" hint="4096 keeps memory low. Long threads get truncated to the newest messages."><Input type="number" min={512} max={32768} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
+          <Field label="Context window (tokens)" hint="How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle."><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
         <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
       </div>
@@ -250,7 +255,7 @@ function AiAdminSettings() {
         <Button variant="primary" className="mt-8" onClick={() => save({ systemPrompt: f.systemPrompt ?? '' })}>Save system prompt</Button>
       </div>
       <div className="card mb-16">
-        <div className="card-title"><h2>Tuning</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, temperature: 0.7, topP: 0.9, topK: 40, repeatPenalty: 1.1, maxTokens: 700, numCtx: 4096 })}>Defaults</Button></div>
+        <div className="card-title"><h2>Tuning</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, ...pick(data.defaults, TUNING_FIELDS) })}>Defaults</Button></div>
         <div className="form-grid-3">
           <Field label={`Temperature: ${f.temperature}`} hint="Creativity. 0.3 literal, 0.7 natural, 1.0+ loose."><input className="range" type="range" min={0} max={1.5} step={0.05} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label={`Top-p: ${f.topP}`} hint="Nucleus sampling. Lower is safer."><input className="range" type="range" min={0.1} max={1} step={0.05} value={f.topP} onChange={(e) => setF({ ...f, topP: Number(e.target.value) })} /></Field>
@@ -263,10 +268,16 @@ function AiAdminSettings() {
           <Toggle checked={Boolean(f.allowThinking)} onChange={(v) => setF({ ...f, allowThinking: v })} />
           <div>
             <div className="strong small">Let reasoning models think</div>
-            <div className="help-text">Models like qwen3 and deepseek-r1 work an answer out before writing it. That reasoning is never put in a draft, and with a short reply length it can use the whole budget and leave nothing behind — which looks like the model not working. Off is the right setting for writing email; turn it on only if you have raised the reply length well above the default.</div>
+            <div className="help-text">Models like qwen3 and deepseek-r1 work an answer out before writing it. The reasoning is never put in a draft and is paid for out of its own budget below, so it cannot eat the email. It is much slower — on a CPU-only box expect a minute or two per email instead of a few seconds — and for writing email it rarely reads better, so off is the sensible setting unless you have a GPU. Models that cannot reason ignore this.</div>
           </div>
         </div>
-        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking })}>Save tuning</Button>
+        {f.allowThinking && (
+          <div className="form-row mb-8">
+            <Field label="How hard to think" hint="Passed to the model as its reasoning effort."><Select value={f.thinkEffort ?? 'low'} onChange={(e) => setF({ ...f, thinkEffort: e.target.value })}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></Select></Field>
+            <Field label="Thinking budget (tokens)" hint="Room for the working-out, on top of the reply length. If the model spends it all and writes nothing, Tern asks again with thinking off rather than showing an error, and the log says how much reasoning it wanted."><Input type="number" min={0} max={8192} value={f.thinkingBudget ?? 1500} onChange={(e) => setF({ ...f, thinkingBudget: Number(e.target.value) })} /></Field>
+          </div>
+        )}
+        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">

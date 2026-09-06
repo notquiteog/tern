@@ -6,7 +6,32 @@
 // the review queue instead of being sent.
 import { htmlToText } from '../services/merge.js';
 
-export interface GuardHit { kind: 'merge_field' | 'placeholder' | 'prompt_leak' | 'ai_disclosure' | 'filler'; sample: string }
+export interface GuardHit { kind: 'merge_field' | 'placeholder' | 'prompt_leak' | 'ai_disclosure' | 'filler' | 'no_body'; sample: string }
+
+// A generation that came back as nothing, or as nothing but the greeting the
+// salutation pass writes when the model produces an empty draft. It carries
+// no placeholder for the other checks to catch, so on its own it would sail
+// through and land in somebody's inbox as "Hi Dana,".
+const GREETING_ONLY_RE = /^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n]{0,40}$/i;
+const SIGNOFF_RE = /^(?:best|thanks|thank you|many thanks|regards|kind regards|warm regards|cheers|sincerely|yours|all the best|talk soon|speak soon)\b[^\n]{0,16}$/i;
+// A sign-off name: one to three capitalised words on a line of their own.
+const NAME_LINE_RE = /^[-\u2013\u2014]?\s*\p{Lu}[\p{L}'\u2019.-]*(?:\s+\p{Lu}[\p{L}'\u2019.-]*){0,2}[,.]?$/u;
+
+function bodyIsEmpty(body: string): boolean {
+  const lines = body.replace(/\u00a0/g, ' ').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return true;
+  const start = GREETING_ONLY_RE.test(lines[0]) ? 1 : 0;
+  let end = lines.length;
+  while (end > start) {
+    const last = lines[end - 1];
+    // A closing word is never the message. A bare name only counts as a
+    // sign-off when there is something above it, so a one-line reply
+    // ("Ok.", "Tuesday.") is left alone.
+    if (SIGNOFF_RE.test(last) || (end - 1 > start && NAME_LINE_RE.test(last))) { end--; continue; }
+    break;
+  }
+  return end <= start;
+}
 
 // {{first_name}}, {{ company | there }}, {% if %}, ${name}, {first_name}: a
 // template that was never rendered, or was rendered by the wrong engine.
@@ -55,11 +80,14 @@ export function findTemplateArtifacts(input: { subject?: string | null; html?: s
   if (ai) push('ai_disclosure', ai[0]);
   const filler = text.match(FILLER_RE);
   if (filler) push('filler', filler[0]);
+  // Last resort: only when nothing more specific explains why this is not
+  // fit to send, so the reason a person sees is the actionable one.
+  if (!hits.length && bodyIsEmpty(bodyOnly)) push('no_body', bodyOnly.trim().replace(/\s+/g, ' ').slice(0, 40) || '(nothing)');
   return hits;
 }
 
 export function describeHits(hits: GuardHit[]): string {
-  const label: Record<GuardHit['kind'], string> = { merge_field: 'unrendered merge field', placeholder: 'placeholder', prompt_leak: 'prompt text', ai_disclosure: 'AI self-reference', filler: 'filler text' };
+  const label: Record<GuardHit['kind'], string> = { merge_field: 'unrendered merge field', placeholder: 'placeholder', prompt_leak: 'prompt text', ai_disclosure: 'AI self-reference', filler: 'filler text', no_body: 'no message body, only' };
   return hits.map((h) => `${label[h.kind]} "${h.sample}"`).join('; ');
 }
 

@@ -44,3 +44,23 @@ test('quoted text from the other side is not inspected', () => {
 test('assertSendable throws a descriptive error', () => {
   assert.throws(() => assertSendable({ html: '<p>Hi {{first_name}},</p><p>[Your Name]</p>' }), (e: unknown) => e instanceof TemplateGuardError && e.hits.length === 2 && /unrendered merge field "\{\{first_name\}\}"/.test(e.message) && /placeholder "\[Your Name\]"/.test(e.message));
 });
+
+test('a draft that is only a greeting is not sendable', () => {
+  // What a small model leaves behind when it produces nothing and the
+  // salutation pass writes the first line for it.
+  assert.equal(findTemplateArtifacts({ text: 'Hi Dana,' }).map((h) => h.kind).includes('no_body'), true);
+  assert.equal(findTemplateArtifacts({ subject: 'Quick question', html: '<p>Hi Dana,</p>' }).map((h) => h.kind).includes('no_body'), true);
+  assert.equal(findTemplateArtifacts({ text: 'Hi Dana,\n\nBest,\nAlex' }).map((h) => h.kind).includes('no_body'), true);
+  assert.equal(findTemplateArtifacts({ text: '' }).map((h) => h.kind).includes('no_body'), true);
+  assert.throws(() => assertSendable({ text: 'Hi Dana,' }), /no message body/);
+});
+
+test('a short but real email is sendable', () => {
+  assert.deepEqual(findTemplateArtifacts({ text: 'Hi Dana,\n\nThursday at 10 works for me. See you then.\n\nAlex' }), []);
+  assert.deepEqual(findTemplateArtifacts({ text: 'Yes, Thursday at 10 works for me.' }), []);
+});
+
+test('the quoted original does not count as a body of our own', () => {
+  const html = '<p>Hi Dana,</p><div class="tern-quote">On Monday, dana@acme.example wrote: a long message with plenty of words in it that would otherwise look like a body.</div>';
+  assert.equal(findTemplateArtifacts({ html }).map((h) => h.kind).includes('no_body'), true);
+});

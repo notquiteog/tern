@@ -9,7 +9,7 @@ import { composeAndSend, type ComposeInput } from '../services/compose.js';
 import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '../services/merge.js';
 import { jitterMs, reserveSendSlot } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
-import { buildMessages, cleanOutput, finalizeOutput } from '../ai/prompts.js';
+import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
 import { describeHits, findTemplateArtifacts } from '../ai/guard.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
@@ -388,10 +388,11 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     length: 'medium',
   });
   const recipient = { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email };
-  const body = finalizeOutput(await chat({ messages, maxTokens: 600 }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
+  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens) }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
   let subject = rendered.subject;
   if (!subject.trim()) {
-    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: 40, temperature: 0.4 }), 'subject');
+    const st = modeTuning('subject');
+    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature }), 'subject');
   }
   return { subject, html: textToHtml(body), model: settings.model };
 }
@@ -435,6 +436,7 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
     voice: acc.voice,
     recipient: contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email },
     thread: thread.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() })),
+    threadChars: threadBudgetChars(settings.numCtx, settings.maxTokens),
   });
   const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
   const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
