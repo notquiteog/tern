@@ -84,16 +84,17 @@ Nothing leaves your server except the mail itself.
   for every contact, reviewed or automatic, with a same-thread follow-up.
 - Sequence steps can be personalised per contact by the model.
 - **System prompt and tuning in the UI**: edit the standing instructions,
-  temperature, top-p, top-k, repeat penalty, context window and length; a
-  playground to try changes; a writing-voice note per account.
+  temperature, top-p, top-k, min-p, repeat penalty, context window and
+  length; a playground to try changes; a writing-voice note per account.
 - **Long threads stay in one piece**: the conversation handed to the model is
   packed to fit its context window from both ends — the newest messages and
   the opening ones, where the dates and figures were agreed — so a reply
   twenty messages deep still quotes what was actually said.
 - **Reasoning models** (qwen3, deepseek-r1) are supported: the working-out
-  never reaches a draft, it is paid for out of its own budget so it cannot
-  leave the email empty, and a model that spends it all is asked again
-  without it rather than failing.
+  is streamed into the page while it happens, so a slow generation shows its
+  progress rather than a spinner; it never reaches a draft, it is paid for
+  out of its own budget so it cannot leave the email empty, and a model that
+  spends it all is asked again without it rather than failing.
 - Any OpenAI-compatible endpoint works too.
 
 **Accounts and admin**

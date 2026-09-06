@@ -188,7 +188,15 @@ polish, shorten, expand, subject).
   showing an error. It is several times slower without a GPU and rarely
   reads better for email. Models that cannot reason ignore the setting —
   Ollama refuses `think` outright on them, so it is only sent to models
-  that report the capability.
+  that report the capability. While it thinks, the working-out is streamed
+  into the page — in the composer's assistant panel, the thread summary,
+  quick replies, the template writer and the playground — as a folded
+  "Working it out" panel, so a two-minute generation shows its progress
+  instead of an unmoving spinner. It is never inserted into a draft.
+- **Min-p** (0, off): keeps only tokens at least this likely relative to the
+  best one. A gentler tail cut than top-p, and it holds up better at higher
+  temperatures; 0.05 is a reasonable place to start. Sent to Ollama and to
+  OpenAI-compatible endpoints that accept it, and omitted entirely when 0.
 - Ollama keeps the model loaded for 10 minutes after use (`OLLAMA_KEEP_ALIVE`
   in `.env`); on a small VPS this is what keeps memory free between drafts.
 - **GPU**: re-run the installer and answer yes, or add `compose.gpu.yml` to
