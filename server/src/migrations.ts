@@ -509,4 +509,28 @@ CREATE TABLE IF NOT EXISTS pgp_keys (
 ALTER TABLE sequences ADD COLUMN IF NOT EXISTS encrypt_pgp BOOLEAN NOT NULL DEFAULT false;
 `,
   },
+  {
+    id: '20260906_0008_push_and_burners',
+    up: `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  failures INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions(user_id);
+CREATE TABLE IF NOT EXISTS burner_addresses (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  address TEXT NOT NULL UNIQUE,
+  local_part TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`,
+  },
 ];

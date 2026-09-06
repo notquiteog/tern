@@ -43,15 +43,21 @@ export async function dnsZone(domainId: string): Promise<string> {
 }
 
 export async function listMailboxes(): Promise<StalwartMailbox[]> {
-  const [[, r]] = await call([['x:Account/get', { ids: null, properties: ['id', 'name', 'emailAddress', 'description', 'aliases'] }, 'c1']]);
+  const [[, r], [, d]] = await call([
+    ['x:Account/get', { ids: null, properties: ['id', 'name', 'emailAddress', 'description', 'aliases'] }, 'c1'],
+    ['x:Domain/get', { ids: null, properties: ['id', 'name'] }, 'c2'],
+  ]);
+  const domainName = new Map<string, string>((d.list ?? []).map((x: any) => [x.id, x.name]));
   const adminLocal = config.stalwartAdminUser.split('@')[0];
   return (r.list ?? [])
     .filter((a: any) => a.emailAddress && a.name !== adminLocal && a.name !== 'admin')
     .map((a: any) => {
-      // Object lists come back keyed by id ({"0": {...}}), not as arrays.
+      // Object lists come back keyed by index ({"0": {...}}), not as arrays; an
+      // alias is {name, domainId, enabled} on 0.16, a full address on older builds.
       const raw = a.aliases ?? {};
       const list: any[] = Array.isArray(raw) ? raw : Object.values(raw);
-      return { id: a.id, name: a.name, email: a.emailAddress, description: a.description ?? null, aliases: list.map((x: any) => (typeof x === 'string' ? x : x?.emailAddress ?? x?.email ?? '')).filter(Boolean) };
+      const aliases = list.map((x: any) => (typeof x === 'string' ? x : x?.emailAddress ?? x?.email ?? (x?.name ? `${x.name}@${domainName.get(x.domainId) ?? ''}`.replace(/@$/, '') : ''))).filter(Boolean);
+      return { id: a.id, name: a.name, email: a.emailAddress, description: a.description ?? null, aliases };
     });
 }
 
@@ -95,4 +101,20 @@ export async function getMtaStsMode(): Promise<string> {
 export async function setMtaStsMode(mode: 'enforce' | 'testing' | 'disable'): Promise<void> {
   const [[, r]] = await call([['x:MtaSts/set', { update: { singleton: { mode } } }, 'c1']]);
   if (r.notUpdated?.singleton) throw new Error(r.notUpdated.singleton.description ?? 'Could not change the MTA-STS mode');
+}
+
+// ---- aliases (used for burner addresses) ----
+export async function findAccountByName(name: string): Promise<{ id: string } | null> {
+  const [[, r]] = await call([['x:Account/query', { filter: { name } }, 'c1']]);
+  const id = r.ids?.[0];
+  return id ? { id } : null;
+}
+export async function getAliases(accountId: string): Promise<Record<string, { name: string; domainId: string }>> {
+  const [[, r]] = await call([['x:Account/get', { ids: [accountId], properties: ['aliases'] }, 'c1']]);
+  return r.list?.[0]?.aliases ?? {};
+}
+// Replaces the whole alias map: callers pass everything that should remain.
+export async function setAliases(accountId: string, aliases: Record<string, { name: string; domainId: string }>): Promise<void> {
+  const [[, r]] = await call([['x:Account/set', { update: { [accountId]: { aliases } } }, 'c1']]);
+  if (r.notUpdated?.[accountId]) throw new Error(r.notUpdated[accountId].description ?? 'Could not update the aliases');
 }

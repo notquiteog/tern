@@ -7,6 +7,7 @@ import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
 import { renderIcons } from '../lib/pwaIcons';
+import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle, Tabs } from '../components/ui';
@@ -550,11 +551,13 @@ function ProfileSettings() {
         <AvatarUploader src={src} name={user!.display_name} email={user!.username} onUpload={async (blob) => { await api.upload('/api/avatars/me', blob, blob.type || 'image/webp'); await refresh(); qc.invalidateQueries({ queryKey: ['threads'] }); toast.success('Picture updated'); }} onRemove={async () => { await api.del('/api/avatars/me'); await refresh(); toast.success('Picture removed'); }} />
         <div className="help-text mt-16">Shown in the top bar and beside messages you sent from any connected mailbox.</div>
       </div>
-      <div className="card">
+      <div className="card mb-16">
         <h2 className="mb-8">Name</h2>
         <Field label="Display name" hint="Used in the app; each mailbox has its own From name under Accounts."><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
         <Button variant="primary" disabled={!name.trim() || name === user!.display_name} onClick={() => api.put('/api/auth/profile', { displayName: name.trim() }).then(() => { refresh(); toast.success('Saved'); }).catch((e) => toast.error(e))}>Save</Button>
       </div>
+      <NotificationsCard />
+      <BurnerCard />
     </div>
   );
 }
@@ -593,6 +596,89 @@ function GeneralSettings() {
           ]} />
         </div>
       )}
+    </div>
+  );
+}
+
+// Web Push for new mail on this device. The subscription lives in the
+// browser's service worker, so it is per device and per browser profile.
+function NotificationsCard() {
+  const toast = useToast();
+  const [state, setState] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { data: status, refetch } = useQuery({ queryKey: ['push-status'], queryFn: () => api.get<{ subscriptions: number }>('/api/push/status') });
+  const load = () => pushState().then(setState);
+  useEffect(() => { void load(); }, []);
+  async function toggle(on: boolean) {
+    setBusy(true);
+    try {
+      if (on) { await enablePush(); toast.success('Notifications on for this device'); } else { await disablePush(); toast.success('Notifications off for this device'); }
+      await load(); await refetch();
+    } catch (e) { toast.error(e); await load(); } finally { setBusy(false); }
+  }
+  const standalone = typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as any).standalone);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const hint = state === 'unsupported' ? (ios && !standalone ? 'On iPhone and iPad, add the app to the Home Screen first (Share → Add to Home Screen), then turn this on from the installed app.' : 'This browser does not support push notifications.')
+    : state === 'no-worker' ? 'Available in the installed app or the production build.'
+    : state === 'denied' ? 'Notifications are blocked for this site in the browser settings. Allow them there, then reload.'
+    : 'You get a notification for each new message in your inbox, or one summary when many arrive at once. Mail content stays on the server; only sender and subject are sent.';
+  return (
+    <div className="card mb-16">
+      <h2 className="mb-8">Notifications</h2>
+      <div className="row gap-16" style={{ alignItems: 'center' }}>
+        <Toggle checked={state === 'on'} disabled={busy || state === null || ['unsupported', 'no-worker', 'denied'].includes(state ?? '')} onChange={toggle} label="New mail notifications on this device" />
+        <div className="col gap-4">
+          <div className="strong">New mail on this device</div>
+          <div className="small muted">{hint}</div>
+        </div>
+      </div>
+      {(status?.subscriptions ?? 0) > 0 && <div className="row gap-8 mt-12 small muted" style={{ alignItems: 'center' }}>
+        <span>{status!.subscriptions} device{status!.subscriptions === 1 ? '' : 's'} subscribed.</span>
+        <Button size="sm" variant="ghost" onClick={() => api.post<{ sent: number }>('/api/push/test').then((r) => toast.success(`Test sent to ${r.sent} device${r.sent === 1 ? '' : 's'}`)).catch((e) => toast.error(e))}>Send a test</Button>
+      </div>}
+    </div>
+  );
+}
+
+// A receive-only alias on the user's mailbox on the bundled mail server.
+function BurnerCard() {
+  const toast = useToast();
+  const [confirm, setConfirm] = useState<'rotate' | 'remove' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { data, refetch } = useQuery({ queryKey: ['burner'], queryFn: () => api.get<{ available: boolean; reason: string | null; domain: string | null; burner: { address: string; createdAt: string } | null; mailbox: string | null }>('/api/burner') });
+  if (!data) return null;
+  if (!data.available && !data.burner) {
+    if (!data.domain) return null; // no bundled mail server on this install: nothing to offer
+    return <div className="card"><h2 className="mb-8">Burner address</h2><p className="muted small">{data.reason}</p></div>;
+  }
+  async function rotate() {
+    setBusy(true);
+    try { const r = await api.post<{ burner: { address: string } }>('/api/burner/rotate'); await refetch(); toast.success(`Your burner address is ${r.burner.address}`); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function remove() {
+    setBusy(true);
+    try { await api.del('/api/burner'); await refetch(); toast.success('Burner address removed'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  const b = data.burner;
+  return (
+    <div className="card">
+      <h2 className="mb-8">Burner address</h2>
+      <p className="muted small">A throwaway address at @{data.domain} that delivers to {data.mailbox ?? 'your mailbox'}. Give it out where you would rather not share your real address. It only receives: replies you write go out from your real address, so reply with care. One at a time; a new one replaces the old, which stops working.</p>
+      {b ? (
+        <div className="row gap-8 wrap mt-8" style={{ alignItems: 'center' }}>
+          <code style={{ fontSize: 14 }}>{b.address}</code>
+          <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(b.address); toast.success('Copied'); }}>Copy</Button>
+          <span className="small muted">since {fmtRelative(b.createdAt)}</span>
+          <span className="ml-auto row gap-8">
+            <Button size="sm" icon={<RefreshCw size={13} />} onClick={() => setConfirm('rotate')} disabled={busy}>New address</Button>
+            <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setConfirm('remove')} disabled={busy}>Remove</Button>
+          </span>
+        </div>
+      ) : (
+        <Button variant="primary" icon={<Plus size={15} />} onClick={rotate} disabled={busy}>Create a burner address</Button>
+      )}
+      <Confirm open={confirm === 'rotate'} onClose={() => setConfirm(null)} title="Replace your burner address?" message="The current address stops receiving mail immediately. Anyone still writing to it gets a bounce." confirmLabel="New address" onConfirm={async () => { setConfirm(null); await rotate(); }} />
+      <Confirm open={confirm === 'remove'} onClose={() => setConfirm(null)} danger title="Remove your burner address?" message="Mail sent to it will bounce from now on." confirmLabel="Remove" onConfirm={async () => { setConfirm(null); await remove(); }} />
     </div>
   );
 }

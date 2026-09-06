@@ -222,6 +222,24 @@ are rendered from the logo on a background colour you pick on the same card;
 without a logo the default Tern icons are used. The service worker keeps the
 app shell available offline and never caches mail.
 
+## Notifications
+
+Settings → Profile → **Notifications**. Turn it on per device: the browser
+asks for permission and registers with the server through the service
+worker. Each new message in the inbox becomes a notification with the sender
+and subject; when many arrive at once you get one summary. Mail bodies never
+leave the server. Needs https (the installer's default) and, on iPhone and
+iPad, the app added to the Home Screen first.
+
+## Burner addresses
+
+Settings → Profile → **Burner address**, for anyone with a mailbox on the
+bundled mail server. One per user, generated (never chosen), receive-only:
+it is an alias on the user's own mailbox, so mail to it lands in the same
+inbox, and Tern only ever sends from the mailbox's real address. Creating a
+new one replaces the old, which bounces from then on. There is a short
+cooldown between replacements.
+
 ## Profile pictures
 
 Settings → Profile: upload a picture (squared and shrunk to 256 px in the

@@ -10,6 +10,7 @@ import { publish } from '../events.js';
 import { clientFor, connectAccount, getAccount, type AccountRow } from '../services/accounts.js';
 import { JmapError, MAIL, CORE, type JmapClient } from './client.js';
 import { onNewEmails } from '../services/automation.js';
+import { notifyNewMail } from '../services/push.js';
 
 const log = logger('sync');
 
@@ -215,6 +216,7 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
   });
   if (opts.runAutomation && fresh.length) {
     try { await onNewEmails(acc, fresh); } catch (err) { log.error('automation failed', { err: (err as Error).message }); }
+    try { await notifyNewMail(acc, fresh); } catch (err) { log.error('push failed', { err: (err as Error).message }); }
   }
   return { created, updated };
 }

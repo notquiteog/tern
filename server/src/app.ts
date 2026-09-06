@@ -18,6 +18,8 @@ import { reviewRouter } from './routes/review.js';
 import { rulesRouter } from './routes/rules.js';
 import { aiRouter } from './routes/ai.js';
 import { settingsRouter, logoRouter, manifestRouter, iconsRouter } from './routes/settings.js';
+import { pushRouter } from './routes/push.js';
+import { burnerRouter } from './routes/burner.js';
 import { eventsRouter } from './routes/events.js';
 import { publicRouter } from './routes/public.js';
 import { respondersRouter } from './routes/responders.js';
@@ -76,6 +78,8 @@ export function createApp(): express.Express {
   app.use('/api/pgp', pgpRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/push', pushRouter);
+  app.use('/api/burner', burnerRouter);
   app.use('/api/events', eventsRouter);
   app.all('/api/{*rest}', (_req, res) => { res.status(404).json({ error: 'Not found' }); });
 
