@@ -48,6 +48,7 @@ ask_secret() {
   if [ "$NONINTERACTIVE" = 1 ]; then return; fi
   read -r -s -p "  $prompt (blank to generate): " ans || true; echo
   [ -n "$ans" ] && printf -v "$var" '%s' "$ans"
+  return 0  # a blank answer means "generate one"; under set -e a failed test here would end the script
 }
 # ask_yn VAR "Prompt" default(y/n)
 ask_yn() {
@@ -59,7 +60,7 @@ ask_yn() {
   case "$ans" in y|Y|yes|YES) printf -v "$var" '1' ;; *) printf -v "$var" '0' ;; esac
 }
 gen_secret() { if have openssl; then openssl rand -hex "${1:-32}"; else head -c "${1:-32}" /dev/urandom | od -An -tx1 | tr -d ' \n'; fi; }
-gen_password() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-20}"; echo; }
+gen_password() { head -c 2000 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c "${1:-20}"; echo; }  # bounded input: no SIGPIPE under pipefail
 
 # ---------- root ----------
 if [ "$(id -u)" -ne 0 ]; then
