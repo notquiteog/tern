@@ -149,7 +149,13 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
     // Short modes have their own ceiling; a full draft uses the reply length
     // set in Admin → AI model, which is what the "empty answer" message
     // tells people to raise.
-    for await (const piece of chatStream({ messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature })) {
+    for await (const piece of chatStream({
+      messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature,
+      // Reasoning is shown while it happens and never inserted into the
+      // editor: the browser keeps it in its own panel and drops it when the
+      // draft itself starts arriving.
+      onThinking: (t) => send('thinking', { t }),
+    })) {
       full += piece;
       send('token', { t: piece });
     }

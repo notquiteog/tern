@@ -211,3 +211,27 @@ test('when strictness would leave nothing, the wordier suggestions are kept', ()
   // A placeholder is still refused in the lenient pass.
   assert.deepEqual(parseQuickReplies('I will send [insert date] once I have confirmed it with the team and checked the calendar.'), []);
 });
+
+test('three replies written as one paragraph are still recovered', () => {
+  const run_together = 'Yes, those are correct and I will send the plan today. Does this cover everything you need? My apologies, I cannot confirm until Thursday.';
+  assert.deepEqual(parseQuickReplies(run_together), [
+    'Yes, those are correct and I will send the plan today.',
+    'Does this cover everything you need?',
+    'My apologies, I cannot confirm until Thursday.',
+  ]);
+  // One reply written as one line is left as one reply.
+  assert.deepEqual(parseQuickReplies('Sounds good to me.\nCould we do Friday instead?'), ['Sounds good to me.', 'Could we do Friday instead?']);
+});
+
+test('the quick replies prompt refuses to let a suggestion state facts', () => {
+  const m = buildMessages({ mode: 'quick_replies', thread: [{ from: 'Dana <d@x.test>', date: 'Mon', text: 'Can you confirm the dates?' }] })[1].content;
+  assert.match(m, /Do not state any date, time, amount/);
+});
+
+test('a voice note that fights the greeting rule is told which one wins', () => {
+  const m = buildMessages({ mode: 'compose', instruction: 'ask for a call', recipient: { name: 'Dana Osei', email: 'd@x.test' }, voice: 'Very terse. Never use greetings.' })[1].content;
+  assert.match(m, /except where they contradict the first line stated above, which always wins/);
+  // Modes with no salutation of their own have nothing to contradict.
+  const edit = buildMessages({ mode: 'polish', draft: 'hello', voice: 'Very terse.' })[1].content;
+  assert.ok(!edit.includes('which always wins'));
+});

@@ -35,6 +35,9 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   const { data, isLoading, error } = useQuery({ queryKey: ['thread', accountId, threadId], queryFn: () => api.get<any>(`/api/mail/threads/${accountId}/${encodeURIComponent(threadId)}`) });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [summary, setSummary] = useState<string | null>(null);
+  // A reasoning model's working-out while it reads the thread. Replaced by
+  // the summary itself as soon as that starts arriving.
+  const [summaryThinking, setSummaryThinking] = useState('');
   const [summarizing, setSummarizing] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeAt, setSnoozeAt] = useState('');
@@ -57,7 +60,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
     if (unread.length) {
       t = window.setTimeout(() => { api.post('/api/mail/actions', { accountId, jmapIds: unread, action: 'read' }).then(() => { qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] }); }).catch(() => {}); }, prefs.markReadDelay * 1000);
     }
-    setSummary(null); setQuick(null);
+    setSummary(null); setQuick(null); setSummaryThinking('');
     return () => { if (t) window.clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.messages?.length, threadId]);
@@ -119,9 +122,9 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   }, [last?.id, params]);
 
   async function summarize() {
-    setSummarizing(true); setSummary('');
+    setSummarizing(true); setSummary(''); setSummaryThinking('');
     try {
-      await apiStream('/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (ev === 'token') setSummary((s) => (s ?? '') + d.t); if (ev === 'error') toast.error(d.error); } });
+      await apiStream('/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (ev === 'thinking') setSummaryThinking((t) => t + d.t); if (ev === 'token') { setSummary((s) => (s ?? '') + d.t); setSummaryThinking(''); } if (ev === 'error') toast.error(d.error); } });
     } catch (e) { toast.error(e); } finally { setSummarizing(false); }
   }
   async function quickReplies() {
@@ -224,7 +227,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
           </div>
         </div>
       </div>
-      {summary !== null && <div className="card mb-16 ai-card"><div className="row mb-8"><Sparkles size={15} /><span className="strong small">Summary</span>{summarizing && <Spinner size={14} />}<IconButton label="Close" className="btn-sm ml-auto" onClick={() => setSummary(null)}><X size={14} /></IconButton></div><div className="pre" style={{ fontSize: 13.5 }}>{summary || '…'}</div></div>}
+      {summary !== null && <div className="card mb-16 ai-card"><div className="row mb-8"><Sparkles size={15} /><span className="strong small">Summary</span>{summarizing && <Spinner size={14} />}<IconButton label="Close" className="btn-sm ml-auto" onClick={() => setSummary(null)}><X size={14} /></IconButton></div><div className="pre" style={{ fontSize: 13.5 }}>{summary || (summaryThinking ? <span className="ai-thinking-inline">{summaryThinking}</span> : '…')}</div></div>}
       <div className="thread-side">
         <div className="thread-main">
           {messages.map((m) => (

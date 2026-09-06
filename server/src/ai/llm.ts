@@ -103,7 +103,13 @@ export function isValidKeepAlive(v: string): boolean {
 }
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
-export interface ChatOptions { messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number }
+export interface ChatOptions {
+  messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number;
+  // A reasoning model's working-out, as it arrives. It is never part of a
+  // draft; the composer shows it so a two-minute generation looks like
+  // something happening rather than a stalled spinner.
+  onThinking?: (piece: string) => void;
+}
 
 // Ollama refuses `think` outright on a model that cannot reason
 // (`"qwen2.5:1.5b" does not support thinking`), so turning the setting on
@@ -204,7 +210,11 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       // `thinking` is the model's working-out and is never part of a draft.
       // Its length is kept only to tell an admin how big the budget wants
       // to be when a model spends the lot and writes nothing.
-      if (j.message?.thinking) stats.thoughtChars += String(j.message.thinking).length;
+      if (j.message?.thinking) {
+        const t = String(j.message.thinking);
+        stats.thoughtChars += t.length;
+        opts.onThinking?.(t);
+      }
       const piece = j.message?.content;
       if (piece) yield piece;
       if (j.done) return;
@@ -251,7 +261,8 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
         // Reasoning arrives on its own field on most OpenAI-compatible
         // servers; the ones that inline it in <think> tags are cleaned up
         // after generation instead.
-        if (d?.reasoning_content || d?.reasoning) continue;
+        const reasoning = d?.reasoning_content ?? d?.reasoning;
+        if (reasoning) { const t = String(reasoning); opts.onThinking?.(t); continue; }
         const piece = d?.content;
         if (piece) { produced = true; yield piece; }
       } catch (e) { if (e instanceof Error && !(e instanceof SyntaxError)) throw e; }

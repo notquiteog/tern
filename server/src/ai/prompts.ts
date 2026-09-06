@@ -251,12 +251,25 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       );
       break;
     case 'quick_replies':
-      parts.push(`Suggest three different short replies the sender could send to the last message in the conversation. Answer only that message; do not summarise the thread. Output exactly three lines and then stop. One reply per line, each a complete sentence of at most 12 words, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off, no explanation.`, tone);
+      parts.push(
+        `Suggest three different short replies the sender could send to the last message in the conversation. Answer only that message; do not summarise the thread. Output exactly three lines and then stop. One reply per line, each a complete sentence of at most 12 words, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off, no explanation.`,
+        // These are conversational moves, not answers. Only the newest part
+        // of the thread is shown, so a suggestion that states a date or a
+        // figure is stating one it cannot see — and it goes into the
+        // composer the moment someone clicks it.
+        `Do not state any date, time, amount or other specific fact in a suggestion, even if you think you know it. Say "I will confirm the dates" rather than naming them.`,
+        tone,
+      );
       break;
   }
   const ab = addressingBlock(input); if (ab) parts.push(ab);
   if (sender) parts.push(sender);
-  if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these):\n${input.voice.trim()}`);
+  // A voice note is the sender's own instruction and usually wins, but it is
+  // written for ordinary prose and often says something like "never use
+  // greetings". Left ambiguous, a reasoning model spends its whole budget
+  // arguing with itself about which rule to follow, and a small one drops
+  // the salutation and greets nobody.
+  if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these${ab ? ', except where they contradict the first line stated above, which always wins' : ''}):\n${input.voice.trim()}`);
   const rb = recipientBlock(input.recipient); if (rb) parts.push(rb);
   const tb = threadBlock(input.thread, input.senderEmail, input.threadChars); if (tb) parts.push(tb);
   if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
@@ -390,7 +403,14 @@ export function parseQuickReplies(raw: string, names: string[] = []): string[] {
   // suggestions beat the "no suggestions this time" the panel would
   // otherwise show. Nothing carrying a placeholder survives either pass.
   const strict = collectQuickReplies(raw, names, 18, 160);
-  return strict.length >= 2 ? strict : collectQuickReplies(raw, names, 32, 240);
+  if (strict.length >= 2) return strict;
+  const lenient = collectQuickReplies(raw, names, 32, 240);
+  if (lenient.length >= 2) return lenient;
+  // Asked for three lines, a model sometimes writes the three replies as one
+  // paragraph. Splitting on sentence ends recovers them; it only runs when
+  // reading the answer as written produced nothing to show.
+  const sentences = collectQuickReplies(raw.replace(/([.!?])\s+(?=["'\u201c\u2018]?\p{Lu})/gu, '$1\n'), names, 18, 160);
+  return sentences.length > lenient.length ? sentences : lenient;
 }
 
 function collectQuickReplies(raw: string, names: string[], maxWords: number, maxChars: number): string[] {

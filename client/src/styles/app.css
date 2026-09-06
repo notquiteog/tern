@@ -431,6 +431,16 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .ai-panel .ai-input input { flex: 1; }
 .ai-status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--accent-text); }
 .ai-preview { background: var(--bg-elev); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; white-space: pre-wrap; max-height: 200px; overflow: auto; border: 1px solid var(--border); }
+/* A reasoning model's working-out, streamed while it happens. Deliberately
+   quieter than the draft itself: it is progress, not content. */
+.ai-thinking { border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-elev); overflow: hidden; }
+.ai-thinking-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; background: none; border: 0; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }
+.ai-thinking-head:hover { color: var(--text); }
+.ai-thinking-head .rot90 { transform: rotate(90deg); }
+.ai-thinking-head svg { transition: transform .15s ease; flex: none; }
+.ai-thinking-body { padding: 0 10px 10px 29px; max-height: 150px; overflow: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); font-family: var(--mono); }
+@media (prefers-reduced-motion: reduce) { .ai-thinking-head svg { transition: none; } }
+.ai-thinking-inline { display: block; max-height: 140px; overflow: auto; color: var(--text-dim); font-family: var(--mono); font-size: 12px; line-height: 1.5; }
 .ai-btn { background: linear-gradient(135deg, var(--g2), var(--accent), var(--g4)); background-size: 200% 200%; color: #fff; border: 0; animation: shimmer-bg 6s ease infinite; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .3); }
 .ai-btn:hover { filter: brightness(1.08); }
 @keyframes shimmer-bg { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
