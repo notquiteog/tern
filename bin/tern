@@ -7,7 +7,8 @@
 #   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
 #   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
 #   ./bin/tern stalwart-unban [ip…]  lift Stalwart's automatic IP bans (all, or the given addresses) and restart it
-#   ./bin/tern stalwart-trust-proxy  never ban our own containers (Caddy proxies every browser request)
+#   ./bin/tern stalwart-trust-proxy  Stalwart listener for Caddy (PROXY protocol, real client addresses); never ban our containers
+#   ./bin/tern doctor                 check containers, Stalwart, certificate, DNS, ports and disk
 #   ./bin/tern backup [dir]          dump the database and the .env into a dated tarball
 #   ./bin/tern restore <tarball>     restore a backup made by `backup`
 #   ./bin/tern update                same as ./update.sh
@@ -66,15 +67,41 @@ case "$cmd" in
       fi
     done
     echo "Stalwart never bans: $SUBNETS"
-    # An earlier version put these networks into Stalwart's PROXY-protocol
-    # trust list, which makes it reject plain HTTP from them. Take them out
-    # again; the change only applies after a restart.
+    # A second HTTP listener on 8081 that expects the PROXY protocol from
+    # our containers. Caddy sends it (deploy/stalwart-site.tmpl), so Stalwart
+    # sees the visitor's real address and its bans hit the visitor. The app
+    # and this host keep using the plain listener on 8080.
+    LISTENERS="$(sw_call '[["x:NetworkListener/get",{"ids":null,"properties":["id","name","bind","overrideProxyTrustedNetworks"]},"c1"]]')"
+    PLAN="$(printf '%s' "$LISTENERS" | python3 -c 'import json,sys
+want={n: True for n in sys.argv[1:]}
+l=json.load(sys.stdin)["methodResponses"][0][1]["list"]
+cur=next((x for x in l if x.get("name")=="http-proxy"), None)
+if cur is None: print("create")
+elif (cur.get("overrideProxyTrustedNetworks") or {}) != want or list((cur.get("bind") or {}).keys()) != ["[::]:8081"]: print("update " + cur["id"])
+else: print("ok")' $SUBNETS)"
+    NETS_JSON="$(python3 -c 'import json,sys; print(json.dumps({n: True for n in sys.argv[1:]}))' $SUBNETS)"
+    RESTART=0
+    case "$PLAN" in
+      create)
+        sw_call "[[\"x:NetworkListener/set\",{\"create\":{\"l\":{\"name\":\"http-proxy\",\"protocol\":\"http\",\"bind\":{\"[::]:8081\":true},\"overrideProxyTrustedNetworks\":$NETS_JSON,\"useTls\":true,\"tlsImplicit\":false}}},\"c1\"]]" | grep -q '"created"' || { echo "could not create the http-proxy listener" >&2; exit 1; }
+        echo "Created Stalwart listener http-proxy on port 8081 (PROXY protocol from $SUBNETS)"; RESTART=1 ;;
+      update*)
+        sw_call "[[\"x:NetworkListener/set\",{\"update\":{\"${PLAN#update }\":{\"bind\":{\"[::]:8081\":true},\"overrideProxyTrustedNetworks\":$NETS_JSON}}},\"c1\"]]" | grep -q '"updated"' || { echo "could not update the http-proxy listener" >&2; exit 1; }
+        echo "Updated Stalwart listener http-proxy (PROXY protocol from $SUBNETS)"; RESTART=1 ;;
+      *) echo "Stalwart listener http-proxy on 8081 is in place" ;;
+    esac
+    # An earlier version put these networks into Stalwart's global
+    # PROXY-protocol trust list, which makes it reject plain HTTP from them.
+    # Take them out again; listener changes and this apply after a restart.
     CUR="$(sw_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["proxyTrustedNetworks"]},"c1"]]')"
     FIXED="$(printf '%s' "$CUR" | python3 -c 'import json,sys; m=(json.load(sys.stdin)["methodResponses"][0][1]["list"][0].get("proxyTrustedNetworks") or {}); drop=set(sys.argv[1:])|{"10.89.0.0/16"}; n={k:v for k,v in m.items() if k not in drop}; print(json.dumps(n) if n != m else "")' $SUBNETS)"
     if [ -n "$FIXED" ]; then
       sw_call "[[\"x:SystemSettings/set\",{\"update\":{\"singleton\":{\"proxyTrustedNetworks\":$FIXED}}},\"c1\"]]" | grep -q '"updated"' || { echo "could not clear the PROXY-protocol networks" >&2; exit 1; }
+      echo "Removed our networks from Stalwart's global PROXY-protocol list"; RESTART=1
+    fi
+    if [ "$RESTART" = 1 ]; then
       CID="$(stalwart_container)"
-      echo "Removed our networks from Stalwart's PROXY-protocol list; restarting Stalwart so plain HTTP works again…"
+      echo "Restarting Stalwart to apply…"
       if [ -n "$CID" ]; then podman restart "$CID" >/dev/null; else compose restart stalwart >/dev/null; fi
       sw_wait || { echo "Stalwart did not come back within 60 s; see ./bin/tern logs stalwart" >&2; exit 1; }
       echo "Stalwart is back."
@@ -94,6 +121,58 @@ case "$cmd" in
     if [ -n "$CID" ]; then podman restart "$CID" >/dev/null; else compose restart stalwart >/dev/null; fi
     sw_wait || { echo "Stalwart did not come back within 60 s; see ./bin/tern logs stalwart" >&2; exit 1; }
     echo "Done." ;;
+  doctor)
+    # A quick health picture of the install: what is up, what answers, what
+    # the outside world sees. Each line is ok, warn or FAIL with a hint.
+    okc() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+    warnc() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+    failc() { printf '  \033[31m✗\033[0m %s\n' "$*"; PROBLEMS=$((PROBLEMS+1)); }
+    PROBLEMS=0
+    echo "Containers"
+    for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
+      if compose exec -T "$svc" true >/dev/null 2>&1; then okc "$svc running"; else failc "$svc not running (./bin/tern logs $svc)"; fi
+    done
+    STALE="$(replace_stale_containers_dryrun 2>/dev/null | tr '\n' ' ')"
+    if [ -n "${STALE// }" ]; then warnc "running an older image than the one on disk: $STALE (./bin/tern up replaces them)"; fi
+    echo "App"
+    if compose exec -T app wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1; then okc "app answers /healthz"; else failc "app does not answer /healthz (./bin/tern logs app)"; fi
+    if [ -n "${APP_URL:-}" ]; then
+      code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$APP_URL/healthz" 2>/dev/null || true)"
+      if [ "$code" = 200 ]; then okc "$APP_URL reachable with a valid certificate"; else failc "$APP_URL/healthz returned '${code:-no answer}' (DNS, firewall, or Caddy still fetching its certificate)"; fi
+    fi
+    if [ "${STALWART_ENABLED:-0}" = 1 ]; then
+      echo "Mail server"
+      if sw_wait; then okc "Stalwart management API answers on 127.0.0.1:${STALWART_HTTP_PORT:-8080}"; else failc "Stalwart management API not answering (./bin/tern logs stalwart)"; fi
+      L="$(sw_call '[["x:NetworkListener/get",{"ids":null,"properties":["name","bind"]},"c1"]]' 2>/dev/null || true)"
+      if printf '%s' "$L" | grep -q '"http-proxy"'; then okc "PROXY-protocol listener for Caddy (8081) exists"; else failc "no http-proxy listener; run ./bin/tern stalwart-trust-proxy"; fi
+      if grep -q 'stalwart:8081' "$ROOT/deploy/generated/Caddyfile" 2>/dev/null; then okc "Caddy proxies the mail host to the PROXY-protocol listener"; else warnc "Caddyfile still points at stalwart:8080; ./update.sh regenerates it"; fi
+      G="$(sw_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["proxyTrustedNetworks"]},"c1"]]' 2>/dev/null || true)"
+      if printf '%s' "$G" | grep -q '"proxyTrustedNetworks":{}'; then okc "global PROXY-protocol list is empty (plain HTTP on 8080 works)"; else warnc "global PROXY-protocol list is not empty; ./bin/tern stalwart-trust-proxy clears our networks"; fi
+      B="$(sw_call '[["x:BlockedIp/get",{"ids":null,"properties":["address"]},"c1"]]' 2>/dev/null | grep -o '"address":"[^"]*"' | cut -d'"' -f4 | tr '\n' ' ' || true)"
+      if [ -z "${B// }" ]; then okc "no banned addresses"; else warnc "banned addresses: $B (./bin/tern stalwart-unban lifts them)"; fi
+      C="$(sw_call '[["x:Certificate/get",{"ids":null,"properties":["id","subjectAlternativeNames"]},"c1"]]' 2>/dev/null || true)"
+      if printf '%s' "$C" | grep -q "\"$STALWART_HOST\""; then okc "TLS certificate for $STALWART_HOST installed in Stalwart"; else failc "no certificate for $STALWART_HOST in Stalwart (./bin/tern cert-sync)"; fi
+      EXP="$(echo | timeout 8 openssl s_client -connect "127.0.0.1:465" -servername "$STALWART_HOST" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
+      if [ -n "$EXP" ]; then
+        DAYS=$(( ( $(date -d "$EXP" +%s) - $(date +%s) ) / 86400 ))
+        if [ "$DAYS" -lt 7 ]; then failc "certificate served on 465 expires in $DAYS days ($EXP)"; else okc "certificate served on 465 valid for $DAYS more days"; fi
+      fi
+      echo "DNS and ports"
+      A="$(getent ahostsv4 "$STALWART_HOST" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)"
+      if [ -n "${SERVER_IP:-}" ] && printf '%s' "$A" | grep -qw "$SERVER_IP"; then okc "$STALWART_HOST resolves to $SERVER_IP"; else failc "$STALWART_HOST resolves to '${A:-nothing}', expected ${SERVER_IP:-?}"; fi
+      R="$(getent hosts "${SERVER_IP:-0.0.0.0}" 2>/dev/null | awk '{print $2}' || true)"
+      if [ "${R%.}" = "$STALWART_HOST" ]; then okc "reverse DNS of $SERVER_IP is $STALWART_HOST"; else warnc "reverse DNS of ${SERVER_IP:-?} is '${R:-unset}', should be $STALWART_HOST (set it at your hosting provider)"; fi
+      for p in 25 465 587 993; do
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$p$"; then okc "port $p listening"; else failc "nothing listening on port $p"; fi
+      done
+      echo "  Outbound port 25 and the public view: ./bin/tern dns-check --port25"
+    fi
+    echo "Host"
+    DF="$(df -P / | awk 'NR==2 {print $5}' | tr -d % || true)"
+    if [ "${DF:-0}" -ge 90 ]; then failc "disk ${DF}% full"; elif [ "${DF:-0}" -ge 80 ]; then warnc "disk ${DF}% full"; else okc "disk ${DF}% used"; fi
+    MEM="$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)"; if [ "${MEM:-0}" -lt 300 ]; then warnc "only ${MEM} MB of memory available"; else okc "${MEM} MB of memory available"; fi
+    if command -v timedatectl >/dev/null && timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then okc "clock synchronised"; else warnc "clock not confirmed as synchronised (TLS and DKIM need accurate time)"; fi
+    if [ "$PROBLEMS" = 0 ]; then echo "All checks passed."; else echo "$PROBLEMS problem(s) found." ; exit 1; fi ;;
   stalwart-api)
     [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled." >&2; exit 1; }
     curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" \

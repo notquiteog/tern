@@ -267,25 +267,11 @@ EOF
 umask 022
 ok ".env written (mode 600)"
 
-# Caddyfile from template: substitute ${VAR} for a known list, nothing else.
-render() {
-  local content; content="$(cat "$1")"
-  for v in ACME_EMAIL SITE_ADDRESS CADDY_GLOBAL STALWART_SITE STALWART_HOST STALWART_DOMAIN INSTALL_DIR; do
-    content="${content//\$\{$v\}/${!v:-}}"
-  done
-  printf '%s\n' "$content"
-}
-CADDY_GLOBAL=""
-if [ -z "$WEB_HOST" ]; then CADDY_GLOBAL="auto_https off"; fi
-# Extra names for the mail domain (MTA-STS policy, client autoconfig) get
-# certificates on demand, after the app confirms the name belongs here.
-if [ "$STALWART_ENABLED" = 1 ]; then CADDY_GLOBAL="on_demand_tls {
-		ask http://app:3080/api/caddy/ask
-	}"; fi
-STALWART_SITE=""
-if [ "$STALWART_ENABLED" = 1 ]; then STALWART_SITE="$(render deploy/stalwart-site.tmpl)"; fi
-mkdir -p deploy/generated
-render deploy/Caddyfile.tmpl > deploy/generated/Caddyfile
+# Caddyfile from the templates (deploy/lib.sh does the rendering, so
+# update.sh can regenerate it too).
+. "$INSTALL_DIR/deploy/lib.sh"
+export ACME_EMAIL SITE_ADDRESS WEB_HOST STALWART_ENABLED STALWART_HOST STALWART_DOMAIN
+CADDY_CHANGED=0; if write_caddyfile; then CADDY_CHANGED=1; fi
 ok "deploy/generated/Caddyfile written"
 
 # Firewall: open what the stack needs, if a firewall is managing this box.
@@ -298,7 +284,6 @@ fi
 step "7/8 Building and starting containers"
 export COMPOSE_FILE
 compose() { podman-compose --env-file "$ENV_FILE" "$@"; }
-. "$INSTALL_DIR/deploy/lib.sh"
 
 # Ports the stack binds on this host. A leftover mail server (Postfix, Exim)
 # on 25 is the usual conflict; without this check the container fails with a
@@ -380,6 +365,8 @@ recreate_services() {
 }
 say "  Starting containers…"
 start_stack
+# A re-run with a changed Caddyfile: the container is unchanged, so tell Caddy to reload it.
+if [ "$CADDY_CHANGED" = 1 ]; then caddy_reload && ok "Caddy reloaded its configuration" || warn "Caddy did not reload; ./bin/tern restart caddy"; fi
 
 if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then
   CU="$(compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin --if-missing 2>&1 | tail -1)"

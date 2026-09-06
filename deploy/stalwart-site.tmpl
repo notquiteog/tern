@@ -2,8 +2,14 @@
 # The bundled mail server's web endpoints (admin panel, JMAP, autoconfig).
 https://${STALWART_HOST} {
 	encode zstd gzip
-	reverse_proxy stalwart:8080 {
+	# Port 8081 is Stalwart's PROXY-protocol listener (created by
+	# ./bin/tern stalwart-trust-proxy), so Stalwart sees the real client
+	# address and its automatic bans hit the visitor, never Caddy.
+	reverse_proxy stalwart:8081 {
 		flush_interval -1
+		transport http {
+			proxy_protocol v2
+		}
 	}
 }
 
@@ -13,5 +19,9 @@ https://mta-sts.${STALWART_DOMAIN}, https://autoconfig.${STALWART_DOMAIN}, https
 	tls {
 		on_demand
 	}
-	reverse_proxy stalwart:8080
+	reverse_proxy stalwart:8081 {
+		transport http {
+			proxy_protocol v2
+		}
+	}
 }

@@ -72,12 +72,17 @@ on purpose.
 
 - Admin panel over an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 server`, then
   `http://127.0.0.1:8080/admin`.
-- `https://mx1.example.com/admin` (or the MTA-STS policy) answers **502** while
-  mail still flows: Stalwart has auto-banned Caddy's container address after
-  someone's failed logins or a bot probing the panel (`Blocked IP address` in
-  `./bin/tern logs stalwart`). Run `./bin/tern stalwart-trust-proxy` once so
-  our own containers are never banned, then
-  `./bin/tern stalwart-unban` to lift the existing bans and restart Stalwart.
+- Start with `./bin/tern doctor`: it checks every container, the Stalwart
+  API, the listener Caddy uses, the certificate, DNS, ports and disk, and
+  names the command that fixes each problem.
+- `https://mx1.example.com/admin` (or the MTA-STS policy) answers **502**
+  while mail still flows: Stalwart has banned the address the request came
+  from, or Caddy is pointed at a listener that does not exist yet. Caddy
+  talks to a dedicated PROXY-protocol listener on port 8081 so Stalwart sees
+  each visitor's real address and bans only them; `./bin/tern
+  stalwart-trust-proxy` creates that listener and allow-lists our own
+  containers, `./bin/tern stalwart-unban` lifts existing bans, and
+  `./update.sh` regenerates the Caddyfile.
 - Lost the admin password: set `STALWART_RECOVERY_MODE=1` and
   `STALWART_RECOVERY_ADMIN=recovery:newpass` in `.env`, `./bin/tern up`,
   fix things via the panel on port 8080, then clear both and `./bin/tern up`.

@@ -102,6 +102,8 @@ switch on the same page, off by default.
 | Update to the latest code | `./update.sh` |
 | Logs | `./bin/tern logs app` (or `db`, `ollama`, `caddy`, `stalwart`) |
 | Status | `./bin/tern ps` |
+| Health check with fixes suggested | `./bin/tern doctor` |
+| Lift Stalwart's automatic IP bans | `./bin/tern stalwart-unban` |
 | Backup database and `.env` | `./bin/tern backup` |
 | Restore | `./bin/tern restore backups/tern-backup-….tar.gz` |
 | Reset a password | `./bin/tern cli set-password --username alice --password '…'` |
