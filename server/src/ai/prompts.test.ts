@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMessages, cleanOutput, ensureGreeting, finalizeOutput, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, ensureGreeting, finalizeOutput, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -60,4 +60,18 @@ test('finalizeOutput removes the signature block the model added', () => {
   assert.equal(out, 'Hi Dana,\n\nFrom 400 a month.\n\nBest regards,\nAlex Rivera');
   assert.equal(finalizeOutput('Hi Dana,\n\nOk.\n\n[Your Name]', 'compose', { recipient: { name: 'Dana' } }), 'Hi Dana,\n\nOk.');
   assert.equal(finalizeOutput('Hi Lee,\n\nLooking forward to it.\n\nAlex\nAlex Rivera', 'personalize', { recipient: { name: 'Lee Park' }, senderName: 'Alex Rivera' }), 'Hi Lee,\n\nLooking forward to it.\n\nAlex');
+});
+
+test('every mode builds a fresh single-turn conversation', () => {
+  for (const mode of ['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish'] as const) {
+    const msgs = buildMessages({ mode, draft: 'x', instruction: 'y', thread: [{ from: 'A <a@x.test>', date: 'today', text: 'hi' }] });
+    assert.deepEqual(msgs.map((m) => m.role), ['system', 'user'], mode);
+    assert.doesNotThrow(() => assertFreshConversation(msgs));
+  }
+});
+
+test('the transport refuses conversations with history', () => {
+  assert.throws(() => assertFreshConversation([{ role: 'system', content: 's' }, { role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]), /fresh conversation/);
+  assert.throws(() => assertFreshConversation([{ role: 'user', content: 'a' }]), /fresh conversation/);
+  assert.throws(() => assertFreshConversation([]), /fresh conversation/);
 });

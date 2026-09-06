@@ -3,6 +3,7 @@
 // Nothing here is in the mail path: if the model is down, drafting is
 // unavailable and everything else keeps working.
 import { config } from '../config.js';
+import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
 import { recommendModel } from './models.js';
 import { logger } from '../log.js';
@@ -62,6 +63,7 @@ export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: s
 export interface ChatOptions { messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number }
 
 export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
+  assertFreshConversation(opts.messages);
   const s = await getAiSettings();
   if (!s.enabled) throw new Error('AI drafting is turned off in Settings → AI');
   const model = opts.model || s.model;
@@ -74,7 +76,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
-      messages: opts.messages,
+      messages: opts.messages, // one system + one user message; never a `context` from a previous answer
       stream: true,
       keep_alive: s.keepAlive,
       options: { temperature: opts.temperature ?? s.temperature, num_ctx: s.numCtx, num_predict: opts.maxTokens ?? s.maxTokens, top_p: s.topP, top_k: s.topK, repeat_penalty: s.repeatPenalty },

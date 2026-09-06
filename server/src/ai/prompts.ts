@@ -118,6 +118,17 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
   ];
 }
 
+// Every call to the model is a fresh, single-turn conversation: one system
+// prompt and one user message built from this task's inputs alone. Nothing
+// from earlier requests, other users or previous outputs is ever carried
+// over. The transport refuses anything else so this cannot regress.
+export function assertFreshConversation(messages: ChatMessage[]): void {
+  const roles = messages.map((m) => m.role);
+  if (roles.length !== 2 || roles[0] !== 'system' || roles[1] !== 'user') {
+    throw new Error(`AI requests must be a fresh conversation (system + user), got: ${roles.join(', ') || 'nothing'}`);
+  }
+}
+
 // Small models sometimes wrap output in quotes or add a label anyway.
 export function cleanOutput(text: string, mode: DraftMode): string {
   let t = text.trim();

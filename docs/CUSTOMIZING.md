@@ -163,6 +163,15 @@ recipient; if there is no recipient yet, sample values are used.
 
 Settings → AI (admins).
 
+Every request to the model, whether a draft, a reply, a summary, a subject
+line, a sequence's personalised email or a responder's answer, is a fresh
+single-turn conversation: one system prompt and one message built from that
+task's inputs alone. Nothing from earlier requests, other users or previous
+outputs is carried over, no conversation state is kept on the server, and
+the transport refuses anything that is not that shape. The assistant panel
+only sends the editor's contents for the modes that edit a draft (rewrite,
+polish, shorten, expand, subject).
+
 - **Provider**: Ollama (bundled) or any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional API key.
 - **Model**: pull curated models with one click or type any name from
   ollama.com/library. The page shows the RAM-based recommendation.

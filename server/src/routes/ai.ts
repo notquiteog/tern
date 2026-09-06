@@ -95,6 +95,11 @@ const draftSchema = z.object({
   template: z.string().max(60000).optional(),
 });
 
+// Only these modes work on what is in the editor. The others (compose, reply,
+// summarize) start from the task's own inputs, so a previous generation that
+// was inserted into the editor never feeds the next one.
+const DRAFT_MODES = new Set(['rewrite', 'polish', 'shorten', 'expand', 'subject']);
+
 // Streams tokens as SSE. The browser inserts them into the editor as they
 // arrive so a slow CPU-only model still feels responsive.
 aiRouter.post('/draft', async (req, res) => {
@@ -102,7 +107,7 @@ aiRouter.post('/draft', async (req, res) => {
   const s = await getAiSettings();
   if (!s.enabled) throw badRequest('AI drafting is turned off');
   const acc = b.accountId ? await getUserAccount(req.user!.id, b.accountId) : null;
-  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice };
+  const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: DRAFT_MODES.has(b.mode) && b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice };
   if (b.contactId) {
     const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [b.contactId, req.user!.id]);
     if (c) input.recipient = { name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email, company: c.company, title: c.title, notes: c.notes, fields: c.fields };
