@@ -6,6 +6,7 @@ import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, 
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
+import { renderIcons } from '../lib/pwaIcons';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle, Tabs } from '../components/ui';
@@ -608,6 +609,18 @@ function BrandingCard() {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => { if (data) setName(data.branding.name); }, [data]);
   const done = async () => { await refetch(); await refresh(); };
+  // Home-screen icons are rendered here in the browser from the logo, so the
+  // server never needs an image library. Re-rendered when the logo or the
+  // background colour changes.
+  async function buildIcons(logoUrl: string, bg: string) {
+    const icons = await renderIcons(logoUrl, bg);
+    await api.post('/api/settings/branding/icons', { iconBg: bg, icons });
+  }
+  async function saveIconBg(bg: string) {
+    if (!b?.logo) { toast.error('Upload a logo first'); return; }
+    setBusy(true);
+    try { await buildIcons(b.logo, bg); await done(); toast.success('Home-screen icons updated'); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
   async function saveName() {
     try { await api.put('/api/settings/branding', { name }); await done(); toast.success('Name saved'); } catch (e) { toast.error(e); }
   }
@@ -617,16 +630,17 @@ function BrandingCard() {
     setBusy(true);
     try {
       const r = await api.upload<any>('/api/settings/branding/logo', f, type);
+      await buildIcons(r.branding.logo, r.branding.iconBg);
       await done();
-      toast.success(`Logo saved: ${fmtBytes(r.bytes)}${r.note ? ` (${r.note})` : ''}`);
+      toast.success(`Logo saved: ${fmtBytes(r.bytes)}${r.note ? ` (${r.note})` : ''}; home-screen icons rendered`);
     } catch (e) { toast.error(e); } finally { setBusy(false); if (input.current) input.current.value = ''; }
   }
   async function remove() {
     setBusy(true);
     try { await api.del('/api/settings/branding/logo'); await done(); toast.success('Logo removed'); } catch (e) { toast.error(e); } finally { setBusy(false); }
   }
-  if (!data) return null;
-  const b = data.branding;
+  const b = data?.branding;
+  if (!b) return null;
   return (
     <div className="card mb-16">
       <h2 className="mb-8">Name and logo</h2>
@@ -644,6 +658,13 @@ function BrandingCard() {
             <Button icon={<Upload size={15} />} onClick={() => input.current?.click()} disabled={busy}>Upload logo</Button>
             {b.logo && <Button variant="ghost" icon={<Trash2 size={15} />} onClick={remove} disabled={busy}>Remove</Button>}
           </div>
+        </div>
+      </div>
+      <div className="row gap-16 mt-16 wrap" style={{ alignItems: 'center' }}>
+        <img src={`/icons/icon-512-maskable.png?v=${b.version}`} alt="" width={56} height={56} style={{ borderRadius: 14, flex: 'none' }} />
+        <div className="col gap-8">
+          <div className="small muted">Home-screen icon{b.logo ? ' · background colour behind the logo when the app is installed' : ' · default until a logo is uploaded'}</div>
+          <ColorPicker value={b.iconBg} onChange={(c) => { if (!busy && c !== b.iconBg) void saveIconBg(c); }} />
         </div>
       </div>
     </div>

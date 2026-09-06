@@ -216,6 +216,12 @@ JPEG or WebP up to 1 MB. SVGs are cleaned the same way as mail logos
 (scripts, external references and metadata removed); rasters have their
 metadata stripped. Remove the logo to return to the default.
 
+The app installs as a PWA (browser menu → *Install* or *Add to Home Screen*)
+and opens in its own window with the name and logo above. Home-screen icons
+are rendered from the logo on a background colour you pick on the same card;
+without a logo the default Tern icons are used. The service worker keeps the
+app shell available offline and never caches mail.
+
 ## Profile pictures
 
 Settings → Profile: upload a picture (squared and shrunk to 256 px in the

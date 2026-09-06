@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BrandLogo, useAppName } from './Brand';
+import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw } from 'lucide-react';
@@ -24,6 +25,11 @@ export function Shell({ children }: { children: ReactNode }) {
   const nav = useNavigate();
   const loc = useLocation();
   const toast = useToast();
+  useEffect(() => {
+    const onUpdate = () => toast.toast('A new version is ready.', { action: { label: 'Reload', onClick: () => window.location.reload() }, ttl: 60000 });
+    window.addEventListener(SW_UPDATED_EVENT, onUpdate);
+    return () => window.removeEventListener(SW_UPDATED_EVENT, onUpdate);
+  }, [toast]);
   const qc = useQueryClient();
   const [filter, setFilter] = useAccountFilter();
   const { data: accounts = [] } = useAccounts();

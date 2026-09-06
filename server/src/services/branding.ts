@@ -13,17 +13,21 @@ export const LOGO_MAX_BYTES = 1024 * 1024;
 export const LOGO_TYPES = ['image/svg+xml', 'image/png', 'image/jpeg', 'image/webp'] as const;
 export type LogoType = (typeof LOGO_TYPES)[number];
 
-export interface Branding { name: string; logo: { type: LogoType; data: string; bytes: number } | null; logoVersion: number }
-export interface PublicBranding { name: string; logo: string | null }
+export const ICON_NAMES = ['icon-192.png', 'icon-512.png', 'icon-512-maskable.png', 'apple-touch-icon.png'] as const;
+export const ICON_MAX_BYTES = 512 * 1024;
+export const DEFAULT_ICON_BG = '#4f6df5';
+
+export interface Branding { name: string; logo: { type: LogoType; data: string; bytes: number } | null; logoVersion: number; iconBg: string; icons: Record<string, string> | null }
+export interface PublicBranding { name: string; logo: string | null; version: number }
 
 export async function getBranding(): Promise<Branding> {
   const row = await one<{ value: Partial<Branding> }>(`SELECT value FROM settings WHERE key='branding'`);
   const v = row?.value ?? {};
-  return { name: String(v.name || DEFAULT_APP_NAME), logo: v.logo ?? null, logoVersion: Number(v.logoVersion ?? 0) };
+  return { name: String(v.name || DEFAULT_APP_NAME), logo: v.logo ?? null, logoVersion: Number(v.logoVersion ?? 0), iconBg: String(v.iconBg || DEFAULT_ICON_BG), icons: v.icons ?? null };
 }
 
 export function publicBranding(b: Branding): PublicBranding {
-  return { name: b.name, logo: b.logo ? `/logo?v=${b.logoVersion}` : null };
+  return { name: b.name, logo: b.logo ? `/logo?v=${b.logoVersion}` : null, version: b.logoVersion };
 }
 
 async function save(b: Branding): Promise<void> {
@@ -72,6 +76,7 @@ export async function setLogo(input: Buffer, contentType: string): Promise<{ bra
 export async function clearLogo(): Promise<Branding> {
   const b = await getBranding();
   b.logo = null;
+  b.icons = null;
   b.logoVersion += 1;
   await save(b);
   return b;
@@ -81,4 +86,59 @@ export async function getLogo(): Promise<{ type: LogoType; data: Buffer; version
   const b = await getBranding();
   if (!b.logo) return null;
   return { type: b.logo.type, data: Buffer.from(b.logo.data, 'base64'), version: b.logoVersion };
+}
+
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// Home-screen icons rendered by the admin's browser from the custom logo.
+// All four are required so the manifest and iOS always find what they ask for.
+export async function setIcons(iconBg: string, icons: Record<string, Buffer>): Promise<Branding> {
+  const b = await getBranding();
+  if (!b.logo) throw new Error('Upload a logo first');
+  const stored: Record<string, string> = {};
+  for (const name of ICON_NAMES) {
+    const buf = icons[name];
+    if (!buf) throw new Error(`Missing icon ${name}`);
+    if (buf.length > ICON_MAX_BYTES) throw new Error(`${name} is larger than 512 KB`);
+    if (!buf.subarray(0, 8).equals(PNG_MAGIC)) throw new Error(`${name} is not a PNG`);
+    stored[name] = scrubMedia(buf, 'image/png').data.toString('base64');
+  }
+  b.iconBg = iconBg;
+  b.icons = stored;
+  b.logoVersion += 1;
+  await save(b);
+  return b;
+}
+
+export async function getIcon(name: string): Promise<Buffer | null> {
+  const b = await getBranding();
+  const data = b.icons?.[name];
+  return data ? Buffer.from(data, 'base64') : null;
+}
+
+// The web app manifest. Icon URLs carry the version so installs pick up a
+// new logo; without custom icons they resolve to the static defaults.
+export function manifest(b: Branding, version: string): Record<string, unknown> {
+  const v = b.icons ? b.logoVersion : 0;
+  const icon = (name: string, sizes: string, purpose?: string) => ({ src: `/icons/${name}?v=${v}`, sizes, type: 'image/png', ...(purpose ? { purpose } : {}) });
+  return {
+    id: '/',
+    name: b.name,
+    short_name: b.name.length <= 12 ? b.name : b.name.slice(0, 12).trim(),
+    description: 'Mail, contacts and outreach sequences on your own server.',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'any',
+    background_color: '#f6f7fb',
+    theme_color: b.icons ? b.iconBg : DEFAULT_ICON_BG,
+    icons: [icon('icon-192.png', '192x192'), icon('icon-512.png', '512x512'), icon('icon-512-maskable.png', '512x512', 'maskable')],
+    shortcuts: [
+      { name: 'Inbox', url: '/mail/inbox', icons: [icon('icon-192.png', '192x192')] },
+      { name: 'Compose', url: '/mail/inbox?compose=1', icons: [icon('icon-192.png', '192x192')] },
+      { name: 'Contacts', url: '/contacts', icons: [icon('icon-192.png', '192x192')] },
+    ],
+    categories: ['productivity', 'business'],
+    version,
+  };
 }

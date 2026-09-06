@@ -45,7 +45,7 @@ if [ "${AI_ENABLED:-true}" = true ] && [ -n "${AI_MODEL:-}" ]; then
     echo "==> Pulling model $AI_MODEL"; compose exec -T ollama ollama pull "$AI_MODEL" || true
   fi
 fi
-if [ "${STALWART_ENABLED:-0}" = 1 ]; then ./bin/tern cert-sync || true; fi
+if [ "${STALWART_ENABLED:-0}" = 1 ]; then ./bin/tern stalwart-trust-proxy >/dev/null 2>&1 || echo "    could not set Stalwart's trusted networks; run ./bin/tern stalwart-trust-proxy" >&2; ./bin/tern cert-sync || true; fi
 echo "==> Pruning unused images"
 podman image prune -f >/dev/null 2>&1 || true
 echo "Done."

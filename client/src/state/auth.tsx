@@ -2,8 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { api, setUnauthorizedHandler } from '../api';
 
 export interface User { id: number; username: string; display_name: string; role: 'admin' | 'member'; totp_enabled: boolean; prefs: Record<string, any>; created_at: string; last_login_at: string | null; avatar_version: number | null; pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless' }
-export interface Branding { name: string; logo: string | null }
-const DEFAULT_BRANDING: Branding = { name: 'Tern', logo: null };
+export interface Branding { name: string; logo: string | null; version: number }
+const DEFAULT_BRANDING: Branding = { name: 'Tern', logo: null, version: 0 };
 interface AuthCtx { user: User | null; loading: boolean; needsSetup: boolean; registrationOpen: boolean; stalwartProvisioning: boolean; accountCount: number; version: string; branding: Branding; refresh: () => Promise<void>; setUser: (u: User | null) => void; logout: () => Promise<void> }
 
 const Ctx = createContext<AuthCtx>(null as any);
@@ -46,6 +46,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!link) return;
     link.href = branding.logo ?? '/favicon.svg';
     if (branding.logo) link.removeAttribute('type'); else link.type = 'image/svg+xml';
+    document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', branding.name);
+    document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]')?.setAttribute('href', `/icons/apple-touch-icon.png?v=${branding.version}`);
+    document.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.setAttribute('href', `/manifest.webmanifest?v=${branding.version}`);
   }, [branding]);
   useEffect(() => { setUnauthorizedHandler(() => setUser(null)); }, []);
 

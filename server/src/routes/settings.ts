@@ -4,7 +4,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { config } from '../config.js';
 import { appSettings } from '../services/compose.js';
-import { clearLogo, getBranding, getLogo, LOGO_MAX_BYTES, LOGO_TYPES, publicBranding, setAppName, setLogo } from '../services/branding.js';
+import { clearLogo, getBranding, getIcon, getLogo, ICON_NAMES, LOGO_MAX_BYTES, LOGO_TYPES, manifest, publicBranding, setAppName, setIcons, setLogo } from '../services/branding.js';
 import { badRequest, notFound } from '../errors.js';
 
 export const settingsRouter = Router();
@@ -25,7 +25,7 @@ settingsRouter.put('/', requireAdmin, async (req, res) => {
 
 // ---- Name and logo of the web app itself (admins) ----
 function brandingView(b: Awaited<ReturnType<typeof getBranding>>) {
-  return { ...publicBranding(b), logoType: b.logo?.type ?? null, logoBytes: b.logo?.bytes ?? null, maxBytes: LOGO_MAX_BYTES };
+  return { ...publicBranding(b), logoType: b.logo?.type ?? null, logoBytes: b.logo?.bytes ?? null, maxBytes: LOGO_MAX_BYTES, iconBg: b.iconBg, hasIcons: Boolean(b.icons) };
 }
 settingsRouter.get('/branding', requireAdmin, async (_req, res) => {
   res.json({ branding: brandingView(await getBranding()) });
@@ -45,10 +45,44 @@ settingsRouter.post('/branding/logo', requireAdmin, logoBody, async (req, res) =
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'branding.logo',$2)`, [req.user!.id, JSON.stringify({ type: prepared.type, bytes: prepared.bytes, originalBytes: prepared.originalBytes })]);
   res.json({ branding: brandingView(branding), bytes: prepared.bytes, originalBytes: prepared.originalBytes, note: prepared.note });
 });
+// Home-screen icons, rendered by the browser from the logo: {iconBg, icons: {name: dataUrl}}.
+settingsRouter.post('/branding/icons', requireAdmin, async (req, res) => {
+  const b = parse(z.object({ iconBg: z.string().regex(/^#[0-9a-fA-F]{6}$/), icons: z.record(z.string(), z.string().max(800_000)) }), req.body);
+  const icons: Record<string, Buffer> = {};
+  for (const name of ICON_NAMES) {
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(b.icons[name] ?? '');
+    if (!m) throw badRequest(`Missing or invalid icon ${name}`);
+    icons[name] = Buffer.from(m[1], 'base64');
+  }
+  let next;
+  try { next = await setIcons(b.iconBg, icons); } catch (e) { throw badRequest((e as Error).message); }
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'branding.icons',$2)`, [req.user!.id, JSON.stringify({ iconBg: b.iconBg })]);
+  res.json({ branding: brandingView(next) });
+});
 settingsRouter.delete('/branding/logo', requireAdmin, async (req, res) => {
   const next = await clearLogo();
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'branding.logo_removed')`, [req.user!.id]);
   res.json({ branding: brandingView(next) });
+});
+
+// Public: the web app manifest and the home-screen icons. Custom icons come
+// from the database; otherwise the request falls through to the static
+// defaults shipped with the client.
+export const manifestRouter = Router();
+manifestRouter.get('/', async (_req, res) => {
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(JSON.stringify(manifest(await getBranding(), config.version)));
+});
+export const iconsRouter = Router();
+iconsRouter.get('/:name', async (req, res, next) => {
+  const name = String(req.params.name);
+  if (!(ICON_NAMES as readonly string[]).includes(name)) { next(); return; }
+  const icon = await getIcon(name);
+  if (!icon) { next(); return; }
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(icon);
 });
 
 // Public: the logo file, referenced from the setup/status payload as /logo?v=N.
