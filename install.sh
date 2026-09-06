@@ -363,13 +363,15 @@ start_stack() {
   done
   ok "all containers running"
 }
-# Recreate one service's container (and the containers that depend on it).
-# `compose up --force-recreate <svc>` cannot do this on podman-compose 1.0.x:
-# its partial `down` fails because dependents hold the container.
-recreate_service() {
-  local cid
-  cid="$(podman ps -aq --filter "label=com.docker.compose.service=$1" --filter "label=com.docker.compose.project.working_dir=$INSTALL_DIR" | head -1)"
-  [ -n "$cid" ] && podman rm -f --depend "$cid" >/dev/null
+# Recreate the given services' containers (and the containers that depend on
+# them). `compose up --force-recreate <svc>` cannot do this on podman-compose
+# 1.0.x: its partial `down` fails because dependents hold the container.
+recreate_services() {
+  local svc cid
+  for svc in "$@"; do
+    cid="$(podman ps -aq --filter "label=com.docker.compose.service=$svc" --filter "label=com.docker.compose.project.working_dir=$INSTALL_DIR" | head -1)"
+    [ -n "$cid" ] && podman container exists "$cid" 2>/dev/null && podman rm -f --depend "$cid" >/dev/null
+  done
   start_stack
 }
 say "  Starting containers…"
@@ -404,8 +406,11 @@ if [ "$STALWART_ENABLED" = 1 ]; then
     sed -i "s|^STALWART_ADMIN_USER=.*|STALWART_ADMIN_USER=$STALWART_ADMIN_USER|; s|^STALWART_ADMIN_PASSWORD=.*|STALWART_ADMIN_PASSWORD=$STALWART_ADMIN_PASSWORD|; s|^STALWART_RECOVERY_ADMIN=.*|STALWART_RECOVERY_ADMIN=|" "$ENV_FILE"
     STALWART_RECOVERY_ADMIN=""
     ok "Stalwart bootstrapped; admin is $STALWART_ADMIN_USER"
-    say "  Restarting Stalwart without the bootstrap credentials…"
-    recreate_service stalwart
+    # The app reads the Stalwart admin credentials from .env when its container
+    # is created, and they did not exist until now; without a fresh app
+    # container there is no Settings → Mail server page.
+    say "  Restarting Stalwart and the app with the new credentials…"
+    recreate_services stalwart app
   fi
   for i in $(seq 1 30); do curl -sf -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" "$SW/api/account" >/dev/null 2>&1 && break; sleep 2; [ "$i" = 30 ] && warn "Stalwart is not answering with the stored admin credentials; check ./bin/tern logs stalwart"; done
   DOMAIN_ID="$(sw_api "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" '[["x:Domain/get",{"ids":null,"properties":["id","name"]},"c1"]]' | sed -n 's/.*"list":\[{[^}]*"id":"\([^"]*\)".*/\1/p')"
