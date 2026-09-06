@@ -21,7 +21,7 @@ Every question shows its default in brackets; press Enter to accept. The install
 
 1. **Container runtime.** Installs `podman` and `podman-compose` if missing.
 2. **Web address.** Asks for the public hostname. With one, Caddy fetches a Let's Encrypt certificate (ports 80 and 443 must be reachable and DNS must already point here). Without one, it asks for an HTTP port and serves the app on the server's IP.
-3. **Admin account.** Username and password. Leave the password blank to have one generated; it is printed at the end.
+3. **Admin account.** Username and password. Leave the password blank to have one generated; it is printed at the end. On a re-run, blank keeps the existing password; typing one resets it.
 4. **AI assistant.** Detects RAM and proposes a model. The tiers:
 
    | RAM | Model | Notes |

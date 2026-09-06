@@ -51,21 +51,23 @@ case "$cmd" in
     KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
     if [ -z "$CRT" ] || [ -z "$KEY" ]; then
       # Caddy asks for the certificate when it starts and then retries with a
-      # growing backoff; if DNS was pointed here after that, a restart makes it
-      # try again now. Only worth it when the name already resolves to this box.
-      RESOLVED="$(getent ahostsv4 "$STALWART_HOST" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+      # growing backoff, so a name pointed here after that stays without one
+      # for hours. Restart Caddy so it tries again now, then wait for the file.
+      echo "No certificate for $STALWART_HOST in Caddy yet; restarting Caddy so it asks for one now…"
       CADDY="$(podman ps -q --filter label=com.docker.compose.service=caddy --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1)"
-      if [ -n "$CADDY" ] && [ -n "${SERVER_IP:-}" ] && printf '%s' "$RESOLVED" | grep -qw "$SERVER_IP"; then
-        echo "No certificate for $STALWART_HOST in Caddy yet; DNS points here, so restarting Caddy to fetch one…"
-        podman restart "$CADDY" >/dev/null
-        for i in $(seq 1 45); do
-          sleep 2
-          CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
-          [ -n "$CRT" ] && break
-        done
-        KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+      if [ -n "$CADDY" ]; then podman restart "$CADDY" >/dev/null; else compose restart caddy >/dev/null 2>&1 || true; fi
+      for i in $(seq 1 45); do
+        sleep 2
+        CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
+        [ -n "$CRT" ] && break
+      done
+      KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+      if [ -z "$CRT" ] || [ -z "$KEY" ]; then
+        echo "Still no certificate for $STALWART_HOST after 90 s. Caddy's log lines about it:" >&2
+        { [ -n "$CADDY" ] && podman logs --since 3m "$CADDY" 2>&1 || compose logs --tail=200 caddy 2>&1; } | grep -i "$STALWART_HOST" | grep -iv '"level":"info"' | tail -5 >&2
+        echo "DNS must point here and port 80/443 must be reachable from the internet. Full log: ./bin/tern logs caddy" >&2
+        exit 2
       fi
-      if [ -z "$CRT" ] || [ -z "$KEY" ]; then echo "No certificate for $STALWART_HOST in Caddy yet (DNS must point here and port 80/443 must be reachable; see ./bin/tern logs caddy)." >&2; exit 2; fi
     fi
     esc() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || { printf '"%s"' "$(sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')"; }; }
     CRT_J="$(printf '%s\n' "$CRT" | esc)"; KEY_J="$(printf '%s\n' "$KEY" | esc)"

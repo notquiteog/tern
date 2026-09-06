@@ -141,9 +141,11 @@ fi
 # ---------- 3. admin ----------
 step "3/8 Admin account"
 ask ADMIN_USER "Admin username" "${ADMIN_USER:-admin}"
+# A typed password is set (or reset) on the account. Blank generates one for
+# a new install and leaves an existing account's password alone on a re-run.
 ADMIN_PASSWORD_GENERATED=0
 if [ -z "${ADMIN_PASSWORD:-}" ]; then
-  ask_secret ADMIN_PASSWORD "Admin password"
+  ask_secret ADMIN_PASSWORD "Admin password (blank: generate one, or keep the current one on a re-run)"
   if [ -z "${ADMIN_PASSWORD:-}" ]; then ADMIN_PASSWORD="$(gen_password 20)"; ADMIN_PASSWORD_GENERATED=1; fi
 fi
 [ "${#ADMIN_PASSWORD}" -ge 10 ] || die "The admin password must be at least 10 characters."
@@ -377,8 +379,17 @@ recreate_services() {
 say "  Starting containers…"
 start_stack
 
-compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin >/dev/null
-ok "admin user ensured"
+if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then
+  CU="$(compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin --if-missing 2>&1 | tail -1)"
+  case "$CU" in
+    exists*) ADMIN_PASSWORD_GENERATED=0; ok "admin user $ADMIN_USER exists; password unchanged" ;;
+    created*) ok "admin user $ADMIN_USER created" ;;
+    *) die "Could not create the admin user: $CU" ;;
+  esac
+else
+  compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin >/dev/null
+  ok "admin user $ADMIN_USER: password set"
+fi
 
 if [ "$AI_ENABLED" = 1 ]; then
   if compose exec -T ollama ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$AI_MODEL\(:latest\)\?"; then
@@ -448,7 +459,7 @@ say "${G}${B}Tern is running.${N}"
 say ""
 say "  Web app:        ${B}$APP_URL${N}"
 say "  Sign in as:     $ADMIN_USER"
-if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then say "  Password:       ${B}$ADMIN_PASSWORD${N}   ${D}(generated; change it in Settings → Security)${N}"; fi
+if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then say "  Password:       ${B}$ADMIN_PASSWORD${N}   ${D}(generated; change it in Settings → Security)${N}"; else say "  Password:       ${D}unchanged (reset with: ./bin/tern cli set-password --username $ADMIN_USER --password '…')${N}"; fi
 [ "$AI_ENABLED" = 1 ] && say "  AI model:       $AI_MODEL  ${D}(change under Settings → AI)${N}"
 if [ "$STALWART_ENABLED" = 1 ]; then
   say ""

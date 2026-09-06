@@ -23,10 +23,13 @@ async function main(): Promise<void> {
       const password = arg('password') ?? process.env.TERN_ADMIN_PASSWORD;
       const name = arg('name') ?? username;
       const role = arg('role') ?? 'admin';
-      if (!username || !password) throw new Error('usage: create-user --username U --password P [--name N] [--role admin|member]');
+      if (!username || !password) throw new Error('usage: create-user --username U --password P [--name N] [--role admin|member] [--if-missing]');
       if (password.length < 10) throw new Error('password must be at least 10 characters');
       const existing = await query('SELECT id FROM users WHERE username=$1', [username]);
-      if (existing.length) {
+      if (existing.length && process.argv.includes('--if-missing')) {
+        // install.sh re-runs: keep the existing user and password untouched.
+        console.log(`exists ${username}`);
+      } else if (existing.length) {
         await query('UPDATE users SET password_hash=$2, role=$3, display_name=$4, disabled=false WHERE username=$1', [username, await hashPassword(password), role, name]);
         console.log(`updated existing user ${username}`);
       } else {
