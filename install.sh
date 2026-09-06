@@ -298,6 +298,7 @@ fi
 step "7/8 Building and starting containers"
 export COMPOSE_FILE
 compose() { podman-compose --env-file "$ENV_FILE" "$@"; }
+. "$INSTALL_DIR/deploy/lib.sh"
 
 # Ports the stack binds on this host. A leftover mail server (Postfix, Exim)
 # on 25 is the usual conflict; without this check the container fails with a
@@ -342,12 +343,13 @@ if [ "$SKIP_BUILD" = 0 ]; then
   compose build app 2>&1 | grep -Ev '^(STEP|--> )' | tail -3 || true
   ok "image built"
 fi
-# podman-compose 1.0.x tries to create every container even when it already
-# exists, prints "name ... is already in use" and then simply starts it. Hide
-# that one line so real errors stand out; the checks below catch anything
-# that did not come up (older podman-compose does not fail on its own).
+# Start (or update) the whole stack and make sure every part of it is up.
+# Older podman-compose does not fail on its own, so the checks matter.
 start_stack() {
-  compose up -d --remove-orphans 2>&1 >/dev/null | grep -v 'container name .* is already in use' || true
+  local replaced
+  replaced="$(replace_stale_containers localhost/tern:latest | tr '\n' ' ')"
+  [ -n "$replaced" ] && note "replacing (image changed): $replaced"
+  compose_up
   for i in $(seq 1 30); do
     if compose exec -T db pg_isready -U tern -d tern >/dev/null 2>&1; then break; fi
     sleep 2
@@ -384,6 +386,7 @@ if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then
   case "$CU" in
     exists*) ADMIN_PASSWORD_GENERATED=0; ok "admin user $ADMIN_USER exists; password unchanged" ;;
     created*) ok "admin user $ADMIN_USER created" ;;
+    updated*) warn "admin user $ADMIN_USER existed and its password was reset (older app image); the new one is printed below" ;;
     *) die "Could not create the admin user: $CU" ;;
   esac
 else

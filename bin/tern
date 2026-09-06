@@ -20,10 +20,11 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null; then exec sudo -E "$0" "$
 set -a; . ./.env; set +a
 export COMPOSE_FILE="${COMPOSE_FILE:-compose.yml}"
 compose() { podman-compose --env-file "$ROOT/.env" "$@"; }
+. "$ROOT/deploy/lib.sh"
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-  up)        compose up -d --remove-orphans "$@" ;;
+  up)        R="$(replace_stale_containers localhost/tern:latest | tr '\n' ' ')"; [ -n "$R" ] && echo "replacing (image changed): $R"; compose_up "$@" ;;
   down)      compose down "$@" ;;
   restart)   compose restart "$@" ;;
   ps)        compose ps "$@" ;;
