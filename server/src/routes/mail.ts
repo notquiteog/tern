@@ -102,7 +102,7 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT array_agg(DISTINCT m) FROM emails x, unnest(x.mailbox_ids) m WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id) AS mailbox_ids,
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
        EXISTS (SELECT 1 FROM muted_threads mt WHERE mt.account_id=t.account_id AND mt.thread_id=t.thread_id) AS muted,
-       (SELECT jsonb_agg(n) FROM (SELECT a->>'name' AS n FROM emails x, jsonb_array_elements(x.attachments) a WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id AND a->>'name' IS NOT NULL AND (a->>'cid' IS NULL OR a->>'disposition' = 'attachment') ORDER BY x.received_at DESC LIMIT 4) s) AS attachments,
+       (SELECT jsonb_agg(n) FROM (SELECT a->>'name' AS n FROM emails x, jsonb_array_elements(x.attachments) a WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id AND a->>'name' IS NOT NULL AND (a->>'cid' IS NULL OR a->>'disposition' = 'attachment') AND coalesce(a->>'type','') NOT LIKE 'application/pgp-%' AND a->>'name' NOT IN ('encrypted.asc','signature.asc') ORDER BY x.received_at DESC LIMIT 4) s) AS attachments,
        (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id,
        (SELECT jsonb_build_object('id', c.id, 'v', (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint) FROM contacts c
           WHERE c.user_id=${p(req.user!.id)} AND c.avatar_updated_at IS NOT NULL AND lower(c.email) = (SELECT x.from_email FROM emails x WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id ORDER BY x.received_at DESC LIMIT 1) LIMIT 1) AS avatar
