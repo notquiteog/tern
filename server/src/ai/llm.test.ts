@@ -3,7 +3,7 @@
 // answers with nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyAnswer, isValidKeepAlive, keepAliveValue } from './llm.js';
+import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, samplingOptions } from './llm.js';
 
 test('a duration keeps its unit and travels as a string', () => {
   for (const v of ['10m', '1h', '30s', '500ms']) assert.equal(keepAliveValue(v), v);
@@ -48,4 +48,18 @@ test('an empty answer with no thinking says something different', () => {
   const msg = emptyAnswer('qwen2.5:3b', 0, 700);
   assert.match(msg, /empty reply/);
   assert.doesNotMatch(msg, /reasoning model/);
+});
+
+test('min-p is only sent when it is actually turned on', () => {
+  // Ollama's own default is 0, and an endpoint that does not know the option
+  // should never have to see it, so the field is omitted rather than zeroed.
+  const off = samplingOptions({ ...aiDefaults(), minP: 0 });
+  assert.equal('min_p' in off, false);
+  const on = samplingOptions({ ...aiDefaults(), minP: 0.05 });
+  assert.equal(on.min_p, 0.05);
+  assert.equal(on.top_p, 0.9);
+  assert.equal(on.top_k, 40);
+  // A per-call temperature wins over the stored one; everything else stands.
+  assert.equal(samplingOptions(aiDefaults(), 0.2).temperature, 0.2);
+  assert.equal(samplingOptions(aiDefaults()).temperature, 0.7);
 });

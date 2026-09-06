@@ -29,6 +29,10 @@ export interface AiSettings {
   systemPrompt: string;
   topP: number;
   topK: number;
+  // Min-p keeps tokens whose probability is at least this fraction of the
+  // most likely one's, which cuts the tail without the flat ceiling top-p
+  // imposes. 0 leaves it off, which is Ollama's own default.
+  minP: number;
   repeatPenalty: number;
   maxTokens: number;
 }
@@ -50,6 +54,7 @@ const DEFAULTS: AiSettings = {
   systemPrompt: '',
   topP: 0.9,
   topK: 40,
+  minP: 0,
   repeatPenalty: 1.1,
   maxTokens: 700,
 };
@@ -134,6 +139,20 @@ export async function modelCanThink(baseUrl: string, model: string): Promise<boo
 }
 export function forgetModelCapabilities(): void { thinkCapable.clear(); }
 
+// How the model picks its next token. Shared so the Ollama and the
+// OpenAI-compatible paths sample the same way. Min-p is only sent when it is
+// in use: a zero would be a no-op, and an endpoint that does not know the
+// option should not have to see it.
+export function samplingOptions(s: AiSettings, temperature?: number): Record<string, number> {
+  return {
+    temperature: temperature ?? s.temperature,
+    top_p: s.topP,
+    top_k: s.topK,
+    ...(s.minP > 0 ? { min_p: s.minP } : {}),
+    repeat_penalty: s.repeatPenalty,
+  };
+}
+
 export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   assertFreshConversation(opts.messages);
   const s = await getAiSettings();
@@ -177,12 +196,9 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       think: think ? s.thinkEffort : false,
       keep_alive: keepAliveValue(s.keepAlive),
       options: {
-        temperature: opts.temperature ?? s.temperature,
         num_ctx: s.numCtx,
         num_predict: think ? reply + Math.max(0, s.thinkingBudget) : reply,
-        top_p: s.topP,
-        top_k: s.topK,
-        repeat_penalty: s.repeatPenalty,
+        ...samplingOptions(s, opts.temperature),
       },
     }),
     signal: opts.signal,
@@ -234,6 +250,9 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       // answer, so it gets its own allowance rather than eating the email.
       max_tokens: s.allowThinking ? reply + Math.max(0, s.thinkingBudget) : reply,
       top_p: s.topP,
+      // Not an OpenAI parameter, but vLLM, llama.cpp and LM Studio all take
+      // it; sent only when set so a stricter endpoint never sees it.
+      ...(s.minP > 0 ? { min_p: s.minP } : {}),
       ...(s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
     }),
     signal: opts.signal,

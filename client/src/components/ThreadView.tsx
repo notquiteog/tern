@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AlarmClock, Archive, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText } from 'lucide-react';
 import { api, apiStream } from '../api';
+import { AiThinking, useAiThinking } from './AiThinking';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment } from '../state/compose';
 import { useToast } from '../state/toast';
 import { useHotkeys } from '../lib/hooks';
@@ -35,9 +36,10 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   const { data, isLoading, error } = useQuery({ queryKey: ['thread', accountId, threadId], queryFn: () => api.get<any>(`/api/mail/threads/${accountId}/${encodeURIComponent(threadId)}`) });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [summary, setSummary] = useState<string | null>(null);
-  // A reasoning model's working-out while it reads the thread. Replaced by
-  // the summary itself as soon as that starts arriving.
-  const [summaryThinking, setSummaryThinking] = useState('');
+  // The model's working-out, shown while it happens: one trace for the
+  // summary, one for the quick replies, both cleared when the thread changes.
+  const summaryThinking = useAiThinking();
+  const quickThinking = useAiThinking();
   const [summarizing, setSummarizing] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeAt, setSnoozeAt] = useState('');
@@ -60,7 +62,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
     if (unread.length) {
       t = window.setTimeout(() => { api.post('/api/mail/actions', { accountId, jmapIds: unread, action: 'read' }).then(() => { qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] }); }).catch(() => {}); }, prefs.markReadDelay * 1000);
     }
-    setSummary(null); setQuick(null); setSummaryThinking('');
+    setSummary(null); setQuick(null); summaryThinking.reset(); quickThinking.reset();
     return () => { if (t) window.clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.messages?.length, threadId]);
@@ -122,18 +124,18 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   }, [last?.id, params]);
 
   async function summarize() {
-    setSummarizing(true); setSummary(''); setSummaryThinking('');
+    setSummarizing(true); setSummary(''); summaryThinking.reset();
     try {
-      await apiStream('/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (ev === 'thinking') setSummaryThinking((t) => t + d.t); if (ev === 'token') { setSummary((s) => (s ?? '') + d.t); setSummaryThinking(''); } if (ev === 'error') toast.error(d.error); } });
+      await apiStream('/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (summaryThinking.onEvent(ev, d)) return; if (ev === 'token') setSummary((s) => (s ?? '') + d.t); if (ev === 'error') toast.error(d.error); } });
     } catch (e) { toast.error(e); } finally { setSummarizing(false); }
   }
   async function quickReplies() {
     if (!lastInbound) return;
-    setQuick({ items: [], loading: true });
+    setQuick({ items: [], loading: true }); quickThinking.reset();
     const target = replyRecipients({ from: lastInbound.from_addr, replyTo: lastInbound.reply_to, to: lastInbound.to_addr, cc: lastInbound.cc_addr }, me).to[0];
     let text = '';
     try {
-      await apiStream('/api/ai/draft', { mode: 'quick_replies', threadKey: `${accountId}:${threadId}`, accountId, contactId: data?.contact?.id ?? null, recipientEmail: target?.email, recipientName: target?.name ?? undefined }, { onEvent: (ev, d) => { if (ev === 'done') text = d.text; if (ev === 'error') toast.error(d.error); } });
+      await apiStream('/api/ai/draft', { mode: 'quick_replies', threadKey: `${accountId}:${threadId}`, accountId, contactId: data?.contact?.id ?? null, recipientEmail: target?.email, recipientName: target?.name ?? undefined }, { onEvent: (ev, d) => { if (quickThinking.onEvent(ev, d)) return; if (ev === 'done') text = d.text; if (ev === 'error') toast.error(d.error); } });
     } catch (e) { toast.error(e); }
     const items = text.split('\n').map((s) => s.trim()).filter(Boolean);
     setQuick({ items, loading: false });
@@ -227,7 +229,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
           </div>
         </div>
       </div>
-      {summary !== null && <div className="card mb-16 ai-card"><div className="row mb-8"><Sparkles size={15} /><span className="strong small">Summary</span>{summarizing && <Spinner size={14} />}<IconButton label="Close" className="btn-sm ml-auto" onClick={() => setSummary(null)}><X size={14} /></IconButton></div><div className="pre" style={{ fontSize: 13.5 }}>{summary || (summaryThinking ? <span className="ai-thinking-inline">{summaryThinking}</span> : '…')}</div></div>}
+      {summary !== null && <div className="card mb-16 ai-card"><div className="row mb-8"><Sparkles size={15} /><span className="strong small">Summary</span>{summarizing && <Spinner size={14} />}<IconButton label="Close" className="btn-sm ml-auto" onClick={() => setSummary(null)}><X size={14} /></IconButton></div><AiThinking trace={summaryThinking} busy={summarizing} /><div className="pre" style={{ fontSize: 13.5 }}>{summary || (summaryThinking.text ? '' : '…')}</div></div>}
       <div className="thread-side">
         <div className="thread-main">
           {messages.map((m) => (
@@ -264,6 +266,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                   <Button icon={<Forward size={15} />} onClick={() => forward(last)} title="Forward (f)">Forward</Button>
                   <Button variant="ghost" icon={<Zap size={15} />} onClick={quickReplies} loading={quick?.loading} title="Three short replies suggested by the AI">Quick replies</Button>
                 </div>
+                <AiThinking trace={quickThinking} busy={Boolean(quick?.loading)} />
                 {quick && !quick.loading && quick.items.length > 0 && <div className="quick-replies">{quick.items.map((q) => <button key={q} type="button" onClick={() => openInline(lastInbound, 'reply', { initialText: q })}><Sparkles size={12} /> {q}</button>)}</div>}
               </div>
             </div>

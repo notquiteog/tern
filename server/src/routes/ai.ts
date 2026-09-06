@@ -57,7 +57,7 @@ aiRouter.get('/status', async (req, res) => {
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
   const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(), allowThinking: z.boolean().optional(),
     thinkEffort: z.enum(['low', 'medium', 'high']).optional(), thinkingBudget: z.number().int().min(0).max(8192).optional(),
-    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(), maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
+    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), minP: z.number().min(0).max(1).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(), maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
   if (b.keepAlive !== undefined && !isValidKeepAlive(b.keepAlive)) {

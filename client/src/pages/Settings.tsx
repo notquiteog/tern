@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint } from 'lucide-react';
 import { api, apiStream } from '../api';
+import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { useToast } from '../state/toast';
@@ -361,12 +362,13 @@ export function AiPlayground({ enabled }: { enabled: boolean }) {
   const toast = useToast();
   const [testOut, setTestOut] = useState('');
   const [testing, setTesting] = useState(false);
+  const thinking = useAiThinking();
   const [playInstruction, setPlayInstruction] = useState('Write two friendly sentences confirming the assistant works and mention that it runs locally.');
   const [playMode, setPlayMode] = useState<'compose' | 'reply' | 'subject' | 'rewrite'>('compose');
   const [playDraft, setPlayDraft] = useState('');
   async function test() {
-    setTesting(true); setTestOut('');
-    try { await apiStream('/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
+    setTesting(true); setTestOut(''); thinking.reset();
+    try { await apiStream('/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
   return (
     <div className="card mb-16">
@@ -374,6 +376,7 @@ export function AiPlayground({ enabled }: { enabled: boolean }) {
       <div className="row mb-8"><Select className="input-sm" style={{ width: 150 }} value={playMode} onChange={(e) => setPlayMode(e.target.value as any)}><option value="compose">Draft</option><option value="reply">Reply</option><option value="rewrite">Rewrite</option><option value="subject">Subject line</option></Select><Input className="input-sm" value={playInstruction} onChange={(e) => setPlayInstruction(e.target.value)} placeholder="Instruction" /></div>
       {(playMode === 'rewrite' || playMode === 'subject' || playMode === 'reply') && <Textarea className="mb-8" value={playDraft} onChange={(e) => setPlayDraft(e.target.value)} placeholder={playMode === 'reply' ? 'Paste the message you are replying to' : 'Paste the draft to work on'} style={{ minHeight: 70 }} />}
       <div className="row"><Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={testing} onClick={test} disabled={!enabled}>Run</Button></div>
+      <AiThinking trace={thinking} busy={testing} className="mt-8" />
       {testOut && <div className="ai-preview mt-8">{testOut}</div>}
     </div>
   );

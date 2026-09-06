@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, Copy, Pencil, Plus, Sparkles, Trash2, Eye, Star, Library, Download, Upload, Shuffle, Send, AlertTriangle, Search } from 'lucide-react';
 import { api, apiStream } from '../api';
+import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useToast } from '../state/toast';
 import { useAccounts, useTemplates } from '../lib/queries';
 import { Badge, Button, Callout, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle } from '../components/ui';
@@ -127,6 +128,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
   const [previewEmail, setPreviewEmail] = useState('');
   const [seed, setSeed] = useState(1);
   const [gen, setGen] = useState(false);
+  const thinking = useAiThinking();
   const [tab, setTab] = useState<'write' | 'preview'>('write');
   const [testAccount, setTestAccount] = useState<number | ''>('');
   const [errors, setErrors] = useState<string[]>([]);
@@ -155,13 +157,13 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
   }
   async function generate() {
     if (!brief.trim()) { toast.error('Write a short brief first: who this is for and what it should achieve'); return; }
-    setGen(true);
+    setGen(true); thinking.reset();
     let out = '';
     try {
-      await apiStream('/api/ai/draft', { mode: 'compose', instruction: `${brief}\n\nWrite it as a reusable template: greet with {{first_name|there}}, use {{company}} where the recipient's company belongs, and keep merge fields exactly in that double-brace form. Put any sentence the sender must fill in themselves inside square brackets.`, length: 'medium' }, { onEvent: (ev, d) => { if (ev === 'token') { out += d.t; editor.current?.setHtml(textToHtml(out)); } if (ev === 'error') toast.error(d.error); if (ev === 'done') { editor.current?.setHtml(textToHtml(d.text)); html.current = editor.current?.getHtml() ?? ''; } } });
+      await apiStream('/api/ai/draft', { mode: 'compose', instruction: `${brief}\n\nWrite it as a reusable template: greet with {{first_name|there}}, use {{company}} where the recipient's company belongs, and keep merge fields exactly in that double-brace form. Put any sentence the sender must fill in themselves inside square brackets.`, length: 'medium' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') { out += d.t; editor.current?.setHtml(textToHtml(out)); } if (ev === 'error') toast.error(d.error); if (ev === 'done') { editor.current?.setHtml(textToHtml(d.text)); html.current = editor.current?.getHtml() ?? ''; } } });
       if (!subject.trim()) {
         let s = '';
-        await apiStream('/api/ai/draft', { mode: 'subject', draft: out }, { onEvent: (ev, d) => { if (ev === 'done') s = d.text; } });
+        await apiStream('/api/ai/draft', { mode: 'subject', draft: out }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'done') s = d.text; } });
         if (s) setSubject(s);
       }
     } catch (e) { toast.error(e); } finally { setGen(false); }
@@ -203,6 +205,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
           </div>
           <Field label="AI brief" hint="Optional. 'Generate' writes a draft from it, and sequences with 'AI personalise' use it as the message to deliver for each contact." className="mt-16">
             <div className="row" style={{ alignItems: 'flex-start' }}><Textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Introduce our bookkeeping service to small e-commerce shops; ask if they'd like a 15 minute call; mention we work with Shopify stores." style={{ minHeight: 60 }} /><Button variant="ai" icon={<Sparkles size={14} />} loading={gen} onClick={generate}>Generate</Button></div>
+            <AiThinking trace={thinking} busy={gen} className="mt-8" />
           </Field>
         </div>
         <aside className="col gap-12" style={{ fontSize: 12.5 }}>

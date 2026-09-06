@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Loader2, Check, RotateCcw, Brain, ChevronRight } from 'lucide-react';
+import { Sparkles, X, Loader2, Check, RotateCcw } from 'lucide-react';
 import { apiStream } from '../api';
 import { Button, IconButton } from './ui';
 import { useAiStatus } from '../lib/queries';
+import { AiThinking, useAiThinking } from './AiThinking';
 import { textToHtml } from '../lib/format';
 
 export type AiMode = 'compose' | 'reply' | 'rewrite' | 'polish' | 'shorten' | 'expand' | 'subject' | 'summarize';
@@ -23,12 +24,7 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
   const [length, setLength] = useState<'short' | 'medium' | 'long'>('medium');
   const [out, setOut] = useState('');
   const [final, setFinal] = useState<string | null>(null);
-  // A reasoning model's working-out, streamed as it happens. It is never
-  // inserted into the editor; it is here so a slow generation shows its
-  // work instead of an unmoving spinner.
-  const [thinking, setThinking] = useState('');
-  const [showThinking, setShowThinking] = useState(true);
-  const thinkingRef = useRef<HTMLDivElement | null>(null);
+  const thinking = useAiThinking();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const abort = useRef<AbortController | null>(null);
@@ -37,20 +33,16 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
   const ranOnce = useRef(false);
   useEffect(() => { if (autoRun && ai && !unavailable && !ranOnce.current) { ranOnce.current = true; void run(); } /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [autoRun, ai]);
 
-  // Follow the reasoning as it is written, the way a log tails.
-  useEffect(() => { const el = thinkingRef.current; if (el && showThinking) el.scrollTop = el.scrollHeight; }, [thinking, showThinking]);
-
   async function run() {
-    setBusy(true); setOut(''); setFinal(null); setError(''); setThinking(''); setShowThinking(true);
+    setBusy(true); setOut(''); setFinal(null); setError(''); thinking.reset();
     abort.current?.abort();
     abort.current = new AbortController();
     try {
       await apiStream('/api/ai/draft', { mode, instruction: instruction || undefined, tone, length, accountId: context.accountId ?? null, contactId: context.contactId ?? null, threadKey: context.threadKey ?? null, draft: getDraft() || undefined, subject: context.subject, recipientEmail: context.recipientEmail, recipientName: context.recipientName }, {
         signal: abort.current.signal,
         onEvent: (ev, data) => {
-          if (ev === 'thinking') setThinking((t) => t + data.t);
-          // The draft has started: the working-out folds away on its own.
-          else if (ev === 'token') { setOut((o) => o + data.t); setShowThinking(false); }
+          if (thinking.onEvent(ev, data)) return;
+          if (ev === 'token') setOut((o) => o + data.t);
           else if (ev === 'done') setFinal(data.text);
           else if (ev === 'error') setError(data.error);
         },
@@ -81,22 +73,12 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
               <select className="select input-sm" style={{ width: 100 }} value={length} onChange={(e) => setLength(e.target.value as any)}><option value="short">short</option><option value="medium">medium</option><option value="long">long</option></select>
             </div>
           )}
-          {thinking && (
-            <div className="ai-thinking">
-              <button type="button" className="ai-thinking-head" onClick={() => setShowThinking((v) => !v)} aria-expanded={showThinking}>
-                <ChevronRight size={13} className={showThinking ? 'rot90' : ''} />
-                <Brain size={13} />
-                <span>{busy && !out ? 'Working it out' : 'Reasoning'}</span>
-                <span className="faint">· not part of the draft</span>
-              </button>
-              {showThinking && <div className="ai-thinking-body" ref={thinkingRef}>{thinking}</div>}
-            </div>
-          )}
-          {(out || busy || error) && <div className="ai-preview">{error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : (final ?? out) || <span className="faint">{thinking ? 'Writing the draft…' : 'Thinking…'}</span>}</div>}
+          <AiThinking trace={thinking} busy={busy && !out} />
+          {(out || busy || error) && <div className="ai-preview">{error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : (final ?? out) || <span className="faint">{thinking.text ? 'Writing the draft…' : 'Thinking…'}</span>}</div>}
           <div className="row">
             <Button size="sm" variant="ai" icon={busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} onClick={run} disabled={busy}>{out ? 'Regenerate' : 'Generate'}</Button>
             {busy && <Button size="sm" variant="ghost" onClick={() => abort.current?.abort()}>Stop</Button>}
-            {!busy && (final ?? out) && <><Button size="sm" variant="primary" icon={<Check size={14} />} onClick={accept}>{mode === 'subject' ? 'Use subject' : mode === 'compose' || mode === 'reply' ? 'Insert' : 'Replace draft'}</Button><Button size="sm" variant="ghost" icon={<RotateCcw size={14} />} onClick={() => { setOut(''); setFinal(null); setThinking(''); }}>Clear</Button></>}
+            {!busy && (final ?? out) && <><Button size="sm" variant="primary" icon={<Check size={14} />} onClick={accept}>{mode === 'subject' ? 'Use subject' : mode === 'compose' || mode === 'reply' ? 'Insert' : 'Replace draft'}</Button><Button size="sm" variant="ghost" icon={<RotateCcw size={14} />} onClick={() => { setOut(''); setFinal(null); thinking.reset(); }}>Clear</Button></>}
             <span className="small faint ml-auto">Nothing leaves this server.</span>
           </div>
         </>

@@ -400,6 +400,17 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .compose-head .btn-icon { color: color-mix(in srgb, var(--on-accent) 75%, transparent); width: 28px; height: 28px; }
 .compose-head .btn-icon:hover { background: color-mix(in srgb, var(--on-accent) 14%, transparent); color: var(--on-accent); }
 .compose-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* A docked compose window is a fixed 560px tall, and its contents are not:
+   Cc, Bcc, an attachment row, the encryption bar and the assistant panel all
+   add up, and past a point the editor cannot shrink any further and Send is
+   pushed out of the bottom of the window. So the window's contents scroll,
+   and the row with Send in it stays put at the foot of the visible area. */
+.composer-window .composer-body { overflow-y: auto; overscroll-behavior: contain; }
+/* Without a floor the editor is squashed to a sliver — below its own
+   min-height, so its toolbar is clipped rather than the window scrolling.
+   With one, the window overflows honestly and scrolls instead. */
+.composer-window .editor-wrap { min-height: min-content; }
+.composer-window .compose-foot { position: sticky; bottom: 0; z-index: 3; background: linear-gradient(rgba(var(--accent-rgb), .04), rgba(var(--accent-rgb), .04)), var(--bg-elev); }
 .addr-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--border); min-height: 40px; }
 .addr-row > label { width: 44px; flex: none; color: var(--text-3); font-size: 13px; padding-top: 5px; }
 .addr-field { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 28px; position: relative; }
@@ -433,14 +444,13 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .ai-preview { background: var(--bg-elev); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; white-space: pre-wrap; max-height: 200px; overflow: auto; border: 1px solid var(--border); }
 /* A reasoning model's working-out, streamed while it happens. Deliberately
    quieter than the draft itself: it is progress, not content. */
-.ai-thinking { border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-elev); overflow: hidden; }
+.ai-thinking { border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-elev); overflow: hidden; width: 100%; }
 .ai-thinking-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; background: none; border: 0; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }
 .ai-thinking-head:hover { color: var(--text); }
 .ai-thinking-head .rot90 { transform: rotate(90deg); }
 .ai-thinking-head svg { transition: transform .15s ease; flex: none; }
 .ai-thinking-body { padding: 0 10px 10px 29px; max-height: 150px; overflow: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); font-family: var(--mono); }
 @media (prefers-reduced-motion: reduce) { .ai-thinking-head svg { transition: none; } }
-.ai-thinking-inline { display: block; max-height: 140px; overflow: auto; color: var(--text-dim); font-family: var(--mono); font-size: 12px; line-height: 1.5; }
 .ai-btn { background: linear-gradient(135deg, var(--g2), var(--accent), var(--g4)); background-size: 200% 200%; color: #fff; border: 0; animation: shimmer-bg 6s ease infinite; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .3); }
 .ai-btn:hover { filter: brightness(1.08); }
 @keyframes shimmer-bg { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }

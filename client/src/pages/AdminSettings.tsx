@@ -205,7 +205,7 @@ function AuditSettings() {
 
 // This button sits in the Tuning card, so it resets tuning: the provider,
 // model and base URL above it are left alone.
-const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'repeatPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
+const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
 const pick = (o: any, keys: readonly string[]) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
 
 function AiAdminSettings() {
@@ -260,6 +260,7 @@ function AiAdminSettings() {
           <Field label={`Temperature: ${f.temperature}`} hint="Creativity. 0.3 literal, 0.7 natural, 1.0+ loose."><input className="range" type="range" min={0} max={1.5} step={0.05} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label={`Top-p: ${f.topP}`} hint="Nucleus sampling. Lower is safer."><input className="range" type="range" min={0.1} max={1} step={0.05} value={f.topP} onChange={(e) => setF({ ...f, topP: Number(e.target.value) })} /></Field>
           <Field label={`Top-k: ${f.topK}`} hint="Candidates per token."><input className="range" type="range" min={1} max={100} step={1} value={f.topK} onChange={(e) => setF({ ...f, topK: Number(e.target.value) })} /></Field>
+          <Field label={`Min-p: ${f.minP ?? 0}`} hint="Drops tokens far less likely than the best one. 0 is off; 0.05 is a good starting point, and pairs better with a higher temperature than top-p does."><input className="range" type="range" min={0} max={0.5} step={0.01} value={f.minP ?? 0} onChange={(e) => setF({ ...f, minP: Number(e.target.value) })} /></Field>
           <Field label={`Repeat penalty: ${f.repeatPenalty}`} hint="Above 1 discourages repetition."><input className="range" type="range" min={0.8} max={1.6} step={0.05} value={f.repeatPenalty} onChange={(e) => setF({ ...f, repeatPenalty: Number(e.target.value) })} /></Field>
           <Field label="Max tokens per reply" hint="Caps the length of a generation."><Input type="number" min={64} max={4096} value={f.maxTokens} onChange={(e) => setF({ ...f, maxTokens: Number(e.target.value) })} /></Field>
           <Field label="Keep model loaded" hint="A duration with a unit (30s, 10m, 1h), or seconds as a number: -1 never unloads, 0 unloads at once."><Input value={f.keepAlive} onChange={(e) => setF({ ...f, keepAlive: e.target.value })} /></Field>
@@ -277,7 +278,7 @@ function AiAdminSettings() {
             <Field label="Thinking budget (tokens)" hint="Room for the working-out, on top of the reply length. If the model spends it all and writes nothing, Tern asks again with thinking off rather than showing an error, and the log says how much reasoning it wanted."><Input type="number" min={0} max={8192} value={f.thinkingBudget ?? 1500} onChange={(e) => setF({ ...f, thinkingBudget: Number(e.target.value) })} /></Field>
           </div>
         )}
-        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
+        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">
