@@ -45,6 +45,8 @@ live verification is in the app under Settings → Mail server, and
 
 Run `sudo ./install.sh` again to change anything. It re-reads `.env`, offers each previous answer as the default, and only restarts what changed.
 
+Before starting anything the installer checks that the ports it needs are free (80 and 443, plus 25, 465, 587, 993 and 4190 with the mail server). A leftover Postfix or Exim on port 25 is the usual conflict; the installer names the service and offers to stop and disable it.
+
 Non-interactive installs: `sudo ./install.sh --yes` takes values from `.env` or `TERN_*` environment variables (`TERN_APP_URL`, `TERN_ADMIN_USER`, `TERN_ADMIN_PASSWORD`, `TERN_AI_MODEL`, `TERN_STALWART_ENABLED`, ...).
 
 ## 3. Sign in and connect a mailbox

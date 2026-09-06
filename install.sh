@@ -295,27 +295,72 @@ fi
 step "7/8 Building and starting containers"
 export COMPOSE_FILE
 compose() { podman-compose --env-file "$ENV_FILE" "$@"; }
+
+# Ports the stack binds on this host. A leftover mail server (Postfix, Exim)
+# on 25 is the usual conflict; without this check the container fails with a
+# "cannot listen on the TCP port" error buried in the podman-compose output.
+foreign_listeners() { # port -> "pid comm" lines for listeners that are not our own containers
+  have ss || return 0
+  ss -Hltnp "sport = :$1" 2>/dev/null | grep -o 'users:(([^)]*)' \
+    | sed 's/users:(("\([^"]*\)",pid=\([0-9]*\).*/\2 \1/' \
+    | grep -Ev ' (podman|conmon|rootlessport|pasta[^ ]*|slirp4netns|netavark|aardvark-dns)$' | sort -u || true
+}
+check_ports() {
+  local ports="$HTTP_PORT $HTTPS_PORT" p who pid comm unit base busy=0
+  [ "$STALWART_ENABLED" = 1 ] && ports="$ports 25 465 587 993 4190 $STALWART_HTTP_PORT"
+  for p in $ports; do
+    who="$(foreign_listeners "$p" | head -1)"; [ -n "$who" ] || continue
+    pid="${who%% *}"; comm="${who#* }"
+    unit="$(ps -o unit= -p "$pid" 2>/dev/null | tr -d ' ')"
+    warn "port $p is already in use by $comm (pid $pid${unit:+, $unit})"
+    case "$unit" in
+      user@*.service|*.scope|'') note "To free it: stop $comm, or pick another port." ;;
+      *.service)
+        STOP_UNIT=""
+        ask_yn STOP_UNIT "Stop and disable $unit so Tern can use port $p?" n
+        if [ "$STOP_UNIT" = 1 ]; then
+          base="${unit%%@*}"
+          systemctl disable --now "$unit" >/dev/null 2>&1 || true
+          [ "$base" != "$unit" ] && systemctl disable --now "$base.service" >/dev/null 2>&1 || true
+          sleep 1
+          if [ -z "$(foreign_listeners "$p")" ]; then ok "port $p is free"; continue; fi
+          warn "port $p is still in use"
+        else
+          note "To free it yourself: systemctl disable --now $unit"
+        fi ;;
+    esac
+    busy=1
+  done
+  [ "$busy" = 0 ] || die "Ports in use. Stop the programs above (or pick other ports) and re-run ./install.sh."
+}
+check_ports
 if [ "$SKIP_BUILD" = 0 ]; then
   say "  Building the app image (a few minutes the first time)…"
   compose build app 2>&1 | grep -Ev '^(STEP|--> )' | tail -3 || true
   ok "image built"
 fi
-say "  Starting database…"
-compose up -d db >/dev/null
+say "  Starting containers…"
+# podman-compose 1.0.x tries to create every container even when it already
+# exists, prints "name ... is already in use" and then simply starts it. Hide
+# that one line so real errors stand out; the checks below catch anything
+# that did not come up (older podman-compose does not fail on its own).
+compose up -d --remove-orphans 2>&1 >/dev/null | grep -v 'container name .* is already in use' || true
 for i in $(seq 1 30); do
   if compose exec -T db pg_isready -U tern -d tern >/dev/null 2>&1; then break; fi
   sleep 2
   [ "$i" = 30 ] && die "Postgres did not become ready. See: ./bin/tern logs db"
 done
 ok "database ready"
-say "  Starting the rest…"
-compose up -d --remove-orphans >/dev/null
 for i in $(seq 1 60); do
   if compose exec -T app wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1; then break; fi
   sleep 2
   [ "$i" = 60 ] && die "The app did not come up. See: ./bin/tern logs app"
 done
 ok "app is healthy"
+for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
+  compose exec -T "$svc" true >/dev/null 2>&1 || die "The $svc container is not running. See: ./bin/tern logs $svc"
+done
+ok "all containers running"
 
 compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin >/dev/null
 ok "admin user ensured"
