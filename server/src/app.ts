@@ -63,17 +63,6 @@ export function createApp(): express.Express {
   app.use('/manifest.webmanifest', manifestRouter);
   app.use('/icons', iconsRouter);
   app.get('/healthz', (_req, res) => { res.json({ ok: true, version: config.version }); });
-  // Caddy asks here before issuing an on-demand certificate, so only names
-  // that belong to this install get certificates.
-  app.get('/api/caddy/ask', (req, res) => {
-    const d = String(req.query.domain ?? '').toLowerCase();
-    const allowed = new Set<string>();
-    if (config.webHost) allowed.add(config.webHost.toLowerCase());
-    if (config.stalwartHost) allowed.add(config.stalwartHost.toLowerCase());
-    if (config.stalwartDomain) for (const p of ['mta-sts', 'autoconfig', 'autodiscover', 'ua-auto-config']) allowed.add(`${p}.${config.stalwartDomain.toLowerCase()}`);
-    res.status(allowed.has(d) ? 200 : 404).end();
-  });
-
   app.use('/api', express.json({ limit: '40mb' }), attachUser, csrfGuard);
   app.use('/api/setup', setupRouter);
   app.use('/api/auth', authRouter);

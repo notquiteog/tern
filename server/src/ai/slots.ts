@@ -147,17 +147,31 @@ export function resetSlots(): void {
 // users and leaves memory out of it rather than inventing a figure.
 export function kvBytesPerToken(info: Record<string, unknown> | undefined, cacheType: string): number | null {
   if (!info) return null;
+  const arch = typeof info['general.architecture'] === 'string' ? info['general.architecture'] : '';
   const num = (suffix: string): number | null => {
+    let loose: number | null = null;
     for (const [k, v] of Object.entries(info)) {
       if (!k.endsWith(suffix)) continue;
+      // A multimodal model describes its vision or audio tower in the same
+      // map, with the same key endings. Those towers do not hold a KV cache
+      // per slot, and reading one instead of the language model's own
+      // numbers is how an estimate goes quietly wrong.
+      if (/\.(vision|mm|audio|projector)\./.test(k)) continue;
       // Some architectures report one value per block; they are equal in
       // every model Ollama ships, and the largest is the safe read anyway.
       const n = Array.isArray(v) ? Math.max(...v.map(Number)) : Number(v);
-      if (Number.isFinite(n) && n > 0) return n;
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (arch && k.startsWith(`${arch}.`)) return n;
+      loose ??= n;
     }
-    return null;
+    return loose;
   };
   const blocks = num('.block_count');
+  // Not filled in with the head count when it is missing. Every recent model
+  // shares its keys and values between several heads, so assuming otherwise
+  // would price a slot at eight times what it costs; a model that does not
+  // say gets no estimate at all, and Admin → AI model then talks about
+  // people and slots without pretending to know the memory.
   const kvHeads = num('.attention.head_count_kv');
   if (!blocks || !kvHeads) return null;
   let keyLen = num('.attention.key_length');

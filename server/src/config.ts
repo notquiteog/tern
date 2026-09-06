@@ -3,9 +3,22 @@
 // and install.sh only has to write the values that differ per deployment.
 import os from 'node:os';
 
-function env(name: string, fallback?: string): string {
+// What the environment actually says, or undefined. A value still wearing its
+// compose placeholder — `${OLLAMA_NUM_PARALLEL:-2}`, which podman-compose
+// leaves alone when the variable is not in .env — is not a value: it is a
+// variable that was never set, and treating it as one crashed the container
+// on boot rather than falling back to the default beside it.
+function raw(name: string): string | undefined {
   const v = process.env[name];
-  if (v === undefined || v === '') {
+  if (v === undefined) return undefined;
+  const t = v.trim();
+  if (t === '' || /^\$[{(]/.test(t)) return undefined;
+  return t;
+}
+
+function env(name: string, fallback?: string): string {
+  const v = raw(name);
+  if (v === undefined) {
     if (fallback === undefined) throw new Error(`Missing required environment variable ${name}`);
     return fallback;
   }
@@ -13,7 +26,7 @@ function env(name: string, fallback?: string): string {
 }
 
 function int(name: string, fallback: number): number {
-  const v = process.env[name];
+  const v = raw(name);
   if (!v) return fallback;
   const n = Number.parseInt(v, 10);
   if (!Number.isFinite(n)) throw new Error(`${name} must be an integer, got "${v}"`);
@@ -21,14 +34,14 @@ function int(name: string, fallback: number): number {
 }
 
 function bool(name: string, fallback: boolean): boolean {
-  const v = process.env[name];
-  if (v === undefined || v === '') return fallback;
+  const v = raw(name);
+  if (v === undefined) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
 }
 
 // A memory limit as compose spells it: "2560m", "4g", "1024k", or plain bytes.
 function bytes(name: string, fallback: number): number {
-  const v = (process.env[name] ?? '').trim().toLowerCase();
+  const v = (raw(name) ?? '').toLowerCase();
   if (!v) return fallback;
   const m = /^(\d+(?:\.\d+)?)\s*(b|k|kb|ki|kib|m|mb|mi|mib|g|gb|gi|gib)?$/.exec(v);
   if (!m) return fallback;

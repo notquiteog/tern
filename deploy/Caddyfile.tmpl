@@ -7,13 +7,14 @@
 	grace_period 5s
 	${CADDY_GLOBAL}
 }
-
+${ASK_SITE}
 ${SITE_ADDRESS} {
 	encode zstd gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
+	${WEB_DISCOVERY}
 	reverse_proxy app:3080 {
 		flush_interval -1
 	}

@@ -38,6 +38,16 @@ replace_stale_containers() { # app-image
   done
 }
 
+# Add KEY=VALUE to .env when the key is not there yet; leave any existing
+# value alone. Used by update.sh for settings added after an install was made:
+# podman-compose leaves `${KEY:-default}` untouched when KEY is absent from
+# .env, and both Ollama and the app then read the placeholder as a value.
+ensure_env() { # KEY VALUE
+  grep -q "^$1=" .env 2>/dev/null && return 0
+  printf '%s=%s\n' "$1" "$2" >> .env
+  echo "    added $1=$2 to .env"
+}
+
 # CIDRs of the compose networks the stack's containers sit on, one per line.
 # Used to tell Stalwart which addresses are our own proxies. Empty when the
 # stack is not running or podman cannot describe the network.
@@ -56,21 +66,52 @@ stack_subnets() {
 render_template() {
   local content; content="$(cat "$1")"
   local v
-  for v in ACME_EMAIL SITE_ADDRESS CADDY_GLOBAL STALWART_SITE STALWART_HOST STALWART_DOMAIN INSTALL_DIR; do
+  for v in ACME_EMAIL SITE_ADDRESS CADDY_GLOBAL ASK_SITE WEB_DISCOVERY STALWART_SITE STALWART_HOST STALWART_DOMAIN INSTALL_DIR; do
     content="${content//\$\{$v\}/${!v:-}}"
   done
   printf '%s\n' "$content"
 }
 # Writes deploy/generated/Caddyfile. Returns 0 when the file changed, 1 when it is the same as before.
 write_caddyfile() {
-  local dir="${INSTALL_DIR:-$ROOT}" out
-  CADDY_GLOBAL=""
+  local dir="${INSTALL_DIR:-$ROOT}" out n
+  CADDY_GLOBAL=""; ASK_SITE=""; WEB_DISCOVERY=""
   [ -z "${WEB_HOST:-}" ] && CADDY_GLOBAL="auto_https off"
   # Extra names for the mail domain (MTA-STS policy, client autoconfig) get
-  # certificates on demand, after the app confirms the name belongs here.
-  if [ "${STALWART_ENABLED:-0}" = 1 ]; then CADDY_GLOBAL="on_demand_tls {
-		ask http://app:3080/api/caddy/ask
-	}"; fi
+  # certificates on demand, and Caddy asks before issuing one so that a name
+  # pointed here by someone else cannot mint certificates on this install.
+  # The list of names is fixed at install time, so Caddy answers the question
+  # itself on a container-local port: asking the app instead would take
+  # MTA-STS and mail-app autoconfig down with it every time the app restarts.
+  if [ "${STALWART_ENABLED:-0}" = 1 ]; then
+    CADDY_GLOBAL="on_demand_tls {
+		ask http://127.0.0.1:9099
+	}"
+    local names=""
+    for n in "${WEB_HOST:-}" "${STALWART_HOST:-}"; do [ -n "$n" ] && names="$names domain=$n"; done
+    for n in mta-sts autoconfig autodiscover ua-auto-config; do [ -n "${STALWART_DOMAIN:-}" ] && names="$names domain=$n.$STALWART_DOMAIN"; done
+    ASK_SITE="
+# Caddy's own answer to \"may this name have a certificate?\", bound to the
+# loopback inside the container and reachable by nothing else.
+http://127.0.0.1:9099 {
+	@known query${names}
+	handle @known {
+		respond 200
+	}
+	handle {
+		respond 404
+	}
+}
+"
+    # A mail app pointed at the web address rather than the mail host still
+    # finds the server: the JMAP session, Thunderbird autoconfig and Outlook
+    # autodiscover paths are redirected there instead of being answered with
+    # the web app's HTML, which no mail client can parse.
+    if [ -n "${STALWART_HOST:-}" ]; then WEB_DISCOVERY="@maildiscovery path /.well-known/jmap /jmap /jmap/* /.well-known/autoconfig/* /mail/config-v1.1.xml
+	redir @maildiscovery https://$STALWART_HOST{uri} 308
+	@autodiscover path_regexp (?i)^/autodiscover/
+	redir @autodiscover https://$STALWART_HOST{uri} 308
+"; fi
+  fi
   STALWART_SITE=""
   if [ "${STALWART_ENABLED:-0}" = 1 ]; then STALWART_SITE="$(INSTALL_DIR="$dir" render_template "$dir/deploy/stalwart-site.tmpl")"; fi
   mkdir -p "$dir/deploy/generated"

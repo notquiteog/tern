@@ -25,6 +25,17 @@ fi
 NEWV="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' package.json | head -1)"
 sed -i "s|^TERN_VERSION=.*|TERN_VERSION=$NEWV|" .env
 
+# Settings added after this install was made. They have defaults in
+# compose.yml, but podman-compose only substitutes `${KEY:-default}` when KEY
+# exists, so an older .env leaves the placeholder itself in the environment.
+echo "==> Checking .env for newer settings"
+TOTAL_GIB_U="$(awk '/MemTotal/ { printf "%.1f", $2/1048576 }' /proc/meminfo 2>/dev/null || echo 4)"
+if awk -v g="$TOTAL_GIB_U" 'BEGIN { exit !(g < 5) }'; then NP=2; elif awk -v g="$TOTAL_GIB_U" 'BEGIN { exit !(g < 9) }'; then NP=4; else NP=8; fi
+ensure_env OLLAMA_NUM_PARALLEL "$NP"
+ensure_env OLLAMA_KV_CACHE_TYPE q8_0
+ensure_env OLLAMA_MAX_QUEUE 32
+set -a; . ./.env; set +a
+
 echo "==> Pulling base images"
 compose pull --ignore-pull-failures 2>/dev/null || true
 echo "==> Rebuilding the app image"

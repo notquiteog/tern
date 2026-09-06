@@ -206,7 +206,85 @@ function AuditSettings() {
 // This button sits in the Tuning card, so it resets tuning: the provider,
 // model and base URL above it are left alone.
 const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'repeatLastN', 'presencePenalty', 'frequencyPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
+// What a preset carries: how the model writes, and nothing about the machine.
+// The context window and the keep-alive are deliberately not in here — they
+// are memory decisions, and a preset that resized the context would resize
+// every parallel slot with it. Kept in step with PRESET_FIELDS on the server.
+const PRESET_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'repeatLastN', 'presencePenalty', 'frequencyPenalty', 'maxTokens', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
 const pick = (o: any, keys: readonly string[]) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
+
+// Tuning under a name. A reasoning model wants different sampling with
+// thinking on than the same model wants with it off, and remembering which
+// numbers went together is not a thing to ask of anybody: the shipped presets
+// carry Qwen3.5's own published recommendations for both, and an install can
+// save its own beside them.
+function AiPresets({ data, f, setF, save, onChanged }: { data: any; f: any; setF: (v: any) => void; save: (patch: any) => Promise<void> | void; onChanged: () => void }) {
+  const toast = useToast();
+  const [id, setId] = useState('');
+  const [editing, setEditing] = useState<{ id?: string; name: string; note: string; forModel: string } | null>(null);
+  const [confirmDel, setConfirmDel] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const presets: any[] = data.presets ?? [];
+  const chosen = presets.find((p) => p.id === id);
+  const current = () => Object.fromEntries(PRESET_FIELDS.filter((k) => f[k] !== undefined).map((k) => [k, f[k]]));
+
+  async function apply() {
+    if (!chosen) return;
+    setF({ ...f, ...chosen.values });
+    await save(chosen.values);
+    toast.success(`Applied "${chosen.name}"`);
+  }
+  async function submit() {
+    if (!editing?.name.trim()) return;
+    setBusy(true);
+    try {
+      const body = { name: editing.name.trim(), note: editing.note, forModel: editing.forModel, values: current() };
+      const r = editing.id ? await api.put<any>(`/api/ai/presets/${encodeURIComponent(editing.id)}`, body) : await api.post<any>('/api/ai/presets', body);
+      const made = r.presets[r.presets.length - 1];
+      setId(editing.id ?? made.id);
+      setEditing(null);
+      onChanged();
+      toast.success(editing.id ? 'Preset updated' : 'Preset saved');
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function remove(p: any) {
+    setBusy(true);
+    try { await api.del(`/api/ai/presets/${encodeURIComponent(p.id)}`); if (id === p.id) setId(''); setConfirmDel(null); onChanged(); toast.success(`Deleted "${p.name}"`); }
+    catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  return (
+    <>
+      <div className="row wrap gap-8 mb-8">
+        <Select className="input-sm" value={id} onChange={(e) => setId(e.target.value)} style={{ maxWidth: 280 }}>
+          <option value="">Presets…</option>
+          {presets.map((p) => <option key={p.id} value={p.id}>{p.name}{p.builtIn ? '' : ' (yours)'}</option>)}
+        </Select>
+        <Button size="sm" disabled={!chosen} onClick={apply}>Apply</Button>
+        <Button size="sm" variant="ghost" onClick={() => setEditing({ name: '', note: '', forModel: f.model ?? '' })}>Save current as…</Button>
+        {chosen && !chosen.builtIn && <>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing({ id: chosen.id, name: chosen.name, note: chosen.note ?? '', forModel: chosen.forModel ?? '' })}>Update from current</Button>
+          <IconButton label="Delete preset" className="btn-sm" disabled={busy} onClick={() => setConfirmDel(chosen)}><Trash2 size={14} /></IconButton>
+        </>}
+      </div>
+      {chosen && (
+        <div className="help-text mb-8">
+          {chosen.note}
+          {chosen.forModel && <> {chosen.forModel === f.model ? <Badge kind="success">written for {chosen.forModel}</Badge> : <Badge kind="warning">written for {chosen.forModel}, you are running {f.model}</Badge>}</>}
+          {chosen.values?.allowThinking !== undefined && <> Applying it turns reasoning {chosen.values.allowThinking ? 'on' : 'off'}.</>}
+        </div>
+      )}
+      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing?.id ? 'Update preset' : 'Save this tuning as a preset'}
+        footer={<><Button onClick={() => setEditing(null)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!editing?.name.trim()} onClick={submit}>{editing?.id ? 'Update' : 'Save preset'}</Button></>}>
+        <p className="small muted">The sliders as they stand now — sampling, reply length and the thinking settings. The context window, keep-alive and provider are not part of a preset: those are decisions about the machine, not about how the assistant writes.</p>
+        <Field label="Name"><Input value={editing?.name ?? ''} onChange={(e) => setEditing({ ...editing!, name: e.target.value })} placeholder="Long replies, thinking on" /></Field>
+        <Field label="What it is for" hint="Shown under the picker when it is chosen."><Textarea value={editing?.note ?? ''} onChange={(e) => setEditing({ ...editing!, note: e.target.value })} style={{ minHeight: 60 }} /></Field>
+        <Field label="Model it was written for" hint="A label and a badge only; applying a preset never changes which model is in use."><Input value={editing?.forModel ?? ''} onChange={(e) => setEditing({ ...editing!, forModel: e.target.value })} placeholder={f.model} /></Field>
+      </Modal>
+      <Confirm open={Boolean(confirmDel)} onClose={() => setConfirmDel(null)} danger title={`Delete "${confirmDel?.name}"?`} confirmLabel="Delete preset"
+        message="The tuning in use now is not changed; only the saved preset goes." onConfirm={() => remove(confirmDel)} />
+    </>
+  );
+}
 
 // One bar. `right` carries the numbers, because a bar on its own answers
 // "how full" and never "how much".
@@ -271,26 +349,28 @@ function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch:
   if (!c) return null;
   return (
     <div className="card mb-16">
-      <div className="card-title"><h2>Memory and concurrency</h2><span className="small muted">{c.users} user{c.users === 1 ? '' : 's'} · {c.configured} slot{c.configured === 1 ? '' : 's'}</span></div>
+      <div className="card-title"><h2>Memory and concurrency</h2><span className="small muted">{c.users} user{c.users === 1 ? '' : 's'} · {f.concurrency ? `${c.configured} slot${c.configured === 1 ? '' : 's'}` : `1 of ${c.configured} slots in use`}</span></div>
       <div className="row mb-8">
         <Toggle checked={Boolean(f.concurrency)} onChange={(v) => save({ concurrency: v })} />
         <div>
           <div className="strong small">Answer several people at once</div>
           <div className="help-text">
-            On, the assistant runs up to {c.plan.slots} generation{c.plan.slots === 1 ? '' : 's'} at a time — one slot is always kept for somebody waiting at a composer, so inbox summaries and sequence mail cannot take them all, and nobody can hold more than one at once. Off, every generation on this install waits for the one before it, which is the safer setting on a box with little memory to spare: each slot holds its own context window.
+            On, the assistant runs up to {c.configured} generation{c.configured === 1 ? '' : 's'} at a time — as many as Ollama was started with. One slot is always kept for somebody waiting at a composer, so inbox summaries and sequence mail cannot take them all, and nobody can hold more than one at once. Off, every generation on this install waits for the one before it, which is the safer setting on a box with little memory to spare: each slot holds its own context window.
           </div>
         </div>
       </div>
       {f.provider === 'ollama' && (
-        c.enough
-          ? <Callout kind="success">Everyone who can sign in has a slot of their own: {c.configured} for {c.users} user{c.users === 1 ? '' : 's'}.</Callout>
-          : <Callout kind="warning">
-              {c.users} people can sign in and Ollama serves {c.configured} at a time, so the rest queue.
-              {c.memoryBound
-                ? <> Its memory limit pays for about {c.affordable} slot{c.affordable === 1 ? '' : 's'} beside this model{c.perSlotBytes ? ` (${fmtBytes(c.perSlotBytes)} each at ${f.numCtx} tokens)` : ''}, so raise <code>OLLAMA_MEM_LIMIT</code>, lower the context window, or run a smaller model.</>
-                : <> Raise it to {c.recommended}{c.perSlotBytes ? `; each slot costs about ${fmtBytes(c.perSlotBytes)}` : ''}.</>}
-              <br />Ollama reads its slot count when it starts, so this is set on the server, not here: <code>./bin/tern ai-slots</code> works out the number, writes it to <code>.env</code> and restarts.
-            </Callout>
+        !f.concurrency
+          ? <Callout>One generation at a time. Ollama's other {c.configured - 1} slot{c.configured - 1 === 1 ? ' sits' : 's sit'} idle, and everyone — {c.users} people can sign in — waits their turn.</Callout>
+          : c.enough
+            ? <Callout kind="success">Everyone who can sign in has a slot of their own: {c.configured} for {c.users} user{c.users === 1 ? '' : 's'}.</Callout>
+            : <Callout kind="warning">
+                {c.users} people can sign in and Ollama serves {c.configured} at a time, so the rest queue.
+                {c.memoryBound
+                  ? <> Its memory limit pays for about {c.affordable} slot{c.affordable === 1 ? '' : 's'} beside this model{c.perSlotBytes ? ` (${fmtBytes(c.perSlotBytes)} each at ${f.numCtx} tokens)` : ''}, so raise <code>OLLAMA_MEM_LIMIT</code>, lower the context window, or run a smaller model.</>
+                  : <> Raise it to {c.recommended}{c.perSlotBytes ? `; each slot costs about ${fmtBytes(c.perSlotBytes)}` : ''}.</>}
+                <br />Ollama reads its slot count when it starts, so this is set on the server, not here: <code>./bin/tern ai-slots</code> works out the number, writes it to <code>.env</code> and restarts.
+              </Callout>
       )}
       <div className="mt-16"><AiMemoryMeter provider={f.provider} /></div>
     </div>
@@ -371,6 +451,7 @@ function AiAdminSettings() {
       </div>
       <div className="card mb-16">
         <div className="card-title"><h2>Tuning</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, ...pick(data.defaults, TUNING_FIELDS) })}>Defaults</Button></div>
+        <AiPresets data={data} f={f} setF={setF} save={save} onChanged={() => qc.invalidateQueries({ queryKey: ['ai-status'] })} />
         <div className="form-grid-3">
           <Field label={`Temperature: ${f.temperature}`} hint="Creativity. 0.3 literal, 0.7 natural, 1.0+ loose."><input className="range" type="range" min={0} max={1.5} step={0.05} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label={`Top-p: ${f.topP}`} hint="Nucleus sampling. Lower is safer."><input className="range" type="range" min={0.1} max={1} step={0.05} value={f.topP} onChange={(e) => setF({ ...f, topP: Number(e.target.value) })} /></Field>

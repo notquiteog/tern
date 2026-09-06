@@ -100,6 +100,20 @@ test('a slot is priced from the model’s own attention numbers', () => {
   assert.equal(kvBytesPerToken(info, 'q4_0'), 8064);
 });
 
+test('a multimodal model is priced from its language model, not its vision tower', () => {
+  // Both towers use the same key endings. qwen3.5:4b reports its vision
+  // block count beside the real one, and its KV head count as null — which
+  // is a model that cannot be priced, not one to guess at.
+  const info = {
+    'general.architecture': 'qwen35',
+    'qwen35.block_count': 32, 'qwen35.attention.head_count': 16, 'qwen35.attention.head_count_kv': 8,
+    'qwen35.attention.key_length': 256, 'qwen35.attention.value_length': 256,
+    'qwen35.vision.block_count': 24, 'qwen35.vision.attention.head_count': 16, 'qwen35.vision.embedding_length': 1024,
+  };
+  assert.equal(kvBytesPerToken(info, 'f16'), 32 * 8 * (256 + 256) * 2);
+  assert.equal(kvBytesPerToken({ ...info, 'qwen35.attention.head_count_kv': null }, 'f16'), null);
+});
+
 test('a model that does not describe its attention is priced at nothing rather than wrongly', () => {
   assert.equal(kvBytesPerToken(undefined, 'f16'), null);
   assert.equal(kvBytesPerToken({ 'general.architecture': 'llama' }, 'f16'), null);

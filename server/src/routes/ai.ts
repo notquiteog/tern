@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../errors.js';
 import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { hostMemory } from '../ai/memory.js';
+import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
@@ -55,6 +56,7 @@ aiRouter.get('/status', async (req, res) => {
     models,
     loaded,
     concurrency: await concurrencyView(s, models),
+    presets: await listPresets(),
     modelInstalled,
     modelCanThink: canThink,
     recommended: recommendModel(config.totalMemBytes),
@@ -98,16 +100,62 @@ aiRouter.get('/memory', requireAdmin, async (_req, res) => {
   });
 });
 
+// How the model writes. The same shape is accepted on the settings and on a
+// preset, because a preset is exactly these fields under a name — one list,
+// so a bound can never be enforced in one place and not the other.
+const TUNING_SHAPE = {
+  temperature: z.number().min(0).max(2).optional(),
+  topP: z.number().min(0).max(1).optional(),
+  topK: z.number().int().min(1).max(200).optional(),
+  minP: z.number().min(0).max(1).optional(),
+  repeatPenalty: z.number().min(0.5).max(2).optional(),
+  // -1 is "the whole context", 0 turns repetition tracking off; anything
+  // else is a window in tokens.
+  repeatLastN: z.number().int().min(-1).max(8192).optional(),
+  presencePenalty: z.number().min(-2).max(2).optional(),
+  frequencyPenalty: z.number().min(-2).max(2).optional(),
+  maxTokens: z.number().int().min(64).max(4096).optional(),
+  allowThinking: z.boolean().optional(),
+  thinkEffort: z.enum(['low', 'medium', 'high']).optional(),
+  thinkingBudget: z.number().int().min(0).max(8192).optional(),
+};
+const presetBody = z.object({
+  name: z.string().min(1).max(60),
+  note: z.string().max(400).optional(),
+  forModel: z.string().max(120).optional(),
+  values: z.object(TUNING_SHAPE),
+});
+
+aiRouter.get('/presets', requireAdmin, async (_req, res) => {
+  res.json({ presets: await listPresets(), fields: PRESET_FIELDS });
+});
+
+// A preset is applied by the browser: it puts the numbers into the tuning
+// form and saves them like any other change, so applying one is audited, and
+// reversible, exactly the way editing the sliders by hand is.
+aiRouter.post('/presets', requireAdmin, async (req, res) => {
+  const b = parse(presetBody, req.body);
+  const presets = await createPreset(b).catch((e) => { throw badRequest((e as Error).message); });
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.preset_created',$2)`, [req.user!.id, JSON.stringify({ name: b.name })]);
+  res.json({ presets });
+});
+
+aiRouter.put('/presets/:id', requireAdmin, async (req, res) => {
+  const b = parse(presetBody.partial(), req.body);
+  const presets = await updatePreset(String(req.params.id), b).catch((e) => { throw badRequest((e as Error).message); });
+  res.json({ presets });
+});
+
+aiRouter.delete('/presets/:id', requireAdmin, async (req, res) => {
+  const presets = await deletePreset(String(req.params.id)).catch((e) => { throw badRequest((e as Error).message); });
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.preset_deleted',$2)`, [req.user!.id, JSON.stringify({ id: req.params.id })]);
+  res.json({ presets });
+});
+
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
-  const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(), allowThinking: z.boolean().optional(),
-    thinkEffort: z.enum(['low', 'medium', 'high']).optional(), thinkingBudget: z.number().int().min(0).max(8192).optional(),
-    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), minP: z.number().min(0).max(1).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(),
-    // -1 is "the whole context", 0 turns repetition tracking off; anything
-    // else is a window in tokens.
-    repeatLastN: z.number().int().min(-1).max(8192).optional(),
-    presencePenalty: z.number().min(-2).max(2).optional(), frequencyPenalty: z.number().min(-2).max(2).optional(),
-    concurrency: z.boolean().optional(),
-    maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
+  const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+    systemPrompt: z.string().max(8000).optional(),
+    concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
   if (b.keepAlive !== undefined && !isValidKeepAlive(b.keepAlive)) {

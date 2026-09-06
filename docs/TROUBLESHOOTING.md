@@ -106,6 +106,14 @@ on purpose.
   stalwart-trust-proxy` creates that listener and allow-lists our own
   containers, `./bin/tern stalwart-unban` lifts existing bans, and
   `./update.sh` regenerates the Caddyfile.
+- **A mail client answers 502, or gets a web page instead of JMAP**: it is
+  pointed at the web address, not the mail host. Tern's web app and the mail
+  server are two different names on the same box (`mail.example.com` and
+  `mx1.example.com`); a client aimed at the first sees whatever the web app is
+  doing, including Caddy's 502 while the app restarts. Use
+  `https://mx1.example.com/.well-known/jmap`. Caddy also redirects the
+  discovery paths from the web address to the mail host, so this only bites
+  installs whose Caddyfile predates that (`./update.sh` regenerates it).
 - Lost the admin password: set `STALWART_RECOVERY_MODE=1` and
   `STALWART_RECOVERY_ADMIN=recovery:newpass` in `.env`, `./bin/tern up`,
   fix things via the panel on port 8080, then clear both and `./bin/tern up`.

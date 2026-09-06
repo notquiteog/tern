@@ -40,7 +40,11 @@ sw_wait() { local i u="http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/api/account"
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-  up)        R="$(replace_stale_containers localhost/tern:latest | tr '\n' ' ')"; [ -n "$R" ] && echo "replacing (image changed): $R"; compose_up "$@" ;;
+  up)        # Settings added after this install was made: podman-compose only
+             # substitutes `${KEY:-default}` when KEY is in .env, so without
+             # these both Ollama and the app read the placeholder as a value.
+             ensure_env OLLAMA_NUM_PARALLEL 2; ensure_env OLLAMA_KV_CACHE_TYPE q8_0; ensure_env OLLAMA_MAX_QUEUE 32
+             R="$(replace_stale_containers localhost/tern:latest | tr '\n' ' ')"; [ -n "$R" ] && echo "replacing (image changed): $R"; compose_up "$@" ;;
   down)      compose down "$@" ;;
   restart)   compose restart "$@" ;;
   ps)        compose ps "$@" ;;
@@ -186,7 +190,25 @@ else: print("ok")' $SUBNETS)"
       for p in 25 465 587 993; do
         if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$p$"; then okc "port $p listening"; else failc "nothing listening on port $p"; fi
       done
-      echo "  Outbound port 25 and the public view: ./bin/tern dns-check --port25"
+      echo "Client discovery"
+      # What a mail client actually sees when it is given an address on this
+      # domain. Each name needs its own certificate, which Caddy fetches on
+      # first request, so a missing DNS record shows up here as no answer at
+      # all rather than as a 404.
+      disc() { curl -s -m 10 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true; }
+      code="$(disc "https://$STALWART_HOST/.well-known/jmap")"
+      case "$code" in
+        200|301|302|307|308|401) okc "JMAP session URL answers on $STALWART_HOST ($code)" ;;
+        *) failc "https://$STALWART_HOST/.well-known/jmap returned '${code:-no answer}' (mail clients use this URL, not the web address)" ;;
+      esac
+      code="$(disc "https://autoconfig.$STALWART_DOMAIN/mail/config-v1.1.xml?emailaddress=postmaster@$STALWART_DOMAIN")"
+      if [ "$code" = 200 ]; then okc "Thunderbird autoconfig answers on autoconfig.$STALWART_DOMAIN"; else warnc "autoconfig.$STALWART_DOMAIN returned '${code:-no answer}'; add the CNAME to $STALWART_HOST (docs/DNS.md section 5)"; fi
+      code="$(disc "https://autodiscover.$STALWART_DOMAIN/autodiscover/autodiscover.xml")"
+      if [ -n "$code" ] && [ "$code" != 000 ]; then okc "Outlook autodiscover answers on autodiscover.$STALWART_DOMAIN ($code)"; else warnc "autodiscover.$STALWART_DOMAIN did not answer; add the CNAME to $STALWART_HOST (docs/DNS.md section 5)"; fi
+      code="$(disc "https://mta-sts.$STALWART_DOMAIN/.well-known/mta-sts.txt")"
+      if [ "$code" = 200 ]; then okc "MTA-STS policy served on mta-sts.$STALWART_DOMAIN"; else warnc "mta-sts.$STALWART_DOMAIN returned '${code:-no answer}'; other servers cannot read the TLS policy"; fi
+      echo "  Discovery records (SRV, autoconfig CNAMEs) and the public view: ./bin/tern dns-check"
+      echo "  Outbound port 25: ./bin/tern dns-check --port25"
     fi
     echo "Host"
     DF="$(df -P / | awk 'NR==2 {print $5}' | tr -d % || true)"

@@ -113,9 +113,37 @@ Tern for every message from your domain.
 
 ## 5. Mail apps configure themselves
 
-The remaining CNAME, SRV and `_ua-auto-config` records let Thunderbird,
-Apple Mail, Outlook and phones set up an account from just the address and
-password. Optional, but they remove a support question.
+These let Thunderbird, Apple Mail, Outlook, phones and JMAP clients set up an
+account from just the address and password. Optional, but they remove a
+support question — and without them a client given `you@example.com` has
+nowhere to look, because the mail host is `mx1.example.com` and nothing in
+the domain says so.
+
+| Type | Name | Value | Who uses it |
+|---|---|---|---|
+| CNAME | `autoconfig.example.com` | `mx1.example.com` | Thunderbird, K-9, most Android apps |
+| CNAME | `autodiscover.example.com` | `mx1.example.com` | Outlook |
+| CNAME | `ua-auto-config.example.com` | `mx1.example.com` | Stalwart's own signed profile |
+| TXT | `_ua-auto-config.example.com` | `v=UAAC1; a=sha256; d=…` | signs that profile |
+| SRV | `_jmap._tcp.example.com` | `0 1 443 mx1.example.com` | JMAP clients, including Tern |
+| SRV | `_imaps._tcp.example.com` | `0 1 993 mx1.example.com` | IMAP clients, Apple Mail |
+| SRV | `_submissions._tcp.example.com` | `0 1 465 mx1.example.com` | sending |
+| SRV | `_pop3s._tcp.example.com` | `0 1 995 mx1.example.com` | POP clients |
+| SRV | `_caldavs._tcp.example.com` | `0 1 443 mx1.example.com` | calendars |
+| SRV | `_carddavs._tcp.example.com` | `0 1 443 mx1.example.com` | contacts |
+
+The three CNAMEs get their certificates from Caddy on first request, so add
+them before testing a client. Check them with:
+
+```bash
+dig +short SRV _jmap._tcp.example.com
+curl -sI "https://autoconfig.example.com/mail/config-v1.1.xml?emailaddress=you@example.com"
+```
+
+A JMAP client that ignores SRV falls back to `https://example.com/.well-known/jmap`,
+so publish an A record for the bare domain pointing at this server if you want
+that path to work too; Tern and other RFC 8620 clients use the SRV record and
+do not need it.
 
 ## 6. Check everything
 

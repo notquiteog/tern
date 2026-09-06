@@ -80,4 +80,7 @@ installs a systemd unit. `bin/tern` wraps the day-to-day commands, including
 
 Memory budget on a 4.5 GB box: Postgres ~60 MB, app ~200 MB, Caddy ~30 MB,
 Stalwart ~150 MB, Ollama ~250 MB idle plus the model (1.5B q4 ≈ 1.2 GB) while
-loaded. Ollama unloads the model 10 minutes after the last request.
+loaded, plus one context window of KV cache per parallel slot (8192 tokens of
+a 1.5B model ≈ 120 MB with the q8_0 cache the compose file sets). Ollama
+unloads the model 10 minutes after the last request. Admin → AI model meters
+all of it live.
