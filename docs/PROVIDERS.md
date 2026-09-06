@@ -47,7 +47,7 @@ Everything below is outside the box and cannot be automated by the installer.
 2. **Reverse DNS.** Set the server IP's PTR record to the mail hostname in
    your provider's panel. Gmail rejects mail from hosts whose forward and
    reverse names disagree. Check with `dig -x <ip>` and `dig <mail host>`.
-3. **Publish the DNS records.** Settings → Mail server lists every record
+3. **Publish the DNS records.** Admin → Mail server lists every record
    with a purpose and a live check, and [DNS.md](DNS.md) walks through them:
    the `A` record and reverse DNS for the mail host, `MX`, SPF, two DKIM
    keys, DMARC, then MTA-STS and TLS-RPT for encryption, BIMI for a brand
@@ -59,7 +59,7 @@ Everything below is outside the box and cannot be automated by the installer.
 
 ### Creating more mailboxes
 
-Settings → **Mail server** (admins) creates mailboxes, generates passwords,
+Admin → **Mail server** creates mailboxes, generates passwords,
 and connects them to Tern users or creates the user in the same step. The
 DNS records for the domain are shown there too. The same is available as
 `./bin/tern cli add-mailbox --address sam@team.example.com --user sam`.

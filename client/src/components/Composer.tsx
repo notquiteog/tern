@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Paperclip, Send, Sparkles, Trash2, X, Clock, Shuffle, FileText, ShieldCheck, Lock, LockOpen, PenLine, Reply, ReplyAll, Forward, ExternalLink, Archive, CloudDownload, MoreHorizontal, Pencil } from 'lucide-react';
 import { usePgp } from '../state/pgp';
-import { encryptText, signDetached } from '../lib/pgp';
+import { encryptText, keydataOf, signDetached } from '../lib/pgp';
 import { buildMime, htmlToPlain } from '../lib/mime';
 import { useDebounced } from '../lib/hooks';
 import { api } from '../api';
@@ -121,12 +121,18 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
   const { requestKey } = usePgp();
   const { data: myKey } = useQuery({ queryKey: ['pgp-me'], queryFn: () => api.get<{ key: { publicKey: string } | null; hasPrivate: boolean }>('/api/pgp/me'), staleTime: 60_000 });
   const allEmails = useDebounced([...to, ...cc, ...bcc].map((a) => a.email.toLowerCase()).filter(Boolean).sort().join(','), 400);
-  const { data: recipientKeys } = useQuery({ queryKey: ['pgp-recipients', allEmails], queryFn: () => api.get<{ keys: Record<string, { fingerprint: string; publicKey: string }> }>(`/api/pgp/recipients?emails=${encodeURIComponent(allEmails)}`).then((r) => r.keys), enabled: allEmails.length > 0, staleTime: 60_000 });
+  const { data: recipientKeys } = useQuery({ queryKey: ['pgp-recipients', allEmails], queryFn: () => api.get<{ keys: Record<string, { fingerprint: string; publicKey: string; source: string; recommendation: 'disable' | 'discourage' | 'available' | 'encrypt' | null }> }>(`/api/pgp/recipients?emails=${encodeURIComponent(allEmails)}`).then((r) => r.keys), enabled: allEmails.length > 0, staleTime: 60_000 });
   const emailList = allEmails ? allEmails.split(',') : [];
   const missingKeys = emailList.filter((e) => !recipientKeys?.[e]);
   const canEncrypt = emailList.length > 0 && missingKeys.length === 0;
   const [encryptPref, setEncryptPref] = useState<boolean | null>(null);
-  const encrypt = canEncrypt && (encryptPref ?? true);
+  // Keys on file (contact card, pasted, looked up) mean encrypt by default.
+  // Keys learned from Autocrypt headers follow the Autocrypt recommendation:
+  // on by default only when both sides asked for it, otherwise one click away.
+  const autocryptOnly = emailList.filter((e) => recipientKeys?.[e]?.recommendation);
+  const autocryptDefault = autocryptOnly.every((e) => recipientKeys![e].recommendation === 'encrypt');
+  const discouraged = autocryptOnly.filter((e) => recipientKeys![e].recommendation === 'discourage');
+  const encrypt = canEncrypt && (encryptPref ?? autocryptDefault);
   const [sign, setSign] = useState<boolean>(() => { try { return localStorage.getItem('tern.pgp.sign') === '1'; } catch { return false; } });
   const canSign = Boolean(myKey?.key) && (myKey?.hasPrivate || Boolean(localStorage.getItem('tern.pgp.privateKey')));
   useEffect(() => { try { localStorage.setItem('tern.pgp.sign', sign ? '1' : '0'); } catch { /* ignore */ } }, [sign]);
@@ -139,7 +145,10 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
     const inner = buildMime({ html: body, text: htmlToPlain(body), attachments: files });
     if (encrypt) {
       const keys = [...emailList.map((e) => recipientKeys![e].publicKey), ...(myKey?.key ? [myKey.key.publicKey] : [])];
-      return { mode: 'encrypted', armored: await encryptText(inner, keys, key) };
+      // Autocrypt-Gossip: in a group message, every recipient learns the others' keys.
+      const gossip: [string, string][] = emailList.length > 1 ? await Promise.all(emailList.map(async (e) => ['Autocrypt-Gossip', `addr=${e}; keydata=${await keydataOf(recipientKeys![e].publicKey)}`] as [string, string])) : [];
+      const innerWithGossip = gossip.length ? buildMime({ html: body, text: htmlToPlain(body), attachments: files, headers: gossip }) : inner;
+      return { mode: 'encrypted', armored: await encryptText(innerWithGossip, keys, key) };
     }
     return { mode: 'signed', inner, signature: await signDetached(inner, key) };
   }
@@ -344,7 +353,7 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
         )}
         {showPgpBar && (
           <div className="pgp-bar">
-            <button type="button" className={cls('pgp-pill', encrypt && 'on', !canEncrypt && 'off')} disabled={!canEncrypt} title={canEncrypt ? (encrypt ? 'Encrypted to every recipient and to you. Click to send in the clear.' : 'Click to encrypt') : emailList.length ? `No key on file for ${missingKeys.join(', ')}. Add one on their contact card or under Settings → Encryption.` : 'Add recipients'} onClick={() => setEncryptPref(!encrypt)}>{encrypt ? <Lock size={13} /> : <LockOpen size={13} />}{encrypt ? 'Encrypted' : canEncrypt ? 'Not encrypted' : 'No key for recipient'}</button>
+            <button type="button" className={cls('pgp-pill', encrypt && 'on', !canEncrypt && 'off')} disabled={!canEncrypt} title={canEncrypt ? (encrypt ? 'Encrypted to every recipient and to you. Click to send in the clear.' : discouraged.length ? `${discouraged.join(', ')} sent an Autocrypt key a while ago but no longer does; they may have lost it. Click to encrypt anyway.` : autocryptOnly.length ? 'A key arrived in their Autocrypt headers. Click to encrypt.' : 'Click to encrypt') : emailList.length ? `No key on file for ${missingKeys.join(', ')}. Add one on their contact card or under Settings → Encryption.` : 'Add recipients'} onClick={() => setEncryptPref(!encrypt)}>{encrypt ? <Lock size={13} /> : <LockOpen size={13} />}{encrypt ? (autocryptOnly.length ? 'Encrypted (Autocrypt)' : 'Encrypted') : canEncrypt ? (autocryptOnly.length ? 'Autocrypt key available' : 'Not encrypted') : 'No key for recipient'}</button>
             {myKey?.key && <button type="button" className={cls('pgp-pill', sign && canSign && 'on', !canSign && 'off')} disabled={!canSign} title={canSign ? 'Sign with your OpenPGP key in this browser' : 'Your private key is not available in this browser'} onClick={() => setSign((s) => !s)}><PenLine size={13} />{sign && canSign ? 'Signed' : 'Not signed'}</button>}
           </div>
         )}

@@ -13,7 +13,7 @@
 
 Settings → Accounts shows each mailbox's sync state and last error; Settings
 → AI shows whether the model server is reachable and the model installed;
-Settings → General shows the audit log.
+Admin → Audit log shows the audit log.
 
 ## The site does not load / certificate errors
 

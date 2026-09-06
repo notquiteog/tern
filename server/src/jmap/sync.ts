@@ -11,6 +11,7 @@ import { clientFor, connectAccount, getAccount, type AccountRow } from '../servi
 import { JmapError, MAIL, CORE, type JmapClient } from './client.js';
 import { onNewEmails } from '../services/automation.js';
 import { notifyNewMail } from '../services/push.js';
+import { autocryptHeadersOf } from '../services/autocrypt.js';
 
 const log = logger('sync');
 
@@ -19,6 +20,9 @@ const EMAIL_PROPS = [
   'messageId', 'inReplyTo', 'references', 'sender', 'from', 'to', 'cc', 'bcc', 'replyTo',
   'subject', 'preview', 'hasAttachment', 'bodyValues', 'textBody', 'htmlBody', 'attachments',
   'header:Auto-Submitted:asText', 'header:List-Unsubscribe:asText', 'header:List-Id:asText', 'header:List-Id:asRaw', 'header:Precedence:asText',
+  // Stalwart ignores the `:all` form (RFC 8621 §4.1.3) and answers the plain
+  // form under `header:Autocrypt`; autocryptHeadersOf() reads either.
+  'header:Autocrypt:asRaw',
 ];
 const MAILBOX_PROPS = ['id', 'name', 'parentId', 'role', 'sortOrder', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'];
 
@@ -203,20 +207,20 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
       const attachments = (e.attachments ?? []).map((p: BodyPart) => ({ blobId: p.blobId, name: p.name ?? null, type: p.type ?? 'application/octet-stream', size: p.size ?? 0, cid: p.cid ?? null, disposition: p.disposition ?? null }));
       const row = await c.query(
         `INSERT INTO emails (account_id, jmap_id, blob_id, thread_id, mailbox_ids, keywords, size, received_at, sent_at, message_id, in_reply_to, references_ids,
-            from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, has_attachment, body_text, body_html, attachments, auto_submitted, list_unsubscribe, list_id, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,now())
+            from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, has_attachment, body_text, body_html, attachments, auto_submitted, list_unsubscribe, list_id, autocrypt_seen, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,now())
          ON CONFLICT (account_id, jmap_id) DO UPDATE SET blob_id=EXCLUDED.blob_id, thread_id=EXCLUDED.thread_id, mailbox_ids=EXCLUDED.mailbox_ids, keywords=EXCLUDED.keywords,
            size=EXCLUDED.size, received_at=EXCLUDED.received_at, sent_at=EXCLUDED.sent_at, message_id=EXCLUDED.message_id, in_reply_to=EXCLUDED.in_reply_to, references_ids=EXCLUDED.references_ids,
            from_addr=EXCLUDED.from_addr, to_addr=EXCLUDED.to_addr, cc_addr=EXCLUDED.cc_addr, bcc_addr=EXCLUDED.bcc_addr, reply_to=EXCLUDED.reply_to, subject=EXCLUDED.subject, preview=EXCLUDED.preview,
            has_attachment=EXCLUDED.has_attachment, body_text=COALESCE(EXCLUDED.body_text, emails.body_text), body_html=COALESCE(EXCLUDED.body_html, emails.body_html), attachments=EXCLUDED.attachments,
-           auto_submitted=EXCLUDED.auto_submitted, list_unsubscribe=EXCLUDED.list_unsubscribe, list_id=EXCLUDED.list_id, updated_at=now()
+           auto_submitted=EXCLUDED.auto_submitted, list_unsubscribe=EXCLUDED.list_unsubscribe, list_id=EXCLUDED.list_id, autocrypt_seen=EXCLUDED.autocrypt_seen, updated_at=now()
          RETURNING id, (xmax = 0) AS inserted`,
         [
           acc.id, e.id, e.blobId ?? null, e.threadId ?? e.id, Object.keys(e.mailboxIds ?? {}), Object.keys(e.keywords ?? {}).filter((k) => e.keywords[k]),
           e.size ?? 0, e.receivedAt ?? new Date().toISOString(), e.sentAt ?? null, e.messageId ?? [], e.inReplyTo ?? [], e.references ?? [],
           JSON.stringify(e.from ?? []), JSON.stringify(e.to ?? []), JSON.stringify(e.cc ?? []), JSON.stringify(e.bcc ?? []), JSON.stringify(e.replyTo ?? []),
           e.subject ?? '', (e.preview ?? '').slice(0, 500), Boolean(e.hasAttachment), text, html, JSON.stringify(attachments), e['header:Auto-Submitted:asText'] ?? null,
-          (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e),
+          (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e), autocryptHeadersOf(e).length > 0,
         ],
       );
       if (row.rows[0].inserted) { created++; fresh.push({ ...e, _id: row.rows[0].id, _text: text }); } else updated++;

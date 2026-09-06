@@ -37,7 +37,7 @@ export default function SetupPage() {
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 440 }}>
         <div className="brand"><BrandLogo />{appName}</div>
         <h1 style={{ marginBottom: 4 }}>Create the admin account</h1>
-        <p className="muted" style={{ marginBottom: 18 }}>This is the first and only time this screen appears. Afterwards, admins add people from Settings → Users.</p>
+        <p className="muted" style={{ marginBottom: 18 }}>This is the first and only time this screen appears. Afterwards, admins add people from Admin → Users.</p>
         <Field label="Your name"><Input autoFocus value={displayName} onChange={(e) => setDisplayName(e.target.value)} required placeholder="Alex Rivera" /></Field>
         <Field label="Username" hint="Letters, numbers, dots and dashes."><Input value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="username" autoCapitalize="none" /></Field>
         <Field label="Password" hint="At least 10 characters. A passphrase works well."><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} autoComplete="new-password" /></Field>

@@ -16,6 +16,7 @@ import SequenceEditorPage from './pages/SequenceEditor';
 import RulesPage from './pages/Rules';
 import ReviewPage from './pages/Review';
 import SettingsPage from './pages/Settings';
+import AdminSettingsPage from './pages/AdminSettings';
 import HomePage from './pages/Home';
 import { Spinner } from './components/ui';
 
@@ -42,6 +43,7 @@ function Gate() {
         <Route path="/responders" element={<RespondersPage />} />
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/settings/*" element={<SettingsPage />} />
+        <Route path="/admin/*" element={<AdminSettingsPage />} />
         <Route path="*" element={<Navigate to="/mail/inbox" replace />} />
       </Routes>
     </Shell>

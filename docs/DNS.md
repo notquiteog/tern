@@ -1,7 +1,7 @@
 # DNS for trusted mail, step by step
 
 This is the walkthrough for a domain served by the bundled Stalwart. Tern
-shows the same records with live checks under **Settings → Mail server**,
+shows the same records with live checks under **Admin → Mail server**,
 and `./bin/tern dns-check` prints them from the terminal. The records use
 `example.com` for the mail domain and `mx1.example.com` for the mail host;
 yours are filled in for you in the app.
@@ -72,7 +72,7 @@ policy file is served by the mail server through Caddy at
 `https://mta-sts.example.com/.well-known/mta-sts.txt`; the CNAME makes that
 name resolve here and Caddy fetches a certificate for it on first use. Keep
 the mode on **testing** until the DNS checks pass, then switch to
-**enforce** in Settings → Mail server. TLS-RPT sends you a daily report if
+**enforce** in Admin → Mail server. TLS-RPT sends you a daily report if
 anyone failed to connect securely.
 
 ## 4. Brand logo (BIMI)
@@ -81,7 +81,7 @@ BIMI shows your logo beside your messages in mail clients that support it.
 Tern hosts and prepares the logo for you; three things are needed:
 
 1. **DMARC** at `p=quarantine` or `p=reject` with `pct=100` (the default).
-2. **The logo.** Settings → Mail server → Brand logo accepts anything:
+2. **The logo.** Admin → Mail server → Brand logo accepts anything:
    - An **SVG** is rebuilt as SVG Tiny Portable/Secure: every piece of
      metadata is removed (editor namespaces such as Inkscape and Illustrator,
      comments, `<metadata>`, `<desc>`, ids, classes, data attributes), CSS
@@ -119,7 +119,7 @@ password. Optional, but they remove a support question.
 
 ## 6. Check everything
 
-- Settings → Mail server → **Check DNS**: every record shows found, missing
+- Admin → Mail server → **Check DNS**: every record shows found, missing
   or differs, with what the resolver returned.
 - `./bin/tern dns-check --port25` does the same from the terminal and also
   tests whether the hosting provider allows outbound port 25.

@@ -86,7 +86,15 @@ export function EncryptedMessage({ m, accountId, kind }: { m: any; accountId: nu
       const keys = await senderKeys(sender);
       const r = await decryptArmored(armored, key, keys);
       if (kind === 'inline') setContent({ html: null, text: r.text, attachments: [] });
-      else { const flat = flatten(parseMime(r.text)); setContent(flat); }
+      else {
+        const root = parseMime(r.text);
+        setContent(flatten(root));
+        // Autocrypt-Gossip: the keys of the other recipients travel inside the
+        // encrypted part; the server records them so replies to the group can
+        // be encrypted too.
+        const gossip = root.headerList.filter(([n]) => n === 'autocrypt-gossip').map(([, v]) => v);
+        if (gossip.length) api.post('/api/pgp/autocrypt/gossip', { emailId: m.id, headers: gossip }).catch(() => {});
+      }
       setSig(r.signatures.length ? (keys.length ? r.signatures : 'nokey') : 'none');
       setState('open');
     } catch (e: any) { setError(e.message ?? String(e)); setState('error'); }

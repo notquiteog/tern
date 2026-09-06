@@ -6,7 +6,8 @@
     "18080 and Ollama on 11435) and reads server settings from .env.dev.",
     "The server also serves client/dist, so run `npm run build -w client`",
     "after client changes, or start `tern-client` for Vite with HMR.",
-    "tern-qa is the same server on port 3090, for a second session or when 3080 is busy."
+    "tern-qa is the same server on port 3090, for a second session or when 3080 is busy.",
+    "tern-verify lets the browser pane pick a free port when both 3080 and 3090 are taken."
   ],
   "configurations": [
     {
@@ -49,6 +50,19 @@
         "APP_URL": "http://127.0.0.1:3090"
       },
       "port": 3090
+    },
+    {
+      "name": "tern-verify",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "tsx",
+        "watch",
+        "--env-file=../.env.dev",
+        "src/index.ts"
+      ],
+      "cwd": "server",
+      "autoPort": true,
+      "_comment": "Same server, port picked by the browser pane (PORT env) for a third concurrent session."
     }
   ]
 }

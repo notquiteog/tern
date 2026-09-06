@@ -9,6 +9,9 @@ import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
 import { generateRecoveryCodes, sha256hex, verifyPassword } from '../crypto.js';
 import { clearUserKeys, createChallenge, getUserKeys, lookupKey, readPrivateKey, readPublicKey, recipientKeys, removeRecipientKey, saveRecipientKey, saveUserKeys, verifyChallenge, type PgpAuthMode } from '../services/pgp.js';
+import { forgetPeer, getPeer, isStale, listPeers, recommend, updateGossip } from '../services/autocrypt.js';
+import { listAccounts } from '../services/accounts.js';
+import { describeKeyShape } from '../services/pgpPackets.js';
 
 export const pgpRouter = Router();
 pgpRouter.use(requireAuth);
@@ -18,7 +21,7 @@ const emailParam = (v: string) => { const e = String(v).trim().toLowerCase(); if
 pgpRouter.get('/me', async (req, res) => {
   const k = await getUserKeys(req.user!.id);
   const info = k.publicKey ? await readPublicKey(k.publicKey).catch(() => null) : null;
-  res.json({ key: info ? { fingerprint: info.fingerprint, keyId: info.keyId, userIds: info.userIds, emails: info.emails, algorithm: info.algorithm, created: info.created, expires: info.expires, publicKey: info.armored } : null, hasPrivate: Boolean(k.privateKey), auth: k.auth, updatedAt: k.updatedAt });
+  res.json({ key: info ? { fingerprint: info.fingerprint, keyId: info.keyId, userIds: info.userIds, emails: info.emails, algorithm: info.algorithm, created: info.created, expires: info.expires, publicKey: info.armored, version: info.version, algorithms: info.algorithms, postQuantum: info.postQuantum, postQuantumAlgorithms: info.postQuantumAlgorithms } : null, hasPrivate: Boolean(k.privateKey), auth: k.auth, updatedAt: k.updatedAt, autocrypt: k.autocrypt });
 });
 
 // Upload or replace the key pair. A private key is accepted only in
@@ -97,7 +100,7 @@ pgpRouter.put('/auth', async (req, res) => {
 pgpRouter.get('/recipients', async (req, res) => {
   const emails = String(req.query.emails ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean).slice(0, 50);
   const keys = await recipientKeys(req.user!.id, emails);
-  res.json({ keys: Object.fromEntries([...keys].map(([e, k]) => [e, { fingerprint: k.fingerprint, source: k.source, publicKey: k.publicKey }])) });
+  res.json({ keys: Object.fromEntries([...keys].map(([e, k]) => [e, { fingerprint: k.fingerprint, source: k.source, publicKey: k.publicKey, recommendation: k.recommendation ?? null }])) });
 });
 
 pgpRouter.put('/recipients/:email', async (req, res) => {
@@ -122,9 +125,59 @@ pgpRouter.post('/lookup', async (req, res) => {
   res.json({ key: { ...saved, userIds: found.info.userIds, algorithm: found.info.algorithm, matchesAddress: true } });
 });
 
+// ---------- Autocrypt ----------
+
+pgpRouter.get('/autocrypt', async (req, res) => {
+  const k = await getUserKeys(req.user!.id);
+  const peers = await listPeers(req.user!.id);
+  res.json({
+    enabled: k.autocrypt.enabled, prefer: k.autocrypt.prefer, hasKey: Boolean(k.publicKey),
+    peers: peers.map((p) => ({ email: p.email, lastSeen: p.last_seen, keySeen: p.autocrypt_timestamp, fingerprint: p.fingerprint, preferEncrypt: p.prefer_encrypt, gossipFingerprint: p.gossip_fingerprint, gossipSeen: p.gossip_timestamp, stale: isStale(p), recommendation: recommend(p, k.autocrypt.prefer).recommendation })),
+  });
+});
+
+pgpRouter.put('/autocrypt', async (req, res) => {
+  const b = parse(z.object({ enabled: z.boolean().optional(), prefer: z.enum(['mutual', 'nopreference']).optional() }), req.body);
+  await query('UPDATE users SET autocrypt_enabled=COALESCE($2, autocrypt_enabled), autocrypt_prefer=COALESCE($3, autocrypt_prefer) WHERE id=$1', [req.user!.id, b.enabled ?? null, b.prefer ?? null]);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'pgp.autocrypt_changed',$2)`, [req.user!.id, JSON.stringify(b)]);
+  const k = await getUserKeys(req.user!.id);
+  res.json({ enabled: k.autocrypt.enabled, prefer: k.autocrypt.prefer });
+});
+
+pgpRouter.delete('/autocrypt/peers/:email', async (req, res) => {
+  await forgetPeer(req.user!.id, emailParam(String(req.params.email)));
+  res.json({ ok: true });
+});
+
+// Promote a key learned through Autocrypt to a verified recipient key, so
+// mail to that address is encrypted by default from now on.
+pgpRouter.post('/autocrypt/peers/:email/trust', async (req, res) => {
+  const email = emailParam(String(req.params.email));
+  const peer = await getPeer(req.user!.id, email);
+  const armored = peer?.public_key ?? peer?.gossip_key;
+  if (!armored) throw notFound('No Autocrypt key for that address');
+  const info = await readPublicKey(armored);
+  const saved = await saveRecipientKey(req.user!.id, email, info, peer!.public_key ? 'autocrypt' : 'autocrypt-gossip');
+  res.json({ key: { ...saved, userIds: info.userIds, algorithm: info.algorithm } });
+});
+
+// Autocrypt-Gossip headers live inside the encrypted part, which only the
+// browser can open; it reports them here. Only addresses the message was
+// actually sent to are accepted (the server checks against its own copy).
+pgpRouter.post('/autocrypt/gossip', async (req, res) => {
+  const b = parse(z.object({ emailId: z.number().int(), headers: z.array(z.string().max(20_000)).max(50) }), req.body);
+  const accountIds = (await listAccounts(req.user!.id)).map((a) => a.id);
+  const m = await one<any>('SELECT id, to_addr, cc_addr, from_addr, sent_at, received_at FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accountIds]);
+  if (!m) throw notFound('Message not found');
+  const recipients = [...(m.to_addr ?? []), ...(m.cc_addr ?? [])].map((a: any) => String(a.email ?? '').toLowerCase()).filter(Boolean);
+  const n = await updateGossip(req.user!.id, recipients, b.headers, new Date(m.sent_at ?? m.received_at));
+  res.json({ ok: true, updated: n });
+});
+
 // Which contacts have keys, for the encryption settings page.
 pgpRouter.get('/recipients/summary', async (req, res) => {
   const r = await one<{ contacts: number; extra: number }>(`SELECT (SELECT count(*)::int FROM contacts WHERE user_id=$1 AND pgp_public_key IS NOT NULL) AS contacts, (SELECT count(*)::int FROM pgp_keys WHERE user_id=$1) AS extra`, [req.user!.id]);
-  const recent = await query<any>(`SELECT email, fingerprint, source, created_at FROM pgp_keys WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.user!.id]);
-  res.json({ contactsWithKeys: r?.contacts ?? 0, keys: recent });
+  const recent = await query<any>(`SELECT email, fingerprint, source, created_at, public_key FROM pgp_keys WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.user!.id]);
+  const keys = recent.map(({ public_key, ...k }) => { let shape = { version: 0, postQuantum: false, postQuantumAlgorithms: [] as string[] }; try { shape = describeKeyShape(public_key); } catch { /* cosmetic */ } return { ...k, version: shape.version, postQuantum: shape.postQuantum, postQuantumAlgorithms: shape.postQuantumAlgorithms }; });
+  res.json({ contactsWithKeys: r?.contacts ?? 0, keys });
 });

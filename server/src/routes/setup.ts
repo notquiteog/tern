@@ -10,6 +10,7 @@ import { authSettings } from './users.js';
 import { stalwartEnabled } from '../services/stalwart.js';
 import { verifySolution } from '../pow.js';
 import { getBranding, publicBranding } from '../services/branding.js';
+import { localPartFor, mailboxExists, provisionMailbox, provisioningEnabled } from '../services/provision.js';
 
 export const setupRouter = Router();
 
@@ -60,5 +61,12 @@ setupRouter.post('/', async (req, res) => {
   const sid = await createSession(rows[0].id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'setup.admin_created',$2)`, [rows[0].id, JSON.stringify({ username: body.username })]);
-  res.json({ user: publicUser(rows[0]) });
+  // The first admin gets a mailbox as well, unless the installer already
+  // made one under that name; setup must never be blocked by the mail server.
+  let mailbox = null;
+  try {
+    const local = localPartFor(body.username);
+    if (local && (await provisioningEnabled()) && !(await mailboxExists(local))) mailbox = await provisionMailbox(rows[0]);
+  } catch { /* reported in the log by provisionMailbox */ }
+  res.json({ user: publicUser(rows[0]), mailbox });
 });

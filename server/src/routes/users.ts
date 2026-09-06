@@ -6,21 +6,25 @@ import { idParam, parse, z } from '../util/validate.js';
 import { badRequest, conflict, notFound } from '../errors.js';
 import { randomToken } from '../crypto.js';
 import { config } from '../config.js';
+import { assertMailboxFree, provisionMailbox, provisioningEnabled } from '../services/provision.js';
+import { stalwartEnabled } from '../services/stalwart.js';
 
-export interface AuthSettings { allowRegistration: boolean; defaultRole: 'admin' | 'member' }
+// provisionMailboxes: with the bundled mail server, every new login also
+// gets <username>@<domain> created and connected.
+export interface AuthSettings { allowRegistration: boolean; defaultRole: 'admin' | 'member'; provisionMailboxes: boolean }
 export async function authSettings(): Promise<AuthSettings> {
   const row = await one<{ value: Partial<AuthSettings> }>(`SELECT value FROM settings WHERE key='auth'`);
-  return { allowRegistration: false, defaultRole: 'member', ...(row?.value ?? {}) };
+  return { allowRegistration: false, defaultRole: 'member', provisionMailboxes: true, ...(row?.value ?? {}) };
 }
 
 export const usersRouter = Router();
 usersRouter.use(requireAdmin);
 
 usersRouter.get('/auth-settings', async (_req, res) => {
-  res.json({ settings: await authSettings() });
+  res.json({ settings: await authSettings(), mailServer: stalwartEnabled() ? { domain: config.stalwartDomain } : null });
 });
 usersRouter.put('/auth-settings', async (req, res) => {
-  const b = parse(z.object({ allowRegistration: z.boolean().optional(), defaultRole: z.enum(['admin', 'member']).optional() }), req.body);
+  const b = parse(z.object({ allowRegistration: z.boolean().optional(), defaultRole: z.enum(['admin', 'member']).optional(), provisionMailboxes: z.boolean().optional() }), req.body);
   const next = { ...(await authSettings()), ...b };
   await query(`INSERT INTO settings (key, value, updated_at) VALUES ('auth', $1, now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [JSON.stringify(next)]);
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'users.auth_settings',$2)`, [req.user!.id, JSON.stringify(next)]);
@@ -53,18 +57,23 @@ const createSchema = z.object({
   password: z.string().min(10).max(200),
   displayName: z.string().min(1).max(120),
   role: z.enum(['admin', 'member']).default('member'),
+  // Defaults to the workspace setting; an admin can skip it for one person.
+  provisionMailbox: z.boolean().optional(),
 });
 
 usersRouter.post('/', async (req, res) => {
   const body = parse(createSchema, req.body);
   const exists = await one('SELECT 1 FROM users WHERE username=$1', [body.username.toLowerCase()]);
   if (exists) throw conflict('That username is taken');
+  const provision = body.provisionMailbox ?? (await provisioningEnabled());
+  if (provision) await assertMailboxFree(body.username);
   const rows = await query<UserRow>(
     `INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING *`,
     [body.username.toLowerCase(), body.displayName, await hashPassword(body.password), body.role],
   );
   await query(`INSERT INTO audit_log (user_id, action, target) VALUES ($1,'users.created',$2)`, [req.user!.id, String(rows[0].id)]);
-  res.json({ user: publicUser(rows[0]) });
+  const mailbox = provision ? await provisionMailbox(rows[0]) : null;
+  res.json({ user: publicUser(rows[0]), mailbox });
 });
 
 usersRouter.put('/:id', async (req, res) => {

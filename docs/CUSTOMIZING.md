@@ -31,7 +31,7 @@ takes the same path.
   similar suppresses the contact.
 - **Unsubscribe footer**: adds a one-click unsubscribe line and
   `List-Unsubscribe` / `List-Unsubscribe-Post` headers. Set the footer text
-  and your postal address under Settings → General.
+  and your postal address under Admin → General.
 - **AI personalise**: per step. The model writes each contact's message from
   the template's brief (or body) and the contact's fields and notes. The
   sequence's AI mode decides whether drafts wait in **AI review** (default),
@@ -94,7 +94,7 @@ so two people sharing a Tern install can sound like themselves.
 
 ## Mailboxes on the bundled mail server
 
-Settings → **Mail server** (admins, only when the installer set up Stalwart)
+Admin → **Mail server** (admins, only when the installer set up Stalwart)
 lists the mailboxes on the server and the DNS records for the domain, and
 creates new mailboxes: choose the address and domain, a display name, and a
 password (or let one be generated and shown once). The same step can connect
@@ -109,7 +109,7 @@ Fastmail has no provisioning API; create users in Fastmail's own settings.
 
 ## Registration and invites
 
-Settings → Users (admins):
+Admin → Users:
 
 - **Invite links**: create a link with a role and an expiry; the person
   opens it, picks a username and password, and lands in the app. Links are
@@ -192,21 +192,72 @@ mailing-list headers or attachments; actions archive, mark read, star, label,
 delete, junk. Rules run on new inbox mail in order; a delete or junk action
 ends the chain. "Run on inbox" applies a rule to mail already there.
 
+## Settings and Admin
+
+There are two settings areas. **Settings** (the gear in the sidebar, or the
+avatar menu) is about you: profile, mail accounts, mail apps, mail
+behaviour, your AI assistant page, appearance, security and encryption.
+**Admin** (sidebar, admins only) is the workspace: General (compliance
+footer), Users (people, invites, open registration, mailbox provisioning),
+Mail server (the bundled Stalwart: mailboxes, DNS, brand logo, admin
+access), AI model (provider, model, system prompt, tuning, downloads),
+Branding (name and logo) and the Audit log. Old `/settings/users`,
+`/settings/general` and `/settings/mailserver` links redirect.
+
+### A mailbox for every login
+
+With the bundled mail server, Admin → Users → **Give every new login a
+mailbox** (on by default) makes `username@your-domain` on Stalwart whenever
+someone registers, accepts an invite, is added by an admin, or creates the
+first admin account, and connects it as their first account with a
+generated password Tern keeps encrypted. A username whose address already
+exists on the server (as a mailbox or an alias) cannot register; an admin
+connects that mailbox to a login under Admin → Mail server instead. The
+outcome is in the audit log either way.
+
+### Your mailbox password
+
+Settings → Mail apps → **Mailbox password**. Tern signs in to the mailbox
+with that password, so after re-entering your Tern password it can show it
+to you for Thunderbird, a phone or a JMAP client. On the bundled mail server
+you can also **set a new password** there (generated, or one you choose);
+Tern updates its own connection, other apps need the new one. Both actions
+are written to the audit log.
+
+### What automation will not send
+
+Every message that leaves without a person pressing Send (sequence steps,
+AI responders in send mode, approved-then-scheduled mail) passes a guard in
+`server/src/ai/guard.ts`. It looks for unrendered merge fields
+(`{{first_name}}`, `{Hi|Hello}`), placeholders (`[Your Name]`, `<insert
+date>`, `__NAME__`), echoed prompt scaffolding ("Recipient facts", "--- From
+"), AI self-references ("as an AI language model") and filler ("lorem
+ipsum"). Anything flagged goes to the review queue with the reason shown on
+the card, the enrollment waits, and nothing is sent until someone edits and
+approves it. Quoted text from the other side is not inspected. Mail a
+person wrote or approved is never touched.
+
 ## Appearance
 
 Settings → Appearance, or the theme button in the top bar for the quick
 version. Everything is saved in the browser and mirrored to your profile.
 
 - **Theme**: Auto (follows the system), Light or Dark.
-- **Colour palette**: eight palettes (Indigo, Ocean, Sunset, Forest, Rose,
-  Violet, Amber, Graphite). A palette sets the accent colours and the four
-  gradient stops the background shaders mix. Add one in
-  `client/src/lib/palettes.ts` and `client/public/theme-init.js`.
-- **Background**: WebGL2 fragment shaders drawn behind the glass panels:
-  Aurora, Mesh, Nebula, Waves, Orbs, Grid, or Plain. They render at reduced
+- **Colour palette**: eighteen palettes. Ink (black on white, the default),
+  Graphite, Slate, Indigo, Arctic, Midnight, Ocean, Violet, Lavender, Rose,
+  Sakura, Sunset, Peach, Amber, Copper, Forest, Mint and Lime. A palette
+  sets the accent colours, the colour drawn on top of the accent, and the
+  four gradient stops the background shaders mix. Add one in
+  `client/src/lib/palettes.ts`, then run `npm run gen:theme -w client` to
+  regenerate `client/public/theme-init.js` for the first paint.
+- **Background**: fifteen WebGL2 fragment shaders drawn behind the glass
+  panels, grouped by mood. Calm: Mist (the default, a barely-there haze),
+  Silk, Halo, Horizon, Topo, Dust, Aurora, Orbs. Lively: Mesh, Liquid,
+  Nebula, Plasma, Prism, Waves, Grid. Or Plain. They render at reduced
   resolution, cap at 30 fps, pause in hidden tabs, and freeze to a single
   frame when motion is reduced. Without WebGL2 a CSS gradient stands in.
-  Shaders live in `client/src/lib/shaders.ts`.
+  Shaders live in `client/src/lib/shaders.ts`; each one is a fragment shader
+  that gets the palette's four colours, the time and the pointer.
 - **Glass**: Subtle, Balanced or Strong translucency and blur for the panels.
 - **Motion**: Full or Reduced. The operating system's reduce-motion setting
   is always respected.
@@ -218,7 +269,7 @@ card in dark mode with a "Match theme" switch that inverts them.
 
 ## Name and logo
 
-Settings → General → **Name and logo** (admins). The name replaces "Tern" in
+Admin → Branding → **Name and logo** (admins). The name replaces "Tern" in
 the top bar, on the sign-in and registration pages and in the browser tab;
 the logo replaces the feather and becomes the favicon. Upload an SVG, PNG,
 JPEG or WebP up to 1 MB. SVGs are cleaned the same way as mail logos
@@ -279,7 +330,7 @@ Set in `.env` (the installer writes it; edit and `./bin/tern up` to apply).
 
 ## Multiple users
 
-Admins add people under Settings → Users. Each user connects their own
+Admins add people under Admin → Users. Each user connects their own
 mailboxes and keeps their own contacts, templates, sequences and rules. The
 AI settings and compliance footer are shared.
 

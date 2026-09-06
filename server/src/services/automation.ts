@@ -6,6 +6,7 @@ import { logger } from '../log.js';
 import { publish } from '../events.js';
 import type { AccountRow } from './accounts.js';
 import * as actions from '../jmap/actions.js';
+import { autocryptHeadersOf, updatePeerFromMessage } from './autocrypt.js';
 
 const log = logger('automation');
 
@@ -44,6 +45,8 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
     const roles = mailboxIds.map((m) => roleOf.get(m));
     const outbound = fromEmail === own || roles.includes('sent') || roles.includes('drafts');
     if (outbound) continue;
+    // Autocrypt: every inbound message updates what we know about the sender's key (or that they have none).
+    try { await updatePeerFromMessage(acc.user_id, fromEmail, autocryptHeadersOf(e), new Date(e.sentAt ?? e.receivedAt ?? Date.now())); } catch (err) { log.debug('autocrypt update failed', { err: (err as Error).message }); }
     // A muted conversation skips the inbox: new messages are filed straight
     // into the archive, and nobody is asked to answer them.
     if (muted.has(e.threadId) && inboxId && mailboxIds.includes(inboxId)) {

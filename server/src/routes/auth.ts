@@ -10,6 +10,7 @@ import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../errors.js';
 import { authSettings } from './users.js';
 import { clearFailures as powClear, issueChallenge, recordFailure as powFail, verifySolution, type PowPurpose } from '../pow.js';
+import { assertMailboxFree, provisionMailbox } from '../services/provision.js';
 
 export const authRouter = Router();
 
@@ -40,12 +41,16 @@ authRouter.post('/register', async (req, res) => {
   }
   const username = body.username.toLowerCase();
   if (await one('SELECT 1 FROM users WHERE username=$1', [username])) throw badRequest('That username is taken');
+  // With the bundled mail server, the username becomes the person's address;
+  // an address someone already has on the server cannot be claimed here.
+  await assertMailboxFree(username);
   const rows = await query<UserRow>(`INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING *`, [username, body.displayName, await hashPassword(body.password), role]);
   if (invite) await query('UPDATE invites SET used_by=$2, used_at=now() WHERE id=$1', [invite.id, rows[0].id]);
   const sid = await createSession(rows[0].id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.registered',$2)`, [rows[0].id, JSON.stringify({ via: invite ? 'invite' : 'open', role })]);
-  res.json({ user: publicUser(rows[0]) });
+  const mailbox = await provisionMailbox(rows[0]);
+  res.json({ user: publicUser(rows[0]), mailbox });
 });
 
 // Step one of every sign-in or registration: a signed, single-use challenge

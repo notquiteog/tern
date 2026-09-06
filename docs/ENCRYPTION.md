@@ -221,6 +221,35 @@ Settings → Encryption, `server/src/services/pgp.ts`, `routes/pgp.ts`,
   decoy challenge, every attempt costs the proof of work, and the challenge
   can be answered with GnuPG for browsers that do not hold the key.
 - **Export.** `?pgp=1` streams the data export encrypted to your key.
+- **Autocrypt (level 1).** `server/src/services/autocrypt.ts`. Every
+  message from a user with a key carries an `Autocrypt` header (address,
+  optional `prefer-encrypt=mutual`, a pruned copy of the public key: primary
+  key, one user ID, the encryption subkey). Every inbound message updates
+  the sender's peer state in `autocrypt_peers` exactly as the spec says:
+  the newest header wins, a message without one only refreshes "last
+  seen", a key not re-announced for 35 days is "discouraged". Group mail
+  that Tern encrypts carries `Autocrypt-Gossip` headers inside the
+  protected part; the browser reports the ones it finds after decrypting,
+  and the server accepts those for addresses the message was sent to. The
+  composer follows the recommendation: encrypt by default only when both
+  sides said `mutual`, otherwise the key is one click away; keys learned
+  this way can be promoted to normal recipient keys (Settings → Encryption
+  → Autocrypt → Use key). The setting has an on/off switch and a "prefer
+  encrypted (mutual)" switch per user. Not implemented: the Autocrypt Setup
+  Message for moving a key between clients (export the key instead).
+- **Post-quantum readiness.** The OpenPGP post-quantum profile
+  (draft-ietf-openpgp-pqc: ML-KEM-768 + X25519, ML-DSA-65 + Ed25519, on v6
+  keys) is not implemented by OpenPGP.js 6.3, which reserves the algorithm
+  ids and nothing more. What Tern does today: `server/src/services/
+  pgpPackets.ts` walks the raw packets of every key that is imported,
+  looked up or received, so a key with post-quantum subkeys is recognised
+  and labelled even though the library skips those packets; mail to such a
+  key is encrypted to its classical subkey, which is what every client can
+  open. Key generation offers a **Modern (v6, RFC 9580)** format next to
+  the compatible v4 one; v6 is what post-quantum subkeys attach to, so a
+  v6 key needs no replacing when the library catches up. Settings →
+  Encryption → Post-quantum shows where your key and your recipients' keys
+  stand.
 
 Still open from the plan: layer 1 (at-rest encryption of the cache with
 server-held keys and a blind search index) and layer 3 (sealed accounts).

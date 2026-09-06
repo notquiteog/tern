@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { one, query } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { idParam, parse, z } from '../util/validate.js';
@@ -9,7 +9,9 @@ import { syncManager } from '../workers/syncManager.js';
 import { syncAccount } from '../jmap/sync.js';
 import { config } from '../config.js';
 import { describeWindow, isWindowOpen, nextWindowOpen, sentToday } from '../services/sending.js';
-import { encrypt } from '../crypto.js';
+import { decrypt, encrypt, verifyPassword } from '../crypto.js';
+import { isManagedAccount, stalwartAccountFor } from '../services/provision.js';
+import * as sw from '../services/stalwart.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(requireAuth);
@@ -59,13 +61,17 @@ export interface ClientSettings {
   password: 'mailbox' | 'app_password' | 'token';
   autoconfig: boolean;
   notes: string[];
+  // Tern holds the mailbox password (HTTP Basic accounts) and can show it back.
+  storedPassword: boolean;
+  // On the bundled mail server: the password can be reset from here too.
+  managed: boolean;
 }
 export function clientSettingsFor(a: AccountRow): ClientSettings {
   const email = a.email.toLowerCase();
   const domain = email.split('@')[1] ?? '';
   let sessionHost = '';
   try { sessionHost = new URL(a.session_url).hostname; } catch { /* stored URLs are validated */ }
-  const base = { accountId: a.id, name: a.name, email: a.email, provider: a.provider, color: a.color };
+  const base = { accountId: a.id, name: a.name, email: a.email, provider: a.provider, color: a.color, storedPassword: a.auth_type === 'basic', managed: isManagedAccount(a) };
   if (a.provider === 'fastmail') {
     return {
       ...base,
@@ -90,7 +96,7 @@ export function clientSettingsFor(a: AccountRow): ClientSettings {
       password: 'mailbox',
       autoconfig: onThisServer && Boolean(config.stalwartDomain) && domain === config.stalwartDomain.toLowerCase(),
       notes: onThisServer
-        ? ['Use the mailbox password that was set when the address was created. If you no longer have it, an admin can issue a new one under Settings → Mail server → Mailboxes; Tern updates itself, mail apps need the new password.', 'The user name is the full address.']
+        ? ['Use the mailbox password shown under "Mailbox password" on this page; it was set when the address was created. You can also set a new one there. Tern updates itself, mail apps need the new password.', 'The user name is the full address.']
         : ['Sign in with the full address and the mailbox password (or an app password created in Stalwart).'],
     };
   }
@@ -212,6 +218,46 @@ accountsRouter.delete('/:id', async (req, res) => {
   await query('DELETE FROM accounts WHERE id=$1', [id]);
   await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'accounts.deleted',$2,$3)`, [req.user!.id, String(id), JSON.stringify({ email: acc.email })]);
   res.json({ ok: true });
+});
+
+// ---------- Mailbox password self-service ----------
+// Tern keeps the mailbox password (encrypted) to talk JMAP, so it can hand
+// it back for a phone or desktop app. Both actions re-check the person's
+// Tern password and are written to the audit log.
+
+async function reauth(req: Request, password: string): Promise<void> {
+  if (!(await verifyPassword(password, req.user!.password_hash))) throw badRequest('Your Tern password is incorrect');
+}
+
+accountsRouter.post('/:id/mailbox-password/reveal', async (req, res) => {
+  const id = idParam(req.params.id);
+  const acc = await getUserAccount(req.user!.id, id);
+  if (!acc) throw notFound('Account not found');
+  const b = parse(z.object({ password: z.string().min(1).max(200) }), req.body);
+  await reauth(req, b.password);
+  if (acc.auth_type !== 'basic') throw badRequest('This account signs in with an API token, not a password');
+  await query(`INSERT INTO audit_log (user_id, action, target) VALUES ($1,'accounts.mailbox_password_viewed',$2)`, [req.user!.id, acc.email]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ username: acc.auth_user ?? acc.email, password: decrypt(acc.auth_secret_enc) });
+});
+
+accountsRouter.post('/:id/mailbox-password/reset', async (req, res) => {
+  const id = idParam(req.params.id);
+  const acc = await getUserAccount(req.user!.id, id);
+  if (!acc) throw notFound('Account not found');
+  const b = parse(z.object({ password: z.string().min(1).max(200), newPassword: z.string().min(12).max(200).optional() }), req.body);
+  await reauth(req, b.password);
+  if (!isManagedAccount(acc)) throw badRequest('Only mailboxes on the bundled mail server can be reset here; change the password with your provider instead');
+  const target = await stalwartAccountFor(acc);
+  if (!target) throw notFound('Your mailbox was not found on the mail server');
+  const password = b.newPassword ?? sw.generateMailboxPassword();
+  await sw.setMailboxPassword(target.id, password);
+  // Every Tern connection to this mailbox (yours, or a shared one) keeps working.
+  const updated = await query<{ id: number }>(`UPDATE accounts SET auth_secret_enc=$2, api_url=NULL, sync_status='idle', sync_error=NULL WHERE provider='stalwart' AND lower(email)=lower($1) RETURNING id`, [acc.email, encryptSecret(password)]);
+  for (const a of updated) await syncManager.refresh(a.id);
+  await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'accounts.mailbox_password_reset',$2,$3)`, [req.user!.id, acc.email, JSON.stringify({ chosen: Boolean(b.newPassword), updatedAccounts: updated.length })]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, username: acc.email, password, updatedAccounts: updated.length });
 });
 
 accountsRouter.post('/:id/resync', async (req, res) => {

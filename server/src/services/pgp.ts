@@ -13,25 +13,31 @@ import { one, query } from '../db.js';
 import { decrypt, encrypt, randomToken } from '../crypto.js';
 import { badRequest } from '../errors.js';
 import { logger } from '../log.js';
+import { describeKeyShape } from './pgpPackets.js';
+import { getPeer, recommend, type PreferEncrypt, type Recommendation } from './autocrypt.js';
 
 const log = logger('pgp');
 
-export interface KeyInfo { armored: string; fingerprint: string; keyId: string; userIds: string[]; emails: string[]; algorithm: string; created: Date; expires: Date | null }
+export interface KeyInfo { armored: string; fingerprint: string; keyId: string; userIds: string[]; emails: string[]; algorithm: string; created: Date; expires: Date | null; version: number; algorithms: string[]; postQuantum: boolean; postQuantumAlgorithms: string[] }
 export type PgpAuthMode = 'off' | 'second_factor' | 'passwordless';
-export interface UserKeys { publicKey: string | null; fingerprint: string | null; privateKey: string | null; auth: PgpAuthMode; updatedAt: Date | null }
+export interface UserKeys { publicKey: string | null; fingerprint: string | null; privateKey: string | null; auth: PgpAuthMode; updatedAt: Date | null; autocrypt: { enabled: boolean; prefer: PreferEncrypt } }
 
 export function extractEmail(userId: string): string | null {
   const m = userId.match(/<([^>]+)>/) ?? userId.match(/([^\s<>@]+@[^\s<>@]+)/);
   return m ? m[1].toLowerCase() : null;
 }
 
-async function describe(key: openpgp.Key): Promise<KeyInfo> {
+// `raw` is the certificate as it arrived; the packet walker reads algorithm
+// ids the library skipped (post-quantum subkeys) that key.write() would drop.
+async function describe(key: openpgp.Key, raw?: string | Uint8Array): Promise<KeyInfo> {
   const exp = await key.getExpirationTime().catch(() => null);
   const expires = exp instanceof Date ? exp : null;
   if (expires && expires.getTime() < Date.now()) throw badRequest('This key has expired');
   try { await key.getEncryptionKey(); } catch { throw badRequest('This key cannot be used for encryption: no valid encryption subkey, or the key is revoked'); }
   const info = key.getAlgorithmInfo();
   const userIds = key.getUserIDs();
+  let shape = { version: 0, algorithms: [] as string[], postQuantum: false, postQuantumAlgorithms: [] as string[] };
+  try { shape = describeKeyShape(raw ?? key.toPublic().write()); } catch { /* cosmetic */ }
   return {
     armored: key.toPublic().armor(),
     fingerprint: key.getFingerprint(),
@@ -41,6 +47,7 @@ async function describe(key: openpgp.Key): Promise<KeyInfo> {
     algorithm: `${info.algorithm}${info.curve ? ` ${info.curve}` : info.bits ? ` ${info.bits}` : ''}`,
     created: key.getCreationTime(),
     expires,
+    ...shape,
   };
 }
 
@@ -48,7 +55,7 @@ export async function readPublicKey(armored: string): Promise<KeyInfo> {
   let key: openpgp.Key;
   try { key = await openpgp.readKey({ armoredKey: armored.trim() }); } catch (e) { throw badRequest(`Not a valid OpenPGP key: ${(e as Error).message}`); }
   if (key.isPrivate()) throw badRequest('That is a private key. Paste it into the private key field instead.');
-  return describe(key);
+  return describe(key, armored.trim());
 }
 
 // A private key is accepted only in passphrase-protected form; the public
@@ -57,12 +64,12 @@ export async function readPrivateKey(armored: string): Promise<{ armored: string
   let key: openpgp.PrivateKey;
   try { key = await openpgp.readPrivateKey({ armoredKey: armored.trim() }); } catch (e) { throw badRequest(`Not a valid OpenPGP private key: ${(e as Error).message}`); }
   if (key.isDecrypted()) throw badRequest('The private key must be protected with a passphrase before it is stored');
-  return { armored: key.armor(), info: await describe(key) };
+  return { armored: key.armor(), info: await describe(key, armored.trim()) };
 }
 
 export async function getUserKeys(userId: number): Promise<UserKeys> {
-  const r = await one<any>('SELECT pgp_public_key, pgp_fingerprint, pgp_private_key_enc, pgp_auth, pgp_updated_at FROM users WHERE id=$1', [userId]);
-  return { publicKey: r?.pgp_public_key ?? null, fingerprint: r?.pgp_fingerprint ?? null, privateKey: r?.pgp_private_key_enc ? decrypt(r.pgp_private_key_enc) : null, auth: (r?.pgp_auth ?? 'off') as PgpAuthMode, updatedAt: r?.pgp_updated_at ?? null };
+  const r = await one<any>('SELECT pgp_public_key, pgp_fingerprint, pgp_private_key_enc, pgp_auth, pgp_updated_at, autocrypt_enabled, autocrypt_prefer FROM users WHERE id=$1', [userId]);
+  return { publicKey: r?.pgp_public_key ?? null, fingerprint: r?.pgp_fingerprint ?? null, privateKey: r?.pgp_private_key_enc ? decrypt(r.pgp_private_key_enc) : null, auth: (r?.pgp_auth ?? 'off') as PgpAuthMode, updatedAt: r?.pgp_updated_at ?? null, autocrypt: { enabled: r?.autocrypt_enabled ?? true, prefer: (r?.autocrypt_prefer ?? 'nopreference') as PreferEncrypt } };
 }
 
 export async function saveUserKeys(userId: number, publicKey: string, fingerprint: string, privateKey: string | null | undefined): Promise<void> {
@@ -104,7 +111,10 @@ export async function encryptStream(stream: ReadableStream<string>, armoredKeys:
 
 // ---------- Recipients' keys ----------
 
-export interface RecipientKey { email: string; fingerprint: string; publicKey: string; source: string }
+// `recommendation` is set only for keys learned through Autocrypt: those
+// follow the Autocrypt decision procedure instead of "encrypt whenever a
+// key is on file".
+export interface RecipientKey { email: string; fingerprint: string; publicKey: string; source: string; recommendation?: Recommendation }
 
 export async function recipientKeys(userId: number, emails: string[]): Promise<Map<string, RecipientKey>> {
   const list = [...new Set(emails.map((e) => e.toLowerCase()))];
@@ -117,13 +127,17 @@ export async function recipientKeys(userId: number, emails: string[]): Promise<M
   const out = new Map<string, RecipientKey>();
   for (const r of rows) if (!out.has(r.email)) out.set(r.email, r);
   // Writing to one of your own mailboxes: your own key is the recipient's key.
-  const missing = list.filter((e) => !out.has(e));
-  if (missing.length) {
-    const own = await query<{ email: string }>('SELECT lower(email) AS email FROM accounts WHERE user_id=$1 AND lower(email) = ANY($2)', [userId, missing]);
-    if (own.length) {
-      const mine = await getUserKeys(userId);
-      if (mine.publicKey && mine.fingerprint) for (const o of own) out.set(o.email, { email: o.email, fingerprint: mine.fingerprint, publicKey: mine.publicKey, source: 'own key' });
-    }
+  let missing = list.filter((e) => !out.has(e));
+  if (!missing.length) return out;
+  const mine = await getUserKeys(userId);
+  const own = await query<{ email: string }>('SELECT lower(email) AS email FROM accounts WHERE user_id=$1 AND lower(email) = ANY($2)', [userId, missing]);
+  if (own.length && mine.publicKey && mine.fingerprint) for (const o of own) out.set(o.email, { email: o.email, fingerprint: mine.fingerprint, publicKey: mine.publicKey, source: 'own key' });
+  // Keys that arrived in Autocrypt headers, with the spec's recommendation.
+  missing = list.filter((e) => !out.has(e));
+  for (const e of missing) {
+    const peer = await getPeer(userId, e);
+    const r = recommend(peer, mine.autocrypt.prefer);
+    if (r.key && r.fingerprint && r.source) out.set(e, { email: e, fingerprint: r.fingerprint, publicKey: r.key, source: r.source, recommendation: r.recommendation });
   }
   return out;
 }

@@ -549,4 +549,27 @@ ALTER TABLE drafts ADD COLUMN IF NOT EXISTS forward_of_email_id BIGINT REFERENCE
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS forward_blob_ids TEXT[] NOT NULL DEFAULT '{}';
 `,
   },
+  {
+    id: '20260906_0010_autocrypt_guard_provisioning',
+    up: `
+CREATE TABLE IF NOT EXISTS autocrypt_peers (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  last_seen TIMESTAMPTZ,
+  autocrypt_timestamp TIMESTAMPTZ,
+  public_key TEXT,
+  fingerprint TEXT,
+  prefer_encrypt TEXT NOT NULL DEFAULT 'nopreference' CHECK (prefer_encrypt IN ('mutual','nopreference')),
+  gossip_timestamp TIMESTAMPTZ,
+  gossip_key TEXT,
+  gossip_fingerprint TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, email)
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS autocrypt_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS autocrypt_prefer TEXT NOT NULL DEFAULT 'nopreference' CHECK (autocrypt_prefer IN ('mutual','nopreference'));
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS hold_reason TEXT;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS autocrypt_seen BOOLEAN NOT NULL DEFAULT false;
+`,
+  },
 ];

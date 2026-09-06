@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Apple, Check, Copy, Laptop, Mail, MonitorSmartphone, Smartphone, Sparkles } from 'lucide-react';
+import { Apple, Check, Copy, Eye, KeyRound, Laptop, Mail, MonitorSmartphone, RefreshCw, Smartphone, Sparkles } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { useToast } from '../state/toast';
-import { Badge, Callout, Empty, PageHeader, Select, Spinner } from '../components/ui';
+import { Badge, Button, Callout, Empty, Field, Input, Modal, PageHeader, Select, Spinner } from '../components/ui';
 import { cls } from '../lib/format';
 
 interface Server { host: string; port: number; security: 'SSL/TLS' | 'STARTTLS'; username: string; guessed: boolean; alt?: { port: number; security: string } }
-interface ClientSettings { accountId: number; name: string; email: string; provider: string; color: string; imap: Server | null; smtp: Server | null; jmap: { sessionUrl: string; username: string } | null; password: 'mailbox' | 'app_password' | 'token'; autoconfig: boolean; notes: string[] }
+interface ClientSettings { accountId: number; name: string; email: string; provider: string; color: string; imap: Server | null; smtp: Server | null; jmap: { sessionUrl: string; username: string } | null; password: 'mailbox' | 'app_password' | 'token'; autoconfig: boolean; notes: string[]; storedPassword: boolean; managed: boolean }
 
 const PASSWORD_LABEL: Record<ClientSettings['password'], string> = { mailbox: 'Your mailbox password', app_password: 'An app password (see note)', token: 'Password or app password from your provider (the API token Tern uses will not work)' };
 
@@ -37,6 +38,7 @@ export default function MailAppsSettings() {
         <>
           {data.length > 1 && <div className="row mb-16 wrap"><span className="small strong">Mailbox</span><Select value={acc.accountId} onChange={(e) => setAccId(Number(e.target.value))} style={{ maxWidth: 360 }}>{data.map((a) => <option key={a.accountId} value={a.accountId}>{a.name} &lt;{a.email}&gt;</option>)}</Select></div>}
           <AccountServers a={acc} />
+          {acc.storedPassword && <MailboxPassword a={acc} />}
           <div className="card mt-16">
             <div className="card-title"><h2>Step by step</h2><span className="small muted">Pick your app</span></div>
             <div className="client-tabs mb-16">{CLIENTS.map((c) => <button key={c.key} type="button" className={cls(client === c.key && 'active')} onClick={() => setClient(c.key)}>{c.icon}{c.label}</button>)}</div>
@@ -112,6 +114,57 @@ function AccountServers({ a }: { a: ClientSettings }) {
         <dt>Password</dt><dd>{PASSWORD_LABEL[a.password]}</dd>
         {a.jmap && <><dt>JMAP session</dt><dd><CopyValue value={a.jmap.sessionUrl} /> <span className="small muted">for JMAP-native apps</span></dd></>}
       </dl>
+    </div>
+  );
+}
+
+// The password a phone or desktop app needs. Tern already holds it (that is
+// how it reads the mailbox), so it can show it back after a password check;
+// on the bundled mail server it can also be replaced from here.
+function MailboxPassword({ a }: { a: ClientSettings }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<'none' | 'reveal' | 'reset'>('none');
+  const [pw, setPw] = useState('');
+  const [chosen, setChosen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ username: string; password: string; reset: boolean } | null>(null);
+  async function go() {
+    setBusy(true);
+    try {
+      if (mode === 'reveal') {
+        const r = await api.post<{ username: string; password: string }>(`/api/accounts/${a.accountId}/mailbox-password/reveal`, { password: pw });
+        setResult({ ...r, reset: false });
+      } else {
+        if (chosen && chosen.length < 12) throw new Error('Use at least 12 characters, or leave it empty to generate one');
+        const r = await api.post<{ username: string; password: string; updatedAccounts: number }>(`/api/accounts/${a.accountId}/mailbox-password/reset`, { password: pw, newPassword: chosen || undefined });
+        setResult({ username: r.username, password: r.password, reset: true });
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+      }
+      setMode('none'); setPw(''); setChosen('');
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  return (
+    <div className="card mt-16">
+      <div className="card-title"><h2>Mailbox password</h2>{a.managed && <Badge kind="success">bundled mail server</Badge>}</div>
+      <p className="muted small">{a.managed ? 'This mailbox lives on the bundled mail server. Show the password to type it into an app, or set a new one if you have lost it; Tern updates its own connection, apps on other devices need the new password.' : 'Tern signs in to this mailbox with a password, so it can show it to you for a mail app. To change it, use your provider.'}</p>
+      {result && (
+        <Callout kind="success">
+          <div className="strong">{result.reset ? 'New password set' : 'Your mailbox password'}</div>
+          <dl className="kv kv-tight mt-8"><dt>User name</dt><dd><CopyValue value={result.username} /></dd><dt>Password</dt><dd><CopyValue value={result.password} /></dd></dl>
+          <div className="small muted mt-8">{result.reset ? 'Shown once; update every app that uses this mailbox.' : 'Shown on request; this view is written to the audit log.'}</div>
+          <Button size="sm" variant="ghost" className="mt-8" onClick={() => setResult(null)}>Hide</Button>
+        </Callout>
+      )}
+      <div className="row wrap mt-8">
+        <Button icon={<Eye size={15} />} onClick={() => { setResult(null); setMode('reveal'); }}>Show password</Button>
+        {a.managed && <Button icon={<RefreshCw size={15} />} onClick={() => { setResult(null); setMode('reset'); }}>Set a new password</Button>}
+      </div>
+      <Modal open={mode !== 'none'} onClose={() => setMode('none')} title={mode === 'reveal' ? 'Show the mailbox password' : 'Set a new mailbox password'} footer={<><Button onClick={() => setMode('none')}>Cancel</Button><Button variant="primary" loading={busy} disabled={!pw} icon={<KeyRound size={15} />} onClick={go}>{mode === 'reveal' ? 'Show' : 'Set password'}</Button></>}>
+        {mode === 'reset' && <Callout kind="warning">Every mail app signed in to <b>{a.email}</b> stops syncing until it gets the new password. Tern itself is updated automatically.</Callout>}
+        <Field label="Your Tern password" hint="To confirm it is you." className="mt-16"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus onKeyDown={(e) => { if (e.key === 'Enter' && pw) void go(); }} /></Field>
+        {mode === 'reset' && <Field label="New mailbox password" hint="At least 12 characters. Leave empty to generate a strong one."><Input type="text" value={chosen} onChange={(e) => setChosen(e.target.value)} autoComplete="off" placeholder="generated" /></Field>}
+      </Modal>
     </div>
   );
 }

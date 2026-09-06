@@ -40,7 +40,7 @@ Every question shows its default in brackets; press Enter to accept. The install
 
 It ends with the URL and credentials. With Stalwart enabled it also prints the
 mail server's admin login and a numbered DNS walkthrough; the same guide with
-live verification is in the app under Settings → Mail server, and
+live verification is in the app under Admin → Mail server, and
 [DNS.md](DNS.md) explains every record.
 
 Run `sudo ./install.sh` again to change anything. It re-reads `.env`, offers each previous answer as the default, and only restarts what changed.
@@ -91,7 +91,7 @@ valves are in [CUSTOMIZING.md](CUSTOMIZING.md#ai-responders).
 
 ## 8. Add your team
 
-**Settings → Users.** Create accounts directly, or make an invite link and
+**Admin → Users.** Create accounts directly, or make an invite link and
 send it; the person picks their own password. Open self-registration is a
 switch on the same page, off by default.
 

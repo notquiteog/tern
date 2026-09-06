@@ -1,4 +1,4 @@
-// The web app's own name and logo, set by admins under Settings → General.
+// The web app's own name and logo, set by admins under Admin → Branding.
 // Shown in the top bar, on the sign-in pages and as the tab title; nothing
 // here is secret, so the public setup/status endpoint carries it. The logo
 // gets the same treatment as attachments and mail logos: SVGs are cleaned

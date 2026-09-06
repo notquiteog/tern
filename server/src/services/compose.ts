@@ -13,6 +13,8 @@ import { signPayload } from '../crypto.js';
 import { escapeHtml } from './merge.js';
 import { badRequest } from '../errors.js';
 import { scrubMedia } from './scrub.js';
+import { assertSendable } from '../ai/guard.js';
+import { buildAutocryptHeader, buildGossipHeader } from './autocrypt.js';
 
 export interface ComposeInput {
   to: Address[];
@@ -43,6 +45,20 @@ export interface ComposeInput {
   encrypt?: 'always' | 'if_possible' | null;
   // Already protected in the browser (signed, or signed and encrypted); sent as is.
   pgp?: PgpPayload | null;
+  // A person read and approved this exact text (review queue). Automated
+  // mail without this flag goes through the template/AI artifact guard.
+  reviewed?: boolean;
+}
+
+const AUTOMATED_KINDS = new Set(['sequence', 'auto_reply']);
+// The Autocrypt header is the same for every message from a key, so it is
+// built once per (address, preference, fingerprint).
+const autocryptCache = new Map<string, string>();
+async function autocryptHeaderFor(email: string, prefer: 'mutual' | 'nopreference', publicKey: string, fingerprint: string | null): Promise<string> {
+  const k = `${email.toLowerCase()}|${prefer}|${fingerprint ?? publicKey.length}`;
+  let h = autocryptCache.get(k);
+  if (!h) { h = await buildAutocryptHeader(email, prefer, publicKey); if (autocryptCache.size > 200) autocryptCache.clear(); autocryptCache.set(k, h); }
+  return h;
 }
 
 export interface SendLogRow {
@@ -95,6 +111,10 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   const cc = normalizeAddresses(input.cc ?? [], 'cc');
   const bcc = normalizeAddresses(input.bcc ?? [], 'bcc');
   if (!to.length && !cc.length && !bcc.length) throw badRequest('Add at least one recipient');
+  // Hard stop for automated mail: leftover merge fields, placeholders or
+  // prompt text never reach a recipient. The scheduler diverts such messages
+  // to the review queue before getting here; this is the backstop.
+  if (AUTOMATED_KINDS.has(input.kind) && !input.reviewed) assertSendable({ subject: input.subject, html: input.html, text: input.text });
 
   let inReplyTo = input.inReplyTo ?? null;
   let references = input.references ?? [];
@@ -142,6 +162,11 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     html += `<div class="tern-signature" style="margin-top:16px">${acc.signature_html}</div>`;
   }
   const headers: Record<string, string> = { ...(input.extraHeaders ?? {}) };
+  // Autocrypt: announce our key on every message so peers can encrypt back.
+  const mine = await getUserKeys(acc.user_id);
+  if (mine.publicKey && mine.autocrypt.enabled) {
+    try { headers['Autocrypt'] = await autocryptHeaderFor(acc.email, mine.autocrypt.prefer, mine.publicKey, mine.fingerprint); } catch (e) { /* a broken key must not block sending */ }
+  }
   if (input.unsubscribeFooter && input.contactId) {
     const s = await appSettings();
     const url = unsubscribeUrl(acc.user_id, input.contactId, acc.id);
@@ -161,8 +186,15 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     const missing = emails.filter((e) => !keys.has(e));
     if (missing.length && input.encrypt === 'always') throw badRequest(`No PGP key on file for ${missing.join(', ')}`);
     if (!missing.length) {
-      const mine = await getUserKeys(acc.user_id);
-      const inner = await buildInnerMime({ html, text: input.text, attachments });
+      // Autocrypt-Gossip inside the encrypted part lets every recipient of a
+      // group message reply encrypted to the others.
+      const innerHeaders: Record<string, string[]> = {};
+      if (keys.size > 1 && mine.autocrypt.enabled) {
+        const gossip: string[] = [];
+        for (const k of keys.values()) { try { gossip.push(await buildGossipHeader(k.email, k.publicKey)); } catch { /* skip */ } }
+        if (gossip.length) innerHeaders['Autocrypt-Gossip'] = gossip;
+      }
+      const inner = await buildInnerMime({ html, text: input.text, attachments, headers: innerHeaders });
       pgp = { mode: 'encrypted', armored: await encryptText(inner, [...[...keys.values()].map((k) => k.publicKey), ...(mine.publicKey ? [mine.publicKey] : [])]) };
       outgoingAttachments = [];
     }

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/**/*.test.ts",
+    "gen:theme": "tsx scripts/gen-theme.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.87.1",

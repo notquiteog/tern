@@ -3,7 +3,7 @@ import { BrandLogo, useAppName } from './Brand';
 import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip } from 'lucide-react';
+import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { adoptServerMailPrefs } from '../state/mailPrefs';
 import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, type SearchFields } from '../lib/search';
@@ -78,7 +78,7 @@ export function Shell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const seg = loc.pathname.split('/').filter(Boolean);
     const boxTitles: Record<string, string> = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail' };
-    const sectionTitles: Record<string, string> = { home: 'Overview', contacts: 'Contacts', sequences: 'Sequences', templates: 'Templates', review: 'AI review', responders: 'AI responders', rules: 'Rules', settings: 'Settings' };
+    const sectionTitles: Record<string, string> = { home: 'Overview', contacts: 'Contacts', sequences: 'Sequences', templates: 'Templates', review: 'AI review', responders: 'AI responders', rules: 'Rules', settings: 'Settings', admin: 'Admin' };
     let where = '';
     if (seg[0] === 'mail') { const b = seg[1] ?? 'inbox'; where = b.startsWith('mailbox:') ? (mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === b)?.name ?? 'Label') : boxTitles[b] ?? 'Mail'; }
     else where = sectionTitles[seg[0] ?? ''] ?? '';
@@ -168,6 +168,7 @@ export function Shell({ children }: { children: ReactNode }) {
               <MenuItem icon={<UserCircle size={15} />} onClick={() => { nav('/settings/profile'); close(); }}>Profile</MenuItem>
               <MenuItem icon={<Settings size={15} />} onClick={() => { nav('/settings/accounts'); close(); }}>Settings</MenuItem>
               <MenuItem icon={<KeyRound size={15} />} onClick={() => { nav('/settings/security'); close(); }}>Security</MenuItem>
+              {user!.role === 'admin' && <MenuItem icon={<Wrench size={15} />} onClick={() => { nav('/admin/general'); close(); }}>Admin settings</MenuItem>}
               <MenuItem icon={<Keyboard size={15} />} onClick={() => { setHelp(true); close(); }} shortcut="?">Keyboard shortcuts</MenuItem>
               <div className="menu-sep" />
               <MenuItem icon={<LogOut size={15} />} onClick={() => { void logout(); close(); }}>Sign out</MenuItem>
@@ -209,7 +210,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <div className="nav-section">
             <div className="nav-section-title">Workspace</div>
             {navItem('/settings/accounts', <Settings size={17} />, 'Settings')}
-            {user!.role === 'admin' && navItem('/settings/users', <Users size={17} />, 'Users')}
+            {user!.role === 'admin' && navItem('/admin/general', <Wrench size={17} />, 'Admin')}
           </div>
           {accounts.length > 0 && (
             <div className="nav-section">
@@ -335,6 +336,7 @@ function AdvancedSearch({ initial, onSearch, onClose }: { initial: string; onSea
 function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const nav = useNavigate();
   const compose = useCompose();
+  const { user } = useAuth();
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
   const items = useMemo(() => [
@@ -363,7 +365,17 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
     { label: 'Settings: Appearance', run: () => nav('/settings/appearance') },
     { label: 'Toggle dark mode', run: () => setAppearance({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }) },
     { label: 'Settings: Profile picture', run: () => nav('/settings/profile') },
-  ], [nav, compose]);
+    { label: 'Settings: Encryption and Autocrypt', run: () => nav('/settings/encryption') },
+    { label: 'Settings: Mail apps and mailbox password', run: () => nav('/settings/mailapps') },
+    ...(user?.role === 'admin' ? [
+      { label: 'Admin: Users and sign-up', run: () => nav('/admin/users') },
+      { label: 'Admin: Mail server', run: () => nav('/admin/mailserver') },
+      { label: 'Admin: AI model', run: () => nav('/admin/ai') },
+      { label: 'Admin: Branding', run: () => nav('/admin/branding') },
+      { label: 'Admin: Audit log', run: () => nav('/admin/audit') },
+      { label: 'Admin: General', run: () => nav('/admin/general') },
+    ] : []),
+  ], [nav, compose, user?.role]);
   const filtered = items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
   useEffect(() => { setIdx(0); }, [q, open]);
   useEffect(() => { if (!open) setQ(''); }, [open]);

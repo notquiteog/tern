@@ -27,8 +27,17 @@ Nothing leaves your server except the mail itself.
   arrows, block sender, find messages from this sender, one-click
   **Unsubscribe** for list mail, attachment previews in a lightbox, print,
   and drafts shown in the conversation they belong to.
-- Glassmorphism interface with light, dark and auto themes, eight colour
-  palettes and six WebGL2 shader backgrounds; works on phones and desktops.
+- Clean, modern interface (monochrome "Ink" over a barely moving "Mist" by
+  default) with light, dark and auto themes, eighteen colour palettes and
+  fifteen WebGL2 shader backgrounds; works on phones and desktops.
+- Settings split in two: **Settings** is about you (profile, mailboxes,
+  mail apps, appearance, security, encryption); **Admin** is the workspace
+  (users and sign-up, the mail server, the AI model, branding, audit log).
+- With the bundled mail server, every new login gets
+  `username@your-domain` created and connected automatically; an address
+  that already exists on the server cannot be claimed. People can show or
+  reset their own mailbox password under Settings → Mail apps to set up
+  Thunderbird, a phone, or any JMAP client.
 - Compose with rich text (sizes, colours, alignment, lists, indent, links,
   emoji), inline images that go out as proper `cid:` parts, attachment cards
   with thumbnails, forwarded attachments you can drop before sending, your
@@ -56,6 +65,10 @@ Nothing leaves your server except the mail itself.
 
 **AI, locally**
 - Bundled Ollama container; the installer picks a model that fits the RAM.
+- A hard filter in front of every automated send: a responder in send mode
+  or a sequence step that still contains a merge field, a placeholder such
+  as "[Your Name]", echoed prompt text or an "as an AI" line is held in the
+  review queue instead of being sent.
 - In the composer: draft, reply, rewrite, fix grammar, shorten, expand,
   subject lines. In a thread: one-click AI reply (written inline, addressed
   to the right person), **Quick replies** (three one-line suggestions to pick

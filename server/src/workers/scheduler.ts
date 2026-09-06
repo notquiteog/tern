@@ -10,6 +10,7 @@ import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '
 import { jitterMs, reserveSendSlot } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput, finalizeOutput } from '../ai/prompts.js';
+import { describeHits, findTemplateArtifacts } from '../ai/guard.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
@@ -228,6 +229,26 @@ async function runEnrollment(enr: any): Promise<void> {
     subject = rendered.subject; html = rendered.html;
   }
 
+  // Nothing with a leftover placeholder, an unrendered merge field or echoed
+  // prompt text goes out on its own: it waits for a person in the review queue.
+  if (!approved) {
+    const hits = findTemplateArtifacts({ subject, html });
+    if (hits.length) {
+      const reason = `Held for review: ${describeHits(hits)}`;
+      await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
+      await query(
+        `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model, hold_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [seq.user_id, enr.id, acc.id, contact.id, step.id, subject, html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason],
+      );
+      await query(`UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1`, [enr.id]);
+      const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
+      publish({ type: 'review', userId: seq.user_id, count: pending?.n ?? 0 });
+      publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'waiting_review' });
+      log.warn('sequence step held for review', { enrollment: enr.id, step: step.id, reason });
+      return;
+    }
+  }
+
   const slot = await reserveSendSlot(acc);
   if (!slot.ok) {
     await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, new Date(slot.retryAt.getTime() + Math.random() * 60_000)]);
@@ -252,6 +273,7 @@ async function runEnrollment(enr: any): Promise<void> {
     references: threaded ? [enr.last_message_id] : [],
     unsubscribeFooter: seq.unsubscribe_footer,
     encrypt: seq.encrypt_pgp ? 'if_possible' : null,
+    reviewed: Boolean(approved),
   });
 
   const nextIndex = enr.current_step + 1;
@@ -390,6 +412,22 @@ async function runResponderJob(job: any): Promise<string> {
     const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
     publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
     return 'queued for review';
+  }
+  // Send mode still never sends something a person would wince at: leftover
+  // placeholders, prompt text or an "as an AI" line park the reply in the
+  // review queue instead.
+  const hits = findTemplateArtifacts({ subject: gen.subject, html: gen.html });
+  if (hits.length) {
+    const reason = `Held for review: ${describeHits(hits)}`;
+    await query(
+      `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context, hold_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11,$12)`,
+      [acc.user_id, acc.id, contact?.id ?? null, gen.subject, gen.html, gen.model, responder.id, email.id, email.thread_id, JSON.stringify(gen.to), (email.body_text || email.preview || '').slice(0, 2000), reason],
+    );
+    const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
+    publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
+    log.warn('auto-reply held for review', { responder: responder.id, email: email.id, reason });
+    return `held for review: ${describeHits(hits)}`;
   }
   // A reply to someone whose key is on file goes back encrypted.
   const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible' };

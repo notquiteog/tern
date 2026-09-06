@@ -5,7 +5,7 @@
 // quoted-printable transfer encodings, RFC 2047 encoded words in headers,
 // and RFC 2231 filename parameters. Charsets go through TextDecoder.
 
-export interface MimePart { headers: Record<string, string>; type: string; params: Record<string, string>; body: Uint8Array; parts: MimePart[] }
+export interface MimePart { headers: Record<string, string>; headerList: [string, string][]; type: string; params: Record<string, string>; body: Uint8Array; parts: MimePart[] }
 export interface FlatMessage { html: string | null; text: string | null; attachments: { name: string; type: string; data: Uint8Array; cid: string | null; inline: boolean }[] }
 
 const CRLF = '\r\n';
@@ -30,14 +30,17 @@ function encodeWord(s: string): string {
   return /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${b64encode(new TextEncoder().encode(s))}?=`;
 }
 
-export function buildMime(msg: { html: string; text?: string; attachments?: { name: string; type: string; data: Uint8Array; cid?: string | null }[] }): string {
+export function buildMime(msg: { html: string; text?: string; attachments?: { name: string; type: string; data: Uint8Array; cid?: string | null }[]; headers?: [string, string][] }): string {
   const enc = new TextEncoder();
+  // Headers that belong inside the protected part (Autocrypt-Gossip); long
+  // values are folded at 76 columns, which the readers unfold.
+  const extra = (msg.headers ?? []).map(([k, v]) => `${k}: ${v.replace(/(.{76})/g, `$1${CRLF} `)}${CRLF}`).join('');
   const textPart = (type: string, body: string) => `Content-Type: ${type}; charset=utf-8${CRLF}Content-Transfer-Encoding: base64${CRLF}${CRLF}${wrap76(b64encode(enc.encode(body)))}${CRLF}`;
   const altB = boundary();
   const alt = `Content-Type: multipart/alternative; boundary="${altB}"${CRLF}${CRLF}--${altB}${CRLF}${textPart('text/plain', msg.text ?? htmlToPlain(msg.html))}--${altB}${CRLF}${textPart('text/html', msg.html)}--${altB}--${CRLF}`;
-  if (!msg.attachments?.length) return alt;
+  if (!msg.attachments?.length) return extra + alt;
   const mixB = boundary();
-  let out = `Content-Type: multipart/mixed; boundary="${mixB}"${CRLF}${CRLF}--${mixB}${CRLF}${alt}`;
+  let out = `${extra}Content-Type: multipart/mixed; boundary="${mixB}"${CRLF}${CRLF}--${mixB}${CRLF}${alt}`;
   for (const a of msg.attachments) {
     const name = encodeWord(a.name.replace(/["\r\n]/g, '_'));
     out += `--${mixB}${CRLF}Content-Type: ${a.type || 'application/octet-stream'}; name="${name}"${CRLF}Content-Disposition: ${a.cid ? 'inline' : 'attachment'}; filename="${name}"${CRLF}${a.cid ? `Content-ID: <${a.cid}>${CRLF}` : ''}Content-Transfer-Encoding: base64${CRLF}${CRLF}${wrap76(b64encode(a.data))}${CRLF}`;
@@ -72,14 +75,18 @@ function qpDecode(s: string): Uint8Array {
   return new Uint8Array(out);
 }
 
-function parseHeaders(block: string): Record<string, string> {
+function parseHeaders(block: string): { headers: Record<string, string>; list: [string, string][] } {
   const headers: Record<string, string> = {};
+  const list: [string, string][] = [];
   for (const line of block.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/)) {
     const i = line.indexOf(':');
     if (i < 0) continue;
-    headers[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+    const name = line.slice(0, i).trim().toLowerCase();
+    const value = line.slice(i + 1).trim();
+    headers[name] = value;
+    list.push([name, value]);
   }
-  return headers;
+  return { headers, list };
 }
 
 function parseParams(value: string): { type: string; params: Record<string, string> } {
@@ -107,9 +114,9 @@ export function parseMime(raw: string): MimePart {
   const split = norm.indexOf(CRLF + CRLF);
   const headerBlock = split < 0 ? norm : norm.slice(0, split);
   const bodyText = split < 0 ? '' : norm.slice(split + 4);
-  const headers = parseHeaders(headerBlock);
+  const { headers, list } = parseHeaders(headerBlock);
   const { type, params } = parseParams(headers['content-type'] ?? 'text/plain');
-  const part: MimePart = { headers, type, params, body: new Uint8Array(), parts: [] };
+  const part: MimePart = { headers, headerList: list, type, params, body: new Uint8Array(), parts: [] };
   if (type.startsWith('multipart/') && params.boundary) {
     const b = `--${params.boundary}`;
     const chunks = bodyText.split(new RegExp(`(?:^|\\r\\n)${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));

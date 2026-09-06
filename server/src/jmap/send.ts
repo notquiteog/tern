@@ -52,7 +52,7 @@ export function newMessageId(fromEmail: string): string {
 
 // The part that gets encrypted or signed: text and HTML alternatives plus
 // attachments, without the envelope headers the builder adds to a root node.
-export async function buildInnerMime(msg: { html: string; text?: string; attachments?: OutgoingAttachment[] }): Promise<string> {
+export async function buildInnerMime(msg: { html: string; text?: string; attachments?: OutgoingAttachment[]; headers?: Record<string, string | string[]> }): Promise<string> {
   const alt = new MimeNode('multipart/alternative');
   alt.createChild('text/plain; charset=utf-8').setContent(msg.text ?? htmlToText(msg.html));
   alt.createChild('text/html; charset=utf-8').setContent(msg.html);
@@ -67,6 +67,8 @@ export async function buildInnerMime(msg: { html: string; text?: string; attachm
       n.setContent(a.content);
     }
   }
+  // Headers that belong inside the protected part (Autocrypt-Gossip).
+  for (const [k, v] of Object.entries(msg.headers ?? {})) root.setHeader(k, v);
   const built = (await root.build()).toString('utf8');
   const split = built.indexOf('\r\n\r\n');
   const headers = built.slice(0, split).split('\r\n').filter((l: string) => !/^(Date|Message-ID|MIME-Version):/i.test(l));

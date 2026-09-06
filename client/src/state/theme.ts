@@ -10,7 +10,9 @@ export type Glass = 'subtle' | 'balanced' | 'strong';
 export type Motion = 'full' | 'reduced';
 export interface Appearance { theme: Theme; palette: string; background: string; glass: Glass; motion: Motion; density: 'comfortable' | 'compact'; split: boolean }
 
-const DEFAULTS: Appearance = { theme: 'system', palette: 'indigo', background: 'aurora', glass: 'balanced', motion: 'full', density: 'comfortable', split: true };
+// Ink on Mist: monochrome accents over a barely moving haze. Anyone who
+// chose something before keeps it; this only decides the first impression.
+const DEFAULTS: Appearance = { theme: 'system', palette: 'ink', background: 'mist', glass: 'balanced', motion: 'full', density: 'comfortable', split: true };
 const KEY = 'tern.appearance';
 const listeners = new Set<(a: Appearance) => void>();
 
@@ -46,6 +48,7 @@ export function applyAppearance(a: Appearance = getAppearance()): void {
   root.style.setProperty('--accent-hover', t.hover);
   root.style.setProperty('--accent-soft', t.soft);
   root.style.setProperty('--accent-text', t.text);
+  root.style.setProperty('--on-accent', t.on);
   root.style.setProperty('--accent-rgb', hexToRgb(t.accent).join(', '));
   p.gradient.forEach((c, i) => root.style.setProperty(`--g${i + 1}`, c));
   for (const l of listeners) l(a);

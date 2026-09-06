@@ -159,7 +159,7 @@ export default function LoginPage() {
         )}
 
         {registrationOpen && step === 'credentials' && <p className="help-text mt-16" style={{ textAlign: 'center' }}>New here? <Link to="/register">Create an account</Link></p>}
-        {step === 'credentials' && <p className="help-text mt-16">No password reset by design. An admin can set a new password from Settings → Users, or with <code>tern set-password</code> on the server.</p>}
+        {step === 'credentials' && <p className="help-text mt-16">No password reset by design. An admin can set a new password from Admin → Users, or with <code>tern set-password</code> on the server.</p>}
         <PowFootnote />
       </div>
     </div>

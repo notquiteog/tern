@@ -25,9 +25,15 @@ export async function inspectKey(armored: string): Promise<KeyInfo> {
   };
 }
 
-export async function generateKeyPair(input: { name: string; email: string; passphrase: string }): Promise<{ publicKey: string; privateKey: string; fingerprint: string }> {
+// 'compatible' is a v4 Curve25519 key every OpenPGP client reads; 'modern'
+// is a v6 key (RFC 9580) with the same curves, which is the format the
+// post-quantum profile (draft-ietf-openpgp-pqc) builds on. Older clients
+// (GnuPG 2.2, Thunderbird before 2025) cannot read v6 keys yet.
+export type KeyProfile = 'compatible' | 'modern';
+export async function generateKeyPair(input: { name: string; email: string; passphrase: string; profile?: KeyProfile }): Promise<{ publicKey: string; privateKey: string; fingerprint: string }> {
   const o = await pgp();
-  const r = await o.generateKey({ userIDs: [{ name: input.name, email: input.email }], passphrase: input.passphrase, format: 'armored' });
+  const config = input.profile === 'modern' ? { v6Keys: true } : undefined;
+  const r = await o.generateKey({ userIDs: [{ name: input.name, email: input.email }], passphrase: input.passphrase, format: 'armored', config });
   const key = await o.readKey({ armoredKey: r.publicKey });
   return { publicKey: r.publicKey, privateKey: r.privateKey, fingerprint: key.getFingerprint() };
 }
@@ -88,6 +94,16 @@ export async function encryptText(text: string, recipientArmored: string[], sign
 export async function signDetached(text: string, key: PrivateKey): Promise<string> {
   const o = await pgp();
   return o.sign({ message: await o.createMessage({ text }), signingKeys: key, detached: true, format: 'armored' });
+}
+
+// Autocrypt keydata: the public key as base64 of its binary form.
+export async function keydataOf(armoredPublicKey: string): Promise<string> {
+  const o = await pgp();
+  const key = (await o.readKey({ armoredKey: armoredPublicKey })).toPublic();
+  const bytes = key.write();
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 export function looksEncrypted(s: string | null | undefined): boolean { return Boolean(s && /-----BEGIN PGP MESSAGE-----/.test(s)); }

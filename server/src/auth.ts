@@ -18,8 +18,12 @@ export interface UserRow {
 }
 export type PublicUser = Omit<UserRow, 'password_hash' | 'totp_secret' | 'recovery_codes' | 'avatar' | 'avatar_type'> & { avatar_version: number | null };
 
+// Key material has its own endpoints; a row fetched with SELECT * must not
+// carry the (wrapped) private key or the public key into every user listing.
 export function publicUser(u: UserRow): PublicUser {
-  const { password_hash, totp_secret, recovery_codes, avatar, avatar_type, ...rest } = u;
+  const { password_hash, totp_secret, recovery_codes, avatar, avatar_type, ...rest } = u as UserRow & { pgp_private_key_enc?: unknown; pgp_public_key?: unknown };
+  delete (rest as any).pgp_private_key_enc;
+  delete (rest as any).pgp_public_key;
   return { ...rest, avatar_version: u.avatar_updated_at ? new Date(u.avatar_updated_at).getTime() : null };
 }
 
