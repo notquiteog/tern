@@ -197,10 +197,79 @@ polish, shorten, expand, subject).
   best one. A gentler tail cut than top-p, and it holds up better at higher
   temperatures; 0.05 is a reasonable place to start. Sent to Ollama and to
   OpenAI-compatible endpoints that accept it, and omitted entirely when 0.
+- **Repeat penalty** (1.1) and **repeat window** (256 tokens): the penalty,
+  and how far back it looks for something to penalise. Ollama's own window is
+  64 tokens — less than a paragraph, so a model that opens every paragraph
+  the same way is never caught by it. `-1` is the whole context, `0` turns
+  repetition tracking off.
+- **Frequency** and **presence penalty** (both 0, off): the repetition
+  controls that cross providers. Repeat penalty and top-k are *not* sent to
+  an OpenAI-compatible endpoint, because real OpenAI answers `400` to a
+  parameter it does not know; these two are accepted by OpenAI, vLLM,
+  llama.cpp and Ollama alike, so on that provider they are the only
+  repetition controls there are.
+- Some parameters are deliberately not settings. **Stop sequences** are set
+  per task — a subject line ends at its first newline, every mode stops if
+  the model starts a second turn of the conversation — because they are
+  about the shape of a request, not about how the assistant writes. **Seed**
+  is used only by the evaluation scripts, which compare runs: a fixed seed
+  would make everyone's "try again" produce the same draft again. **Mirostat**
+  is not offered at all: it replaces top-p and top-k with its own controller,
+  so turning it on would silently disable three settings that are on the same
+  page. **DRY sampling** (`dry_multiplier` and friends) is not an Ollama
+  parameter — it belongs to llama.cpp's own server — and Ollama ignores it.
 - Ollama keeps the model loaded for 10 minutes after use (`OLLAMA_KEEP_ALIVE`
   in `.env`); on a small VPS this is what keeps memory free between drafts.
+  With several people using it, a longer keep-alive is worth more than it
+  looks: every expiry costs the next person a cold load of the whole model.
 - **GPU**: re-run the installer and answer yes, or add `compose.gpu.yml` to
   `COMPOSE_FILE` in `.env`.
+
+### Several people at once
+
+One model is loaded, and everyone shares it. Ollama serves
+`OLLAMA_NUM_PARALLEL` requests per model at the same time and queues the
+rest, so with one slot the second person to ask for a draft waits for the
+first person's whole email with nothing to look at. Each slot holds its own
+context window of KV cache, so slots cost memory: roughly
+`num_ctx × (bytes per token for the model) × slots`, which Admin → AI model
+prices for the model you are running.
+
+- **Answer several people at once** (Admin → AI model, on by default) is the
+  app's side of it: up to one generation per slot, one slot always kept for
+  somebody waiting at a composer so inbox summaries and sequence mail cannot
+  take them all, and one interactive generation per person so nobody's
+  clicking starves anyone else. Turned off, every generation on the install
+  waits for the one before it.
+- **The slot count itself is Ollama's**, read when its container starts, so
+  it lives in `.env` rather than on the admin page. The installer sizes it
+  from RAM (2, 4 or 8). When more people have accounts than there are slots,
+  the admin page says so and
+
+  ```bash
+  ./bin/tern ai-slots
+  ```
+
+  works out the number — one slot per person who can sign in, capped by what
+  `OLLAMA_MEM_LIMIT` can pay for beside the model's own weights — writes it
+  to `.env` and restarts. `./bin/tern ai-slots 4` sets it by hand.
+- **`OLLAMA_KV_CACHE_TYPE=q8_0`** (the default here) roughly halves what each
+  slot's context costs at close to no quality cost, which is what makes
+  several slots affordable on a small box. It needs `OLLAMA_FLASH_ATTENTION`,
+  which is also on. `q4_0` halves it again and does cost quality; `f16` turns
+  the saving off.
+- **`OLLAMA_MAX_QUEUE=32`**: once every slot is busy, Ollama queues. Its own
+  default is 512 — deep enough that a loaded box looks like a hung spinner
+  for minutes — so it is kept short here and a full queue becomes "The
+  assistant is busy answering other people right now" instead.
+- The memory meter on Admin → AI model shows all of this live: what the
+  machine has left, what Ollama's container is holding against its limit, how
+  much of the model is in VRAM when there is a GPU, and how many slots are
+  generating or waiting right now.
+
+On a CPU-only box the slots share the same cores, so two drafts at once are
+each slower than one alone. The win is that nobody waits behind somebody
+else's whole email before seeing a first word.
 
 Prompts live in `server/src/ai/prompts.ts`. They are short on purpose; small
 models follow short instructions best.
@@ -371,6 +440,9 @@ Set in `.env` (the installer writes it; edit and `./bin/tern up` to apply).
 | `ENCRYPTION_KEY` | AES-256-GCM key for stored mailbox credentials | generated |
 | `AI_ENABLED`, `AI_MODEL` | Assistant on/off and default model | from RAM |
 | `OLLAMA_KEEP_ALIVE` | How long a model stays loaded | `10m` |
+| `OLLAMA_NUM_PARALLEL` | People the model answers at once; each slot holds its own context window (`./bin/tern ai-slots`) | from RAM: `2`, `4` or `8` |
+| `OLLAMA_KV_CACHE_TYPE` | How the context cache is stored: `q8_0`, `q4_0` or `f16` | `q8_0` |
+| `OLLAMA_MAX_QUEUE` | Requests Ollama queues once every slot is busy, before answering "busy" | `32` |
 | `OLLAMA_MEM_LIMIT`, `APP_MEM_LIMIT`, `STALWART_MEM_LIMIT` | Container memory limits | from RAM |
 | `SYNC_POLL_SECONDS` | Fallback poll interval when push is unavailable | `90` |
 | `INITIAL_SYNC_LIMIT` | Newest messages fetched on first sync | `3000` |

@@ -5,6 +5,7 @@
 import { one, query } from '../db.js';
 import { clientFor, type AccountRow } from '../services/accounts.js';
 import { notFound } from '../errors.js';
+import { touchAccount } from '../services/mailCache.js';
 
 export interface MailboxRow { id: number; account_id: number; jmap_id: string; name: string; parent_id: string | null; role: string | null; sort_order: number; total_emails: number; unread_emails: number; total_threads: number; unread_threads: number; color: string | null }
 
@@ -85,11 +86,13 @@ export async function setKeyword(acc: AccountRow, jmapIds: string[], keyword: st
       : `UPDATE emails SET keywords = array_remove(keywords, $3), updated_at=now() WHERE account_id=$1 AND jmap_id = ANY($2)`,
     [acc.id, jmapIds, keyword],
   );
+  touchAccount(acc.id);
   await patchAll(acc, jmapIds, () => ({ [`keywords/${keyword}`]: on ? true : null }));
 }
 
 export async function addToMailbox(acc: AccountRow, jmapIds: string[], mailboxJmapId: string): Promise<void> {
   await query(`UPDATE emails SET mailbox_ids = array_append(array_remove(mailbox_ids, $3), $3), updated_at=now() WHERE account_id=$1 AND jmap_id = ANY($2)`, [acc.id, jmapIds, mailboxJmapId]);
+  touchAccount(acc.id);
   await patchAll(acc, jmapIds, () => ({ [`mailboxIds/${mailboxJmapId}`]: true }));
 }
 
@@ -98,6 +101,7 @@ export async function removeFromMailbox(acc: AccountRow, jmapIds: string[], mail
   const rows = await query<{ jmap_id: string; mailbox_ids: string[] }>('SELECT jmap_id, mailbox_ids FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, jmapIds]);
   const needFallback = new Set(rows.filter((r) => r.mailbox_ids.every((m) => m === mailboxJmapId)).map((r) => r.jmap_id));
   await query(`UPDATE emails SET mailbox_ids = array_remove(mailbox_ids, $3), updated_at=now() WHERE account_id=$1 AND jmap_id = ANY($2)`, [acc.id, jmapIds, mailboxJmapId]);
+  touchAccount(acc.id);
   if (fallback && needFallback.size) {
     await query(`UPDATE emails SET mailbox_ids = array_append(mailbox_ids, $3) WHERE account_id=$1 AND jmap_id = ANY($2)`, [acc.id, [...needFallback], fallback]);
   }
@@ -110,6 +114,7 @@ export async function removeFromMailbox(acc: AccountRow, jmapIds: string[], mail
 
 export async function moveToOnly(acc: AccountRow, jmapIds: string[], mailboxJmapId: string): Promise<void> {
   await query(`UPDATE emails SET mailbox_ids = ARRAY[$3]::text[], updated_at=now() WHERE account_id=$1 AND jmap_id = ANY($2)`, [acc.id, jmapIds, mailboxJmapId]);
+  touchAccount(acc.id);
   await patchAll(acc, jmapIds, () => ({ mailboxIds: { [mailboxJmapId]: true } }));
 }
 
@@ -121,6 +126,7 @@ export async function restoreMailboxes(acc: AccountRow, items: { jmapId: string;
   const known = new Set((await query<{ jmap_id: string }>('SELECT jmap_id FROM mailboxes WHERE account_id=$1', [acc.id])).map((r) => r.jmap_id));
   const usable = valid.map((i) => ({ jmapId: i.jmapId, mailboxIds: i.mailboxIds.filter((m) => known.has(m)) })).filter((i) => i.mailboxIds.length);
   for (const i of usable) await query(`UPDATE emails SET mailbox_ids=$3::text[], updated_at=now() WHERE account_id=$1 AND jmap_id=$2`, [acc.id, i.jmapId, i.mailboxIds]);
+  touchAccount(acc.id);
   const byId = new Map(usable.map((i) => [i.jmapId, i.mailboxIds]));
   await patchAll(acc, [...byId.keys()], (id) => ({ mailboxIds: Object.fromEntries(byId.get(id)!.map((m) => [m, true])) }));
 }
@@ -128,6 +134,7 @@ export async function restoreMailboxes(acc: AccountRow, items: { jmapId: string;
 export async function destroyEmails(acc: AccountRow, jmapIds: string[]): Promise<void> {
   const client = clientFor(acc);
   await query('DELETE FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, jmapIds]);
+  touchAccount(acc.id);
   await client.one('Email/set', { accountId: client.session!.accountId, destroy: jmapIds });
 }
 

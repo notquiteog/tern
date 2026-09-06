@@ -3,7 +3,9 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults } from '../ai/llm.js';
+import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
+import { hostMemory } from '../ai/memory.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
@@ -52,6 +54,7 @@ aiRouter.get('/status', async (req, res) => {
     health,
     models,
     loaded,
+    concurrency: await concurrencyView(s, models),
     modelInstalled,
     modelCanThink: canThink,
     recommended: recommendModel(config.totalMemBytes),
@@ -63,10 +66,48 @@ aiRouter.get('/status', async (req, res) => {
   });
 });
 
+// How many people this install can answer at once, and whether that is
+// enough for the people who have accounts. Ollama fixes its slot count when
+// it starts, so the app cannot raise it — it can only say what to set, which
+// is what `./bin/tern ai-slots` then does.
+async function concurrencyView(s: AiSettings, models: Awaited<ReturnType<typeof listModels>>) {
+  const users = (await one<{ n: number }>(`SELECT count(*)::int AS n FROM users WHERE NOT disabled`))?.n ?? 1;
+  const plan = slotPlan(s.concurrency);
+  const kvPerToken = s.provider === 'ollama' ? await modelKvBytesPerToken(s.baseUrl, s.model).catch(() => null) : null;
+  const modelBytes = models.find((m) => m.name === s.model || m.name === `${s.model}:latest`)?.size ?? 0;
+  const advice = slotAdvice({ users, configured: config.ollamaNumParallel, numCtx: s.numCtx, kvPerToken, modelBytes, memBudgetBytes: config.ollamaMemLimitBytes });
+  return { ...advice, plan, kvCacheType: config.ollamaKvCacheType, memLimitBytes: config.ollamaMemLimitBytes || null, stats: slotStats() };
+}
+
+// The live meter. Polled by Admin → AI model every few seconds, so it stays
+// small: one read of /proc/meminfo and one /api/ps.
+aiRouter.get('/memory', requireAdmin, async (_req, res) => {
+  const s = await getAiSettings();
+  const host = await hostMemory();
+  let loaded: Awaited<ReturnType<typeof loadedModels>> = [];
+  if (s.provider === 'ollama') { try { loaded = await loadedModels(); } catch { /* shown as nothing resident */ } }
+  const resident = loaded.reduce((n, m) => n + (m.size ?? 0), 0);
+  const vram = loaded.reduce((n, m) => n + (m.sizeVram ?? 0), 0);
+  const kvPerToken = s.provider === 'ollama' ? await modelKvBytesPerToken(s.baseUrl, s.model).catch(() => null) : null;
+  const plan = slotPlan(s.concurrency);
+  const perSlotBytes = kvPerToken ? Math.round(kvPerToken * s.numCtx) : null;
+  res.json({
+    host,
+    ollama: { limitBytes: config.ollamaMemLimitBytes || null, resident, vram, models: loaded },
+    slots: { ...plan, ...slotStats(), perSlotBytes, kvBytes: perSlotBytes === null ? null : perSlotBytes * plan.slots, kvCacheType: config.ollamaKvCacheType, numCtx: s.numCtx },
+  });
+});
+
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
   const b = parse(z.object({ enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), temperature: z.number().min(0).max(2).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(), allowThinking: z.boolean().optional(),
     thinkEffort: z.enum(['low', 'medium', 'high']).optional(), thinkingBudget: z.number().int().min(0).max(8192).optional(),
-    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), minP: z.number().min(0).max(1).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(), maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
+    systemPrompt: z.string().max(8000).optional(), topP: z.number().min(0).max(1).optional(), topK: z.number().int().min(1).max(200).optional(), minP: z.number().min(0).max(1).optional(), repeatPenalty: z.number().min(0.5).max(2).optional(),
+    // -1 is "the whole context", 0 turns repetition tracking off; anything
+    // else is a window in tokens.
+    repeatLastN: z.number().int().min(-1).max(8192).optional(),
+    presencePenalty: z.number().min(-2).max(2).optional(), frequencyPenalty: z.number().min(-2).max(2).optional(),
+    concurrency: z.boolean().optional(),
+    maxTokens: z.number().int().min(64).max(4096).optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
   if (b.keepAlive !== undefined && !isValidKeepAlive(b.keepAlive)) {
@@ -217,7 +258,10 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
     // set in Admin → AI model, which is what the "empty answer" message
     // tells people to raise.
     for await (const piece of chatStream({
-      messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature,
+      messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature, stop: tuning.stop,
+      // Somebody is watching this one arrive, and it is theirs: it takes an
+      // interactive slot, and only one person's worth of them.
+      owner: req.user!.id,
       // Reasoning is shown while it happens and never inserted into the
       // editor: the browser keeps it in its own panel and drops it when the
       // draft itself starts arriving.

@@ -26,6 +26,16 @@ function bool(name: string, fallback: boolean): boolean {
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
 }
 
+// A memory limit as compose spells it: "2560m", "4g", "1024k", or plain bytes.
+function bytes(name: string, fallback: number): number {
+  const v = (process.env[name] ?? '').trim().toLowerCase();
+  if (!v) return fallback;
+  const m = /^(\d+(?:\.\d+)?)\s*(b|k|kb|ki|kib|m|mb|mi|mib|g|gb|gi|gib)?$/.exec(v);
+  if (!m) return fallback;
+  const mult: Record<string, number> = { b: 1, k: 1024, kb: 1024, ki: 1024, kib: 1024, m: 1024 ** 2, mb: 1024 ** 2, mi: 1024 ** 2, mib: 1024 ** 2, g: 1024 ** 3, gb: 1024 ** 3, gi: 1024 ** 3, gib: 1024 ** 3 };
+  return Math.round(Number(m[1]) * (mult[m[2] ?? 'b'] ?? 1));
+}
+
 export const config = {
   env: env('NODE_ENV', 'development'),
   port: int('PORT', 3080),
@@ -57,6 +67,17 @@ export const config = {
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiModel: env('AI_MODEL', ''),
   aiEnabled: bool('AI_ENABLED', true),
+  // What Ollama itself was started with. The app cannot change these — they
+  // are read when the container starts — but it has to know them: the number
+  // of requests it may have in flight at once is Ollama's slot count, and
+  // what a slot costs in memory depends on how the KV cache is stored.
+  // compose.yml passes the same values to both containers.
+  ollamaNumParallel: int('OLLAMA_NUM_PARALLEL', 2),
+  ollamaKvCacheType: env('OLLAMA_KV_CACHE_TYPE', 'f16'),
+  // Ollama's container memory limit, written by install.sh ("2300m"). Used to
+  // say how many parallel slots the box can actually pay for; 0 means unset,
+  // and then no such claim is made.
+  ollamaMemLimitBytes: bytes('OLLAMA_MEM_LIMIT', 0),
   // Bundled Stalwart (optional). When set, the "Stalwart (this server)" preset
   // in the add-account form fills the session URL in automatically.
   stalwartUrl: env('STALWART_URL', '').replace(/\/+$/, ''),

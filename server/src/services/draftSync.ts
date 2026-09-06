@@ -16,6 +16,7 @@ import { buildMime, type Address, type OutgoingAttachment } from '../jmap/send.j
 import { inlineUploadIds, rewriteInlineUploads } from './compose.js';
 import { openDraft, type OpenedDraft } from './mailVault.js';
 import { scrubMedia } from './scrub.js';
+import { touchAccount } from './mailCache.js';
 
 const log = logger('draftsync');
 
@@ -129,6 +130,7 @@ export async function pushDraft(sealed: DraftRow): Promise<'pushed' | 'skipped'>
   if (d.jmap_id && d.jmap_id !== created.id) {
     try { await client.one('Email/set', { accountId, destroy: [d.jmap_id] }); } catch { /* the old copy may be gone already */ }
     await query('DELETE FROM emails WHERE account_id=$1 AND jmap_id=$2', [acc.id, d.jmap_id]);
+      touchAccount(acc.id);
   }
   await query('UPDATE drafts SET jmap_id=$2, jmap_blob_id=$3, synced_at=now(), sync_dirty=false, sync_error=NULL WHERE id=$1', [d.id, created.id, blob.blobId]);
   return 'pushed';

@@ -171,7 +171,28 @@ test('each mode is tuned the same way wherever it is called from', () => {
   assert.equal(modeTuning('polish').temperature, 0.2);
   assert.equal(modeTuning('subject').maxTokens, 60);
   assert.equal(modeTuning('quick_replies').maxTokens, 220);
-  assert.deepEqual(modeTuning('compose'), {});
+  assert.equal(modeTuning('gist').maxTokens, 60);
+  // Compose takes the install's own temperature and ceiling rather than
+  // carrying its own; only the stop sequences, which are about the shape of
+  // the request, apply to every mode.
+  const compose = modeTuning('compose');
+  assert.equal(compose.temperature, undefined);
+  assert.equal(compose.maxTokens, undefined);
+  assert.equal(compose.threadChars, undefined);
+});
+
+test('every mode stops the model running on into an invented next turn', () => {
+  // A small model handed a chat template keeps going and answers itself.
+  // Asserted per mode rather than by comparing whole objects, so adding a
+  // mode or a tuning value does not break this.
+  for (const mode of ['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies', 'gist'] as const) {
+    const stop = modeTuning(mode).stop ?? [];
+    for (const marker of ['\nUser:', '\nAssistant:']) assert.ok(stop.includes(marker), `${mode} should stop at ${JSON.stringify(marker)}`);
+  }
+  // The two one-line modes stop at the first newline as well.
+  for (const mode of ['subject', 'gist'] as const) assert.ok(modeTuning(mode).stop?.includes('\n'), `${mode} should stop at a newline`);
+  // The others must not: an email has paragraphs.
+  for (const mode of ['compose', 'reply', 'summarize'] as const) assert.ok(!modeTuning(mode).stop?.includes('\n'), `${mode} must not stop at a newline`);
 });
 
 test('a From name is tidied into something a greeting can use', () => {

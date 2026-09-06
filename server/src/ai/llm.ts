@@ -6,6 +6,7 @@ import { config } from '../config.js';
 import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
 import { recommendModel } from './models.js';
+import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js';
 import { logger } from '../log.js';
 
 const log = logger('ai');
@@ -34,7 +35,22 @@ export interface AiSettings {
   // imposes. 0 leaves it off, which is Ollama's own default.
   minP: number;
   repeatPenalty: number;
+  // How far back the repetition penalty looks. Ollama's own default of 64
+  // tokens is less than a paragraph, so a model that opens every paragraph
+  // the same way is never penalised for it; -1 is the whole context.
+  repeatLastN: number;
+  // The portable pair. Unlike `repeat_penalty` and `top_k`, which real
+  // OpenAI refuses outright, these two are accepted by OpenAI, vLLM,
+  // llama.cpp and Ollama alike, so they are the only repetition control the
+  // OpenAI-compatible provider has. 0 is off on both.
+  presencePenalty: number;
+  frequencyPenalty: number;
   maxTokens: number;
+  // Whether several people may be answered at once. Off serialises every
+  // generation on this install, which is the right setting for a small box:
+  // each slot Ollama serves in parallel costs another context window of KV
+  // cache. See ai/slots.ts.
+  concurrency: boolean;
 }
 
 const DEFAULTS: AiSettings = {
@@ -56,7 +72,11 @@ const DEFAULTS: AiSettings = {
   topK: 40,
   minP: 0,
   repeatPenalty: 1.1,
+  repeatLastN: 256,
+  presencePenalty: 0,
+  frequencyPenalty: 0,
   maxTokens: 700,
+  concurrency: true,
 };
 
 let cache: { at: number; value: AiSettings } | null = null;
@@ -119,30 +139,61 @@ export interface ChatOptions {
   // draft; the composer shows it so a two-minute generation looks like
   // something happening rather than a stalled spinner.
   onThinking?: (piece: string) => void;
+  // Sequences that end a generation early. Set per mode rather than by an
+  // admin: they exist to cut off a small model that starts a second turn of
+  // the conversation it was never in, not to shape the writing.
+  stop?: string[];
+  // Fixes the sampling so the same prompt gives the same answer. Used by the
+  // evaluation scripts, which compare runs; never set for a person, whose
+  // "try again" has to be able to produce something different.
+  seed?: number;
+  // Work nobody is waiting on: inbox summaries, campaign bodies, automatic
+  // replies. It queues behind interactive drafting rather than beside it, so
+  // a sequence run cannot take every slot the model has.
+  background?: boolean;
+  // Who this generation is for, so one person cannot hold more than their
+  // share of the slots. Anything without an owner is the install's own work.
+  owner?: string | number;
 }
 
-// Ollama refuses `think` outright on a model that cannot reason
-// (`"qwen2.5:1.5b" does not support thinking`), so turning the setting on
-// with the model most small boxes run would break every AI feature. The
-// capability is read once per model and remembered; anything unknown is
-// treated as not able to think, which is the safe way to be wrong.
-const thinkCapable = new Map<string, boolean>();
-export async function modelCanThink(baseUrl: string, model: string): Promise<boolean> {
+// What /api/show says about a model: what it can do, and the shape of its
+// attention. Read once per model and remembered, because both answers are
+// wanted on every settings page and neither changes while a model exists.
+const described = new Map<string, { capabilities: string[]; info: Record<string, unknown> } | null>();
+async function describeModel(baseUrl: string, model: string): Promise<{ capabilities: string[]; info: Record<string, unknown> } | null> {
   const key = `${baseUrl}|${model}`;
-  const known = thinkCapable.get(key);
+  const known = described.get(key);
   if (known !== undefined) return known;
-  let can = false;
+  let out: { capabilities: string[]; info: Record<string, unknown> } | null = null;
   try {
     const res = await fetch(`${baseUrl}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) });
     if (res.ok) {
       const j: any = await res.json();
-      can = Array.isArray(j.capabilities) && j.capabilities.includes('thinking');
+      out = { capabilities: Array.isArray(j.capabilities) ? j.capabilities : [], info: j.model_info ?? {} };
     }
   } catch { /* unreachable model: the chat call reports it properly */ }
-  thinkCapable.set(key, can);
-  return can;
+  described.set(key, out);
+  return out;
 }
-export function forgetModelCapabilities(): void { thinkCapable.clear(); }
+
+// Ollama refuses `think` outright on a model that cannot reason
+// (`"qwen2.5:1.5b" does not support thinking`), so turning the setting on
+// with the model most small boxes run would break every AI feature. Anything
+// unknown is treated as not able to think, which is the safe way to be wrong.
+export async function modelCanThink(baseUrl: string, model: string): Promise<boolean> {
+  return (await describeModel(baseUrl, model))?.capabilities.includes('thinking') ?? false;
+}
+
+// What one token of context costs this model in memory, which is what makes
+// a parallel slot expensive: Ollama holds `num_ctx` tokens of KV cache per
+// slot. Null when the model does not describe its attention well enough to
+// say — Admin → AI model then talks about slots and people and leaves memory
+// out of it rather than guessing.
+export async function modelKvBytesPerToken(baseUrl: string, model: string, cacheType = config.ollamaKvCacheType): Promise<number | null> {
+  return kvBytesPerToken((await describeModel(baseUrl, model))?.info, cacheType);
+}
+
+export function forgetModelCapabilities(): void { described.clear(); }
 
 // How the model picks its next token. Shared so the Ollama and the
 // OpenAI-compatible paths sample the same way. Min-p is only sent when it is
@@ -155,6 +206,14 @@ export function samplingOptions(s: AiSettings, temperature?: number): Record<str
     top_k: s.topK,
     ...(s.minP > 0 ? { min_p: s.minP } : {}),
     repeat_penalty: s.repeatPenalty,
+    // The window the penalty above looks back over. Sent whenever it differs
+    // from Ollama's default so an install that never touched the setting
+    // still gets the wider window Tern prefers for email.
+    repeat_last_n: s.repeatLastN,
+    // Both default to 0, which is off, and both are omitted at 0 so a
+    // stricter endpoint never has to see a parameter that does nothing.
+    ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
+    ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
   };
 }
 
@@ -164,25 +223,36 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   if (!s.enabled) throw new Error('AI drafting is turned off in Settings → AI');
   const model = opts.model || s.model;
   if (s.provider === 'openai') {
+    // Somebody else's endpoint decides how much it will do at once, and it is
+    // not sharing one loaded model with this install; the gate below would
+    // only slow it down.
     yield* openaiStream(s, model, opts);
     return;
   }
-  const think = !opts.noThink && s.allowThinking && (await modelCanThink(s.baseUrl, model));
-  // How much working-out the model did, so the log and the error message can
-  // say how big the budget wanted to be. Per call, not shared.
-  const stats = { thoughtChars: 0 };
-  let produced = false;
-  for await (const piece of ollamaStream(s, model, opts, think, stats)) { produced = true; yield piece; }
-  if (produced) return;
-  // Nothing but reasoning came back. Rather than showing the person an error
-  // for a model that is working, ask again with thinking off: that path is
-  // known to answer, and the draft is what was wanted in the first place.
-  if (think) {
-    log.warn('model answered with reasoning only; retrying without thinking', { model, thoughtChars: stats.thoughtChars, thinkingBudget: s.thinkingBudget });
-    for await (const piece of ollamaStream(s, model, opts, false, stats)) { produced = true; yield piece; }
+  // One generation per slot Ollama has, and the retry below runs inside the
+  // same slot: a model that answered with reasoning only should not have to
+  // queue again to say something usable.
+  const release = await acquireSlot(slotPlan(s.concurrency), opts.background ? 'background' : 'interactive', String(opts.owner ?? 'system'), opts.signal);
+  try {
+    const think = !opts.noThink && s.allowThinking && (await modelCanThink(s.baseUrl, model));
+    // How much working-out the model did, so the log and the error message can
+    // say how big the budget wanted to be. Per call, not shared.
+    const stats = { thoughtChars: 0 };
+    let produced = false;
+    for await (const piece of ollamaStream(s, model, opts, think, stats)) { produced = true; yield piece; }
     if (produced) return;
+    // Nothing but reasoning came back. Rather than showing the person an error
+    // for a model that is working, ask again with thinking off: that path is
+    // known to answer, and the draft is what was wanted in the first place.
+    if (think) {
+      log.warn('model answered with reasoning only; retrying without thinking', { model, thoughtChars: stats.thoughtChars, thinkingBudget: s.thinkingBudget });
+      for await (const piece of ollamaStream(s, model, opts, false, stats)) { produced = true; yield piece; }
+      if (produced) return;
+    }
+    throw new Error(emptyAnswer(model, stats.thoughtChars, opts.maxTokens ?? s.maxTokens));
+  } finally {
+    release();
   }
-  throw new Error(emptyAnswer(model, stats.thoughtChars, opts.maxTokens ?? s.maxTokens));
 }
 
 async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, think: boolean, stats: { thoughtChars: number }): AsyncGenerator<string> {
@@ -204,6 +274,8 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
         num_ctx: s.numCtx,
         num_predict: think ? reply + Math.max(0, s.thinkingBudget) : reply,
         ...samplingOptions(s, opts.temperature),
+        ...(opts.stop?.length ? { stop: opts.stop } : {}),
+        ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
       },
     }),
     signal: opts.signal,
@@ -211,6 +283,10 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => '');
     if (res.status === 404 && /not found/i.test(body)) throw new Error(`Model "${model}" is not downloaded. Pull it in Settings → AI.`);
+    // Ollama's own queue is full (OLLAMA_MAX_QUEUE). That is a busy machine,
+    // not a broken one, and saying so is the difference between "try again in
+    // a moment" and an admin reading logs for a fault that is not there.
+    if (res.status === 503) throw new Error(busyMessage());
     throw new Error(`Ollama returned HTTP ${res.status}: ${body.slice(0, 300)}`);
   }
   const reader = res.body.getReader();
@@ -258,6 +334,13 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       // Not an OpenAI parameter, but vLLM, llama.cpp and LM Studio all take
       // it; sent only when set so a stricter endpoint never sees it.
       ...(s.minP > 0 ? { min_p: s.minP } : {}),
+      // The repetition controls this side understands. `repeat_penalty` and
+      // `top_k` are deliberately not sent: real OpenAI answers 400 to an
+      // unknown parameter, so the tuning that crosses over is this pair.
+      ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
+      ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
+      ...(opts.stop?.length ? { stop: opts.stop } : {}),
+      ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
       ...(!opts.noThink && s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
     }),
     signal: opts.signal,

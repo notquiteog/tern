@@ -402,7 +402,11 @@ async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: num
     const maxTokens = c.maxTokens ?? tuning.maxTokens;
     const temperature = c.temperature ?? tuning.temperature;
     const input = { ...c.input, threadChars: Math.min(threadBudgetChars(s.numCtx, maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity) };
-    const raw = await chat({ messages: buildMessages(input), maxTokens, temperature });
+    // A fixed seed per run number, so a grading pass can be repeated and
+    // compared: the same case in run 2 asks the model exactly what it asked
+    // it in run 2 yesterday. Nothing a person triggers sets a seed — their
+    // "try again" has to be able to come back different.
+    const raw = await chat({ messages: buildMessages(input), maxTokens, temperature, stop: tuning.stop, seed: 1000 + run });
     const out = finalizeOutput(raw, c.input.mode, { recipient: c.input.recipient, senderName: c.input.senderName, senderEmail: c.input.senderEmail });
     const failures = c.checks.map((k) => k(out)).filter((x): x is string => Boolean(x));
     return { id: c.id, run, ms: Date.now() - t0, failures, output: out, raw: failures.length ? raw : undefined };

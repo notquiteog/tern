@@ -426,11 +426,13 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     length: 'medium',
   });
   const recipient = { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email };
-  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens) }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
+  // Sequence and responder mail is written minutes or hours before it is
+  // sent, so it queues behind whoever is drafting in a browser right now.
+  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens), stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id) }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
   let subject = rendered.subject;
   if (!subject.trim()) {
     const st = modeTuning('subject');
-    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature }), 'subject');
+    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature, stop: st.stop, background: true, owner: String(acc.user_id) }), 'subject');
   }
   return { subject, html: textToHtml(body), model: settings.model };
 }
@@ -477,7 +479,7 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
     threadChars: threadBudgetChars(settings.numCtx, settings.maxTokens),
   });
   const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
-  const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
+  const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens, stop: modeTuning('reply').stop, background: true, owner: String(acc.user_id) }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
   // The same addressing rules as the Reply button in the browser.
   const r = replyRecipients({ from: email.from_addr, replyTo: email.reply_to, to: email.to_addr, cc: email.cc_addr }, acc.email, Boolean(responder.reply_all));
   const to = [...r.to, ...r.cc].map((a) => ({ name: a.name ?? null, email: a.email }));

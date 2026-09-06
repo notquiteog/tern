@@ -23,6 +23,7 @@ import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
 import { brandDomains } from '../services/brand.js';
 import { isCategory } from '../services/categorize.js';
+import { rememberCounts } from '../services/mailCache.js';
 import { getBurner } from '../services/burner.js';
 import { addressQuery } from '../services/vault.js';
 import { describeScrub, scrubMedia } from '../services/scrub.js';
@@ -149,14 +150,27 @@ mailRouter.get('/threads', async (req, res) => {
   // What each tab would hold, and how much of it is unread, so the inbox can
   // label them without four more round trips. Counted across every category,
   // so it runs before the chosen tab narrows `params`.
+  // The counts do not depend on which tab is open or which page is showing,
+  // so they are computed once per (box, search, filter) and reused until the
+  // account's mail changes. Clicking through four tabs used to recompute the
+  // same aggregate four times.
   const counts = tabbed
-    ? Object.fromEntries((await query<{ category: string; n: number; unread: number }>(
-        `SELECT t.category, count(*)::int AS n, count(*) FILTER (WHERE t.unread)::int AS unread FROM (${agg}) t GROUP BY t.category`, params,
-      )).map((r) => [r.category, { n: r.n, unread: r.unread }]))
+    ? await rememberCounts(
+        `${req.user!.id}|${accountIds.join(',')}|${box}|${q}|${filter}`,
+        accountIds,
+        async () => Object.fromEntries((await query<{ category: string; n: number; unread: number }>(
+          `SELECT t.category, count(*)::int AS n, count(*) FILTER (WHERE t.unread)::int AS unread FROM (${agg}) t GROUP BY t.category`, params,
+        )).map((r) => [r.category, { n: r.n, unread: r.unread }])),
+      )
     : null;
   const cat = String(req.query.cat ?? '');
   const catSql = tabbed && isCategory(cat) ? ` WHERE t.category = ${p(cat)}` : '';
-  const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM (${agg}) t${catSql}`, params);
+  // With tabs on, the answer is already in the counts: the chosen tab's own
+  // number, or the sum of them all when no tab narrows the list. Only the
+  // untabbed boxes still have to count for themselves.
+  const total = counts
+    ? { n: isCategory(cat) ? counts[cat]?.n ?? 0 : Object.values(counts).reduce((sum, c) => sum + c.n, 0) }
+    : await one<{ n: number }>(`SELECT count(*)::int AS n FROM (${agg}) t${catSql}`, params);
   // Subjects, previews, addresses and attachment names are ciphertext, so
   // the database can no longer assemble them. It returns the sealed blobs of
   // the thread and they are opened here, once per page.
@@ -172,7 +186,7 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
        EXISTS (SELECT 1 FROM muted_threads mt WHERE mt.account_id=t.account_id AND mt.thread_id=t.thread_id) AS muted,
        (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id
-     FROM (${agg}) t${catSql} ORDER BY last_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+     FROM (${agg}) t${catSql} ORDER BY last_at DESC, t.account_id DESC, t.thread_id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
     params,
   );
   const dek = await dataKey(req.user!.id);

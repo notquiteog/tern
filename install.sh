@@ -177,6 +177,14 @@ fi
 if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_MEM_LIMIT="2300m"; APP_MEM_LIMIT="640m"; STALWART_MEM_LIMIT="512m";
 elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_MEM_LIMIT="4500m"; APP_MEM_LIMIT="768m"; STALWART_MEM_LIMIT="768m";
 else OLLAMA_MEM_LIMIT="$(awk -v g="$TOTAL_GIB" 'BEGIN { printf "%dm", g*1024*0.6 }')"; APP_MEM_LIMIT="1024m"; STALWART_MEM_LIMIT="1024m"; fi
+# How many people Ollama answers at once. Each slot holds its own context
+# window of KV cache, so this is sized from the same RAM the limit above is:
+# a starting point for the people this box is likely to have. When more people
+# have accounts than there are slots, Admin → AI model says so and
+# `./bin/tern ai-slots` raises it to one slot each, memory allowing.
+if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_NUM_PARALLEL=2;
+elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_NUM_PARALLEL=4;
+else OLLAMA_NUM_PARALLEL=8; fi
 
 # ---------- 5. Stalwart ----------
 step "5/8 Mail server"
@@ -243,6 +251,9 @@ AI_ENABLED=$AI_ENABLED_VAL
 AI_MODEL=$AI_MODEL
 GPU_ENABLED=${GPU_ENABLED:-0}
 OLLAMA_KEEP_ALIVE=10m
+OLLAMA_NUM_PARALLEL=$OLLAMA_NUM_PARALLEL
+OLLAMA_KV_CACHE_TYPE=q8_0
+OLLAMA_MAX_QUEUE=32
 OLLAMA_MEM_LIMIT=$OLLAMA_MEM_LIMIT
 APP_MEM_LIMIT=$APP_MEM_LIMIT
 STALWART_MEM_LIMIT=$STALWART_MEM_LIMIT

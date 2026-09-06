@@ -3,6 +3,7 @@
 #   ./bin/tern up | down | restart [service] | ps | logs [service] | build
 #   ./bin/tern cli <args>            run tern-cli inside the app container
 #   ./bin/tern pull-model <name>     download an Ollama model
+#   ./bin/tern ai-slots [n]          how many people the model answers at once (default: one slot each)
 #   ./bin/tern dns-check [--port25]  verify the mail domain's DNS records from this box
 #   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
 #   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
@@ -48,6 +49,26 @@ case "$cmd" in
   compose)   compose "$@" ;;
   cli)       compose exec -T app tern-cli "$@" ;;
   pull-model) compose exec -T ollama ollama pull "${1:?model name}" ;;
+  ai-slots)
+    # Ollama serves OLLAMA_NUM_PARALLEL requests per model at once and queues
+    # the rest, so with one slot the second person to ask for a draft waits
+    # for the first person's whole email. The slot count is fixed when the
+    # container starts — every slot holds its own context window of KV cache —
+    # so it is set here, in .env, rather than from the admin page.
+    # With no argument, the app works out the number: one per person who can
+    # sign in, capped by what OLLAMA_MEM_LIMIT can pay for.
+    N="${1:-}"
+    if [ -z "$N" ]; then
+      compose exec -T app tern-cli ai-slots || true
+      N="$(compose exec -T app tern-cli ai-slots --quiet 2>/dev/null | tr -dc '0-9')"
+    fi
+    [ -n "$N" ] && [ "$N" -ge 1 ] 2>/dev/null || { echo "Could not work out a slot count; pass one: ./bin/tern ai-slots 4" >&2; exit 1; }
+    if grep -q '^OLLAMA_NUM_PARALLEL=' .env; then sed -i "s|^OLLAMA_NUM_PARALLEL=.*|OLLAMA_NUM_PARALLEL=$N|" .env; else printf 'OLLAMA_NUM_PARALLEL=%s
+' "$N" >> .env; fi
+    echo "OLLAMA_NUM_PARALLEL=$N; restarting Ollama and the app so both see it."
+    compose_up
+    echo "Done. Admin → AI model shows the slots and what they are holding."
+    ;;
   dns-check) compose exec -T app tern-cli dns-check "$@" ;;
   update)    exec "$ROOT/update.sh" "$@" ;;
   stalwart-trust-proxy)

@@ -52,22 +52,33 @@ function draftLimit(draft: string | undefined, factor: number): string {
 // Temperature and token ceiling per mode, so the composer, the responders and
 // the campaigns all treat the same job the same way. A transformation of
 // text the person wrote wants to be literal; a first draft wants some room.
-export function modeTuning(mode: DraftMode): { temperature?: number; maxTokens?: number; threadChars?: number } {
+// Sequences that end a generation early. A small model that has finished the
+// email sometimes keeps going and starts the next turn of a conversation it
+// was never in — "User: thanks!" — or answers its own draft. Cutting that off
+// at the model saves the tokens; `finalizeOutput` still tidies what arrives.
+// These are not an admin setting: they are about the shape of the request,
+// not about how the assistant writes.
+const TURN_STOPS = ['\nUser:', '\nAssistant:', '\nHuman:', '\nSystem:'];
+
+export function modeTuning(mode: DraftMode): { temperature?: number; maxTokens?: number; threadChars?: number; stop?: string[] } {
   switch (mode) {
-    case 'subject': return { temperature: 0.3, maxTokens: 60 };
-    case 'polish': return { temperature: 0.2 };
-    case 'rewrite': case 'shorten': return { temperature: 0.4 };
-    case 'expand': return { temperature: 0.5 };
-    case 'summarize': return { temperature: 0.3, maxTokens: 400 };
+    // One line, both of them: the first newline ends the answer, which is
+    // what stops "Subject: Quick question" arriving with a whole email
+    // attached underneath it.
+    case 'subject': return { temperature: 0.3, maxTokens: 60, stop: [...TURN_STOPS, '\n'] };
+    case 'polish': return { temperature: 0.2, stop: TURN_STOPS };
+    case 'rewrite': case 'shorten': return { temperature: 0.4, stop: TURN_STOPS };
+    case 'expand': return { temperature: 0.5, stop: TURN_STOPS };
+    case 'summarize': return { temperature: 0.3, maxTokens: 400, stop: TURN_STOPS };
     // One line above a conversation in the list. It has to be cheap enough to
     // run over a page of mail on a CPU-only box, so it gets a small budget and
     // only the newest part of the thread.
-    case 'gist': return { temperature: 0.2, maxTokens: 60, threadChars: 4_000 };
+    case 'gist': return { temperature: 0.2, maxTokens: 60, threadChars: 4_000, stop: [...TURN_STOPS, '\n'] };
     // Three one-liners answer the last thing that was said. Handed the whole
     // of a long thread the model starts summarising it instead, in one long
     // sentence, and there is nothing to pick from.
-    case 'quick_replies': return { temperature: 0.8, maxTokens: 220, threadChars: 3_000 };
-    default: return {};
+    case 'quick_replies': return { temperature: 0.8, maxTokens: 220, threadChars: 3_000, stop: TURN_STOPS };
+    default: return { stop: TURN_STOPS };
   }
 }
 

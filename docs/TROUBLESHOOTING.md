@@ -79,6 +79,17 @@ on purpose.
 - "not downloaded": pull it under Settings → AI or `./bin/tern pull-model`.
 - Out of memory: pick a smaller model, or lower `OLLAMA_MEM_LIMIT` so the
   container is limited before the host swaps.
+- **"The assistant is busy answering other people right now"**: every slot is
+  generating and the queue is full. Admin → AI model shows how many slots
+  there are, how many people can sign in, and what each slot costs in memory;
+  `./bin/tern ai-slots` raises the count to one per person as far as memory
+  allows. It is also the honest answer on a small box — a CPU that can write
+  one email at a time cannot write five.
+- **Drafts crawl when several people are working**: the slots share the same
+  cores, so each generation is slower when more than one runs. A smaller
+  model, a smaller context window (each slot holds its own), or a GPU are the
+  three ways out; the meter on Admin → AI model shows which of them you are
+  short of.
 
 ## Stalwart
 

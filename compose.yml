@@ -30,6 +30,12 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgres://tern:${DB_PASSWORD}@db:5432/tern
       OLLAMA_URL: http://ollama:11434
+      # The app needs to know what Ollama was started with: it never sends
+      # more generations at once than there are slots, and the memory meter
+      # on Admin → AI model prices a slot from the cache type. Same values as
+      # the ollama service below.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       CLIENT_DIST: /app/client/dist
       PORT: "3080"
       TERN_VERSION: ${TERN_VERSION:-0.1.0}
@@ -50,9 +56,25 @@ services:
     restart: unless-stopped
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
-      OLLAMA_NUM_PARALLEL: "1"
+      # How many people can be answered at the same time. Each slot holds its
+      # own context window of KV cache, so this is a memory decision as much
+      # as a speed one: install.sh sizes it from RAM, and
+      # `./bin/tern ai-slots` sets it to one slot per person who can sign in.
+      # With one slot everyone queues behind whoever asked first.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
+      # One model resident at a time. The default is three, which on a small
+      # box means two models nobody is using are holding the memory the one
+      # in use needs.
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_FLASH_ATTENTION: "1"
+      # Halves what each slot's context costs, at close to no quality cost,
+      # which is what makes several slots affordable. Needs flash attention,
+      # above. q4_0 halves it again and does cost quality; f16 turns it off.
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      # Ollama's own queue, once every slot is busy. The default is 512, deep
+      # enough that a loaded box looks like a hung spinner for minutes; a
+      # short queue answers 503 instead and the app says "busy, try again".
+      OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-32}
     volumes:
       - tern-ollama:/root/.ollama
     mem_limit: ${OLLAMA_MEM_LIMIT:-2560m}

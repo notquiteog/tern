@@ -14,6 +14,7 @@ import { notifyNewMail } from '../services/push.js';
 import { autocryptHeadersOf } from '../services/autocrypt.js';
 import { sealEmail } from '../services/mailVault.js';
 import { categorize } from '../services/categorize.js';
+import { touchAccount } from '../services/mailCache.js';
 
 const log = logger('sync');
 
@@ -140,6 +141,7 @@ async function fullSync(acc: AccountRow, client: JmapClient): Promise<SyncResult
     `WITH d AS (DELETE FROM emails WHERE account_id=$1 AND NOT (jmap_id = ANY($2)) RETURNING 1) SELECT count(*)::int AS n FROM d`,
     [acc.id, keep],
   );
+  if (del[0]?.n) touchAccount(acc.id);
   await query(`UPDATE accounts SET email_state=$2 WHERE id=$1`, [acc.id, state]);
   return { created, updated, destroyed: del[0]?.n ?? 0, full: true };
 }
@@ -170,7 +172,9 @@ async function incrementalSync(acc: AccountRow, client: JmapClient): Promise<Syn
 
 async function deleteEmails(acc: AccountRow, jmapIds: string[]): Promise<number> {
   const r = await query<{ n: number }>(`WITH d AS (DELETE FROM emails WHERE account_id=$1 AND jmap_id = ANY($2) RETURNING 1) SELECT count(*)::int AS n FROM d`, [acc.id, jmapIds]);
-  return r[0]?.n ?? 0;
+  const n = r[0]?.n ?? 0;
+  if (n) touchAccount(acc.id);
+  return n;
 }
 
 // Some servers (Stalwart among them) return List-Id only in its raw form.
@@ -263,6 +267,8 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
       if (row.rows[0].inserted) { created++; fresh.push({ ...e, _id: row.rows[0].id, _text: text }); } else updated++;
     }
   });
+  // Anything counted for this account is now out of date.
+  if (created || updated) touchAccount(acc.id);
   if (opts.runAutomation && fresh.length) {
     try { await onNewEmails(acc, fresh); } catch (err) { log.error('automation failed', { err: (err as Error).message }); }
     try { await notifyNewMail(acc, fresh); } catch (err) { log.error('push failed', { err: (err as Error).message }); }

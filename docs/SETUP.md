@@ -120,5 +120,6 @@ switch on the same page, off by default.
 | Reset a password | `./bin/tern cli set-password --username alice --password '…'` |
 | Disable someone's 2FA | `./bin/tern cli disable-totp --username alice` |
 | Pull a model | `./bin/tern pull-model qwen2.5:3b` |
+| Give everyone their own AI slot | `./bin/tern ai-slots` |
 
 Back up `.env` with the database: `ENCRYPTION_KEY` in it decrypts the stored mailbox credentials.

@@ -205,8 +205,97 @@ function AuditSettings() {
 
 // This button sits in the Tuning card, so it resets tuning: the provider,
 // model and base URL above it are left alone.
-const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
+const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'repeatLastN', 'presencePenalty', 'frequencyPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
 const pick = (o: any, keys: readonly string[]) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
+
+// One bar. `right` carries the numbers, because a bar on its own answers
+// "how full" and never "how much".
+function Meter({ label, value, max, right, warnAt }: { label: ReactNode; value: number; max: number; right: ReactNode; warnAt?: number }) {
+  return (
+    <div className="mb-8">
+      <div className="row small mb-4"><span className="strong">{label}</span><span className="ml-auto muted">{right}</span></div>
+      <Progress value={value} max={max} warnAt={warnAt} />
+    </div>
+  );
+}
+
+// What the box and the model are holding, now. Polled while the page is
+// open: raising the context window or the slot count moves these bars, and
+// the point of showing them is that the person changing the numbers can see
+// what the change costs before their next draft is what tells them.
+function AiMemoryMeter({ provider }: { provider: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['ai-memory'],
+    queryFn: () => api.get<any>('/api/ai/memory'),
+    refetchInterval: 4000,
+    staleTime: 0,
+  });
+  if (isLoading || !data) return <div className="small muted">Reading memory…</div>;
+  const host = data.host as { total: number; available: number; used: number };
+  const o = data.ollama as { limitBytes: number | null; resident: number; vram: number; models: any[] };
+  const slots = data.slots as { slots: number; running: number; waiting: number; perSlotBytes: number | null; kvBytes: number | null; kvCacheType: string; numCtx: number };
+  const gpu = o.vram > 0;
+  return (
+    <>
+      <Meter label="This machine" value={host.used} max={host.total} right={`${fmtBytes(host.used)} of ${fmtBytes(host.total)} · ${fmtBytes(host.available)} free`} />
+      {provider === 'ollama' && (
+        o.limitBytes
+          ? <Meter label="Ollama container" value={o.resident} max={o.limitBytes} right={`${fmtBytes(o.resident)} of ${fmtBytes(o.limitBytes)} allowed`} />
+          : <Meter label="Ollama" value={o.resident} max={Math.max(o.resident, 1)} right={`${fmtBytes(o.resident)} resident · no container limit set`} />
+      )}
+      {provider === 'ollama' && (
+        gpu
+          // Ollama reports how much of a loaded model sits in VRAM, not how
+          // much VRAM the card has, so this is the split between GPU and CPU
+          // rather than a share of the card.
+          ? <Meter label="On GPU" value={o.vram} max={Math.max(o.resident, o.vram)} right={`${fmtBytes(o.vram)} of ${fmtBytes(o.resident)} in VRAM`} />
+          : <div className="small muted mb-8">No GPU: the model runs on the CPU, and everything above is system RAM.</div>
+      )}
+      {provider === 'ollama' && (
+        <div className="small muted">
+          {slots.running} of {slots.slots} slot{slots.slots === 1 ? '' : 's'} generating{slots.waiting > 0 && `, ${slots.waiting} waiting`}
+          {slots.kvBytes !== null && <> · slots reserve about {fmtBytes(slots.kvBytes)} of context ({slots.numCtx} tokens each, {slots.kvCacheType} cache)</>}
+          {o.models.length > 0 && <> · in memory: {o.models.map((m: any) => `${m.name} ${fmtBytes(m.size || m.sizeVram)}`).join(', ')}</>}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Everyone shares one loaded model. This card is where an admin decides
+// whether they share it at the same time, and finds out whether the number of
+// slots Ollama was started with matches the number of people who have
+// accounts — which only .env can change, so the command is spelled out.
+function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch: any) => void }) {
+  const c = data.concurrency;
+  if (!c) return null;
+  return (
+    <div className="card mb-16">
+      <div className="card-title"><h2>Memory and concurrency</h2><span className="small muted">{c.users} user{c.users === 1 ? '' : 's'} · {c.configured} slot{c.configured === 1 ? '' : 's'}</span></div>
+      <div className="row mb-8">
+        <Toggle checked={Boolean(f.concurrency)} onChange={(v) => save({ concurrency: v })} />
+        <div>
+          <div className="strong small">Answer several people at once</div>
+          <div className="help-text">
+            On, the assistant runs up to {c.plan.slots} generation{c.plan.slots === 1 ? '' : 's'} at a time — one slot is always kept for somebody waiting at a composer, so inbox summaries and sequence mail cannot take them all, and nobody can hold more than one at once. Off, every generation on this install waits for the one before it, which is the safer setting on a box with little memory to spare: each slot holds its own context window.
+          </div>
+        </div>
+      </div>
+      {f.provider === 'ollama' && (
+        c.enough
+          ? <Callout kind="success">Everyone who can sign in has a slot of their own: {c.configured} for {c.users} user{c.users === 1 ? '' : 's'}.</Callout>
+          : <Callout kind="warning">
+              {c.users} people can sign in and Ollama serves {c.configured} at a time, so the rest queue.
+              {c.memoryBound
+                ? <> Its memory limit pays for about {c.affordable} slot{c.affordable === 1 ? '' : 's'} beside this model{c.perSlotBytes ? ` (${fmtBytes(c.perSlotBytes)} each at ${f.numCtx} tokens)` : ''}, so raise <code>OLLAMA_MEM_LIMIT</code>, lower the context window, or run a smaller model.</>
+                : <> Raise it to {c.recommended}{c.perSlotBytes ? `; each slot costs about ${fmtBytes(c.perSlotBytes)}` : ''}.</>}
+              <br />Ollama reads its slot count when it starts, so this is set on the server, not here: <code>./bin/tern ai-slots</code> works out the number, writes it to <code>.env</code> and restarts.
+            </Callout>
+      )}
+      <div className="mt-16"><AiMemoryMeter provider={f.provider} /></div>
+    </div>
+  );
+}
 
 function AiAdminSettings() {
   const qc = useQueryClient();
@@ -261,6 +350,7 @@ function AiAdminSettings() {
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI model" sub="The provider and model behind everyone's assistant, its standing instructions and its tuning." />
       <div className="card mb-16"><AiStatusLine data={data} admin /></div>
+      <AiConcurrencyCard data={data} f={f} save={(patch) => { setF({ ...f, ...patch }); void save(patch); }} />
       <div className="card mb-16">
         <div className="card-title"><h2>Provider and model</h2><div className="row"><Toggle checked={f.enabled} onChange={(v) => { setF({ ...f, enabled: v }); void save({ enabled: v }); }} /><span className="small">Enabled</span></div></div>
         <div className="form-row">
@@ -269,7 +359,7 @@ function AiAdminSettings() {
           {f.provider === 'openai' && <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => setF({ ...f, apiKey: e.target.value })} /></Field>}
           <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
-          <Field label="Context window (tokens)" hint="How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle."><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
+          <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
         <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
       </div>
@@ -287,6 +377,9 @@ function AiAdminSettings() {
           <Field label={`Top-k: ${f.topK}`} hint="Candidates per token."><input className="range" type="range" min={1} max={100} step={1} value={f.topK} onChange={(e) => setF({ ...f, topK: Number(e.target.value) })} /></Field>
           <Field label={`Min-p: ${f.minP ?? 0}`} hint="Drops tokens far less likely than the best one. 0 is off; 0.05 is a good starting point, and pairs better with a higher temperature than top-p does."><input className="range" type="range" min={0} max={0.5} step={0.01} value={f.minP ?? 0} onChange={(e) => setF({ ...f, minP: Number(e.target.value) })} /></Field>
           <Field label={`Repeat penalty: ${f.repeatPenalty}`} hint="Above 1 discourages repetition."><input className="range" type="range" min={0.8} max={1.6} step={0.05} value={f.repeatPenalty} onChange={(e) => setF({ ...f, repeatPenalty: Number(e.target.value) })} /></Field>
+          <Field label="Repeat window (tokens)" hint="How far back that penalty looks. Ollama's own default of 64 is less than a paragraph, so a model that opens every paragraph the same way is never caught; -1 is the whole context, 0 turns it off."><Input type="number" min={-1} max={8192} value={f.repeatLastN ?? 256} onChange={(e) => setF({ ...f, repeatLastN: Number(e.target.value) })} /></Field>
+          <Field label={`Frequency penalty: ${f.frequencyPenalty ?? 0}`} hint="Charges a word for each time it has already been used. 0 is off."><input className="range" type="range" min={0} max={2} step={0.1} value={f.frequencyPenalty ?? 0} onChange={(e) => setF({ ...f, frequencyPenalty: Number(e.target.value) })} /></Field>
+          <Field label={`Presence penalty: ${f.presencePenalty ?? 0}`} hint={f.provider === 'openai' ? 'Charges a word once for having appeared at all, which nudges the model onto new ground. With an OpenAI-compatible endpoint these two are the only repetition controls that cross over: repeat penalty and top-k are not sent, because real OpenAI refuses them.' : 'Charges a word once for having appeared at all, which nudges the model onto new ground. 0 is off.'}><input className="range" type="range" min={0} max={2} step={0.1} value={f.presencePenalty ?? 0} onChange={(e) => setF({ ...f, presencePenalty: Number(e.target.value) })} /></Field>
           <Field label="Max tokens per reply" hint="Caps the length of a generation."><Input type="number" min={64} max={4096} value={f.maxTokens} onChange={(e) => setF({ ...f, maxTokens: Number(e.target.value) })} /></Field>
           <Field label="Keep model loaded" hint="A duration with a unit (30s, 10m, 1h), or seconds as a number: -1 never unloads, 0 unloads at once."><Input value={f.keepAlive} onChange={(e) => setF({ ...f, keepAlive: e.target.value })} /></Field>
         </div>
@@ -306,7 +399,7 @@ function AiAdminSettings() {
             <Field label="Thinking budget (tokens)" hint="Room for the working-out, on top of the reply length. If the model spends it all and writes nothing, Tern asks again with thinking off rather than showing an error, and the log says how much reasoning it wanted."><Input type="number" min={0} max={8192} value={f.thinkingBudget ?? 1500} onChange={(e) => setF({ ...f, thinkingBudget: Number(e.target.value) })} /></Field>
           </div>
         )}
-        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
+        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">

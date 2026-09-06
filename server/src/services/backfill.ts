@@ -7,6 +7,7 @@ import { one, query, withTx } from '../db.js';
 import { logger } from '../log.js';
 import { openEmailWith, sealEmail } from './mailVault.js';
 import { categorize } from './categorize.js';
+import { touchAccounts } from './mailCache.js';
 import { sealWith, dataKey } from './vault.js';
 
 const log = logger('backfill');
@@ -65,7 +66,7 @@ export async function backfillBatch(limit = BATCH): Promise<BackfillProgress> {
 // NULL as Primary, so nothing is hidden while it runs.
 export async function categorizeBatch(limit = BATCH): Promise<BackfillProgress> {
   const rows = await query<any>(
-    `SELECT e.id, a.user_id, e.subject, e.from_addr, e.list_id, e.list_unsubscribe, e.auto_submitted
+    `SELECT e.id, e.account_id, a.user_id, e.subject, e.from_addr, e.list_id, e.list_unsubscribe, e.auto_submitted
        FROM emails e JOIN accounts a ON a.id = e.account_id
       WHERE e.category IS NULL ORDER BY e.id DESC LIMIT $1`,
     [limit],
@@ -101,6 +102,8 @@ export async function categorizeBatch(limit = BATCH): Promise<BackfillProgress> 
       await query(`UPDATE emails SET category='primary' WHERE id=$1 AND category IS NULL`, [r.id]).catch(() => {});
     }
   }
+  // A batch that filed anything has changed which tab those rows fall in.
+  if (done) touchAccounts(new Set<number>(rows.map((r: any) => r.account_id).filter(Boolean)));
   const left = await one<{ n: number }>('SELECT count(*)::int AS n FROM emails WHERE category IS NULL');
   return { done, remaining: left?.n ?? 0, finished: (left?.n ?? 0) === 0 };
 }

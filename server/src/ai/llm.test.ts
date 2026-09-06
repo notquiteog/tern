@@ -64,6 +64,27 @@ test('min-p is only sent when it is actually turned on', () => {
   assert.equal(samplingOptions(aiDefaults()).temperature, 0.7);
 });
 
+test('the repetition window travels with the penalty it belongs to', () => {
+  // Ollama's own default looks back 64 tokens, which is less than a
+  // paragraph; Tern sends its own window on every call rather than relying
+  // on whatever the model file happens to say.
+  assert.equal(samplingOptions(aiDefaults()).repeat_last_n, 256);
+  assert.equal(samplingOptions({ ...aiDefaults(), repeatLastN: -1 }).repeat_last_n, -1);
+});
+
+test('the penalties that cross over to OpenAI are only sent when set', () => {
+  const off = samplingOptions(aiDefaults());
+  assert.equal('presence_penalty' in off, false);
+  assert.equal('frequency_penalty' in off, false);
+  const on = samplingOptions({ ...aiDefaults(), presencePenalty: 0.4, frequencyPenalty: 0.2 });
+  assert.equal(on.presence_penalty, 0.4);
+  assert.equal(on.frequency_penalty, 0.2);
+});
+
+test('an install answers several people at once unless an admin says otherwise', () => {
+  assert.equal(aiDefaults().concurrency, true);
+});
+
 test('an untagged model name is the same model as its :latest tag', () => {
   // The settings hold "qwen2.5"; /api/ps reports "qwen2.5:latest". Reading
   // those as two different models is what left both of them in memory.

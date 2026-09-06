@@ -103,6 +103,12 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
       messages: buildMessages({ mode: 'gist', thread, subject: newest.subject ?? '', systemPrompt: s.systemPrompt, threadChars }),
       maxTokens: tuning.maxTokens,
       temperature: tuning.temperature,
+      stop: tuning.stop,
+      // Nobody is watching a summary arrive, so it waits behind anyone who is
+      // at a composer rather than beside them; a page of fifty conversations
+      // must not be able to take every slot the model has.
+      background: true,
+      owner: String(userId),
       // Never. A one-line summary is not worth a reasoning budget, and on a
       // CPU-only box a thinking model would take a minute per row of the
       // list — for a question the first sentence of the mail answers.

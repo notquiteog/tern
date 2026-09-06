@@ -322,7 +322,7 @@ export default function MailPage() {
             {!isLoading && !threads.length && (
               accounts.length === 0
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
-                : <Empty title={q ? 'No results' : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : 'Enjoy the quiet.'}</Empty>
+                : <Empty title={q ? 'No results' : tabbed && cat !== 'primary' ? `Nothing in ${CATEGORY_TABS.find((t) => t.key === cat)?.label ?? cat}` : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : tabbed && cat !== 'primary' ? 'Mail of this kind lands here as it arrives. Everything else is in Primary.' : 'Enjoy the quiet.'}</Empty>
             )}
             {stacks.map(({ sep, rows, indices }) => {
               const headKey = rows[0].key;
@@ -438,11 +438,16 @@ function useSwipe(onRight: () => void, onLeft: () => void) {
   const [dx, setDx] = useState(0);
   const from = useRef<{ x: number; y: number } | null>(null);
   const fired = useRef(false);
+  // The offset is kept in a ref as well as state: state drives the transform,
+  // the ref is what the release reads, so a fast swipe cannot be measured
+  // against a value React has not caught up to yet.
+  const offset = useRef(0);
   const THRESHOLD = 76;
+  const move = (v: number) => { offset.current = v; setDx(v); };
   const end = () => {
-    const d = dx;
+    const d = offset.current;
     from.current = null;
-    setDx(0);
+    move(0);
     if (Math.abs(d) > THRESHOLD) { fired.current = true; if (d > 0) onRight(); else onLeft(); }
   };
   return {
@@ -454,11 +459,11 @@ function useSwipe(onRight: () => void, onLeft: () => void) {
       onPointerMove: (e: React.PointerEvent) => {
         const f = from.current; if (!f) return;
         const mx = e.clientX - f.x, my = e.clientY - f.y;
-        if (Math.abs(my) > Math.abs(mx)) { from.current = null; setDx(0); return; }
-        setDx(Math.max(-170, Math.min(170, mx)));
+        if (Math.abs(my) > Math.abs(mx)) { from.current = null; move(0); return; }
+        move(Math.max(-170, Math.min(170, mx)));
       },
       onPointerUp: end,
-      onPointerCancel: () => { from.current = null; setDx(0); },
+      onPointerCancel: () => { from.current = null; move(0); },
     },
   };
 }
