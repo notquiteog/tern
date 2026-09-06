@@ -1,21 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock } from 'lucide-react';
+import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
-import { useCompose } from '../state/compose';
+import { useCompose, seedFromDraft } from '../state/compose';
+import { useMailPrefs, type Layout } from '../state/mailPrefs';
 import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
-import { useHotkeys, useLocalStorage, useMediaQuery } from '../lib/hooks';
-import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented } from '../components/ui';
+import { useHotkeys, useMediaQuery } from '../lib/hooks';
+import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm } from '../components/ui';
 import { createPortal } from 'react-dom';
 import { ThreadView } from '../components/ThreadView';
 import { DataTable } from '../components/DataTable';
 import { addrName, cls, fmtDate, fmtDateTime, localDateTimeValue, type Addr } from '../lib/format';
 
-interface ThreadRow { key: string; account_id: number; thread_id: string; last_at: string; n: number; unread: boolean; starred: boolean; has_attachment: boolean; has_draft: boolean; latest: { id: number; jmap_id: string; subject: string; preview: string; from: Addr[]; to: Addr[]; received_at: string }; participants: Addr[] | null; mailbox_ids: string[]; snoozed_until: string | null; contact_id: number | null; avatar_url?: string | null }
+interface ThreadRow { key: string; account_id: number; thread_id: string; last_at: string; n: number; unread: boolean; starred: boolean; has_attachment: boolean; has_draft: boolean; muted?: boolean; attachments?: string[] | null; latest: { id: number; jmap_id: string; subject: string; preview: string; from: Addr[]; to: Addr[]; received_at: string }; participants: Addr[] | null; mailbox_ids: string[]; snoozed_until: string | null; contact_id: number | null; avatar_url?: string | null }
+interface Undo { accountId: number; items: { jmapId: string; mailboxIds: string[] }[] }
 
 const BOX_TITLES: Record<string, string> = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail', unread: 'Unread', attachments: 'Attachments' };
+
+// "Today", "Yesterday", "This week", then months: the separators between rows.
+export function dateGroup(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.floor((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  const dow = (now.getDay() + 6) % 7; // Monday = 0
+  if (days <= dow) return 'This week';
+  if (days <= dow + 7) return 'Last week';
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'This month';
+  return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' });
+}
 
 export default function MailPage() {
   const { box = 'inbox', threadKey } = useParams();
@@ -32,13 +49,16 @@ export default function MailPage() {
   const { data: accounts = [] } = useAccounts();
   const { data: mailboxes = [] } = useMailboxes();
   const wide = useMediaQuery('(min-width: 1180px)');
-  const [splitPref] = useLocalStorage('tern.split', true);
-  const split = wide && splitPref;
+  const tall = useMediaQuery('(min-width: 900px)');
+  const [prefs, setPrefs] = useMailPrefs();
+  const layout: Layout = prefs.layout === 'right' && !wide ? (tall ? 'bottom' : 'off') : prefs.layout === 'bottom' && !tall ? 'off' : prefs.layout;
+  const split = layout !== 'off';
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const [snoozeFor, setSnoozeFor] = useState<ThreadRow[] | null>(null);
   const [snoozeAt, setSnoozeAt] = useState('');
+  const [emptyOpen, setEmptyOpen] = useState(false);
 
   const accountsParam = acctFilter === 'all' ? 'all' : acctFilter;
   const enabled = box !== 'scheduled' && box !== 'drafts-local';
@@ -68,30 +88,46 @@ export default function MailPage() {
     const byAccount = new Map<number, string[]>();
     for (const r of rows) byAccount.set(r.account_id, [...(byAccount.get(r.account_id) ?? []), r.thread_id]);
     // Optimistic: drop rows that leave this view.
-    const leaving = ['archive', 'trash', 'spam', 'delete', 'snooze', 'inbox', 'move'].includes(action) && !['all', 'starred'].includes(box);
+    const leaving = ['archive', 'trash', 'spam', 'delete', 'snooze', 'inbox', 'move', 'mute'].includes(action) && !['all', 'starred'].includes(box) && !(action === 'inbox' && box === 'inbox');
     if (leaving) qc.setQueryData(['threads', box, accountsParam, q, page, filter], (old: any) => old ? { ...old, threads: old.threads.filter((t: ThreadRow) => !rows.some((r) => r.key === t.key)), total: Math.max(0, old.total - rows.length) } : old);
     try {
-      for (const [accountId, threadIds] of byAccount) await api.post('/api/mail/actions', { accountId, threadIds, action, ...extra });
-      if (msg) toast.success(msg);
+      const undos: Undo[] = [];
+      for (const [accountId, threadIds] of byAccount) { const r = await api.post<{ undo: Undo | null }>('/api/mail/actions', { accountId, threadIds, action, ...extra }); if (r.undo?.items.length) undos.push(r.undo); }
+      if (msg) {
+        const label = rows.length > 1 ? `${rows.length} conversations ${msg}` : msg[0].toUpperCase() + msg.slice(1);
+        if (undos.length) toast.toast(label, { action: { label: 'Undo', onClick: async () => { try { for (const u of undos) await api.post('/api/mail/actions', { accountId: u.accountId, action: 'restore', items: u.items }); toast.success('Restored'); } catch (e) { toast.error(e); } qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] }); } } });
+        else toast.success(label);
+      }
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ['counts'] });
       setTimeout(() => qc.invalidateQueries({ queryKey: ['threads'] }), 800);
     } catch (e) { toast.error(e); qc.invalidateQueries({ queryKey: ['threads'] }); }
   }
+  async function emptyBox() {
+    try {
+      const r = await api.post<{ count: number }>('/api/mail/empty', { box: box === 'trash' ? 'trash' : 'junk', ...(acctFilter !== 'all' ? { accountId: Number(acctFilter) } : {}) });
+      toast.success(`${r.count} message${r.count === 1 ? '' : 's'} deleted for good`);
+      qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] });
+    } catch (e) { toast.error(e); }
+  }
   const selectedRows = threads.filter((t) => selected.has(t.key));
   const focused = threads[focus];
   const targets = selectedRows.length ? selectedRows : focused ? [focused] : [];
+  const currentIndex = threadKey ? threads.findIndex((t) => t.key === threadKey) : -1;
+  const goPrev = () => { if (currentIndex > 0) openThread(threads[currentIndex - 1]); };
+  const goNext = () => { if (currentIndex >= 0 && currentIndex < threads.length - 1) openThread(threads[currentIndex + 1]); };
 
   useHotkeys({
-    j: () => setFocus((f) => Math.min(threads.length - 1, f + 1)), k: () => setFocus((f) => Math.max(0, f - 1)),
+    j: () => { if (threadKey) goNext(); else setFocus((f) => Math.min(threads.length - 1, f + 1)); }, k: () => { if (threadKey) goPrev(); else setFocus((f) => Math.max(0, f - 1)); },
     o: () => focused && openThread(focused), Enter: () => focused && openThread(focused),
     x: () => focused && setSelected((s) => { const n = new Set(s); if (n.has(focused.key)) n.delete(focused.key); else n.add(focused.key); return n; }),
-    e: () => !threadKey && void act('archive', targets, {}, 'Archived'), '#': () => !threadKey && void act('trash', targets, {}, 'Moved to trash'), '!': () => !threadKey && void act('spam', targets, {}, 'Marked as junk'),
+    e: () => !threadKey && void act('archive', targets, {}, 'archived'), '#': () => !threadKey && void act('trash', targets, {}, 'moved to trash'), '!': () => !threadKey && void act('spam', targets, {}, 'marked as junk'),
     s: () => !threadKey && void act(targets.every((t) => t.starred) ? 'unstar' : 'star', targets),
     'I': () => !threadKey && void act('read', targets), 'U': () => !threadKey && void act('unread', targets),
     b: () => { if (!threadKey && targets.length) { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor(targets); } },
     'mod+a': () => setSelected(new Set(threads.map((t) => t.key))),
-  }, [threads, focus, selected, threadKey, box]);
+    'Escape': () => { if (!threadKey && selected.size) setSelected(new Set()); },
+  }, [threads, focus, selected, threadKey, box, currentIndex]);
 
   useEffect(() => { listRef.current?.querySelector<HTMLElement>('.thread-row.focused')?.scrollIntoView({ block: 'nearest' }); }, [focus]);
 
@@ -103,44 +139,67 @@ export default function MailPage() {
   const [accIdStr, threadId] = threadKey ? decodeURIComponent(threadKey).split(':') : ['', ''];
   const allSelected = threads.length > 0 && selected.size === threads.length;
   const pageStart = (page - 1) * pageSize + 1;
+  const canEmpty = (box === 'trash' || box === 'junk') && threads.length > 0;
+
+  // Rows with a date separator whenever the group changes.
+  const grouped: { sep?: string; row: ThreadRow; index: number }[] = [];
+  let lastGroup = '';
+  threads.forEach((t, i) => { const g = box === 'snoozed' ? '' : dateGroup(t.last_at); grouped.push({ sep: g && g !== lastGroup ? g : undefined, row: t, index: i }); if (g) lastGroup = g; });
 
   return (
     <div className="mail">
       <div className="mail-toolbar">
         {showList && <>
-          <input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(threads.map((t) => t.key)) : new Set())} aria-label="Select all" style={{ marginLeft: 6, marginRight: 8 }} />
+          <span className="select-all">
+            <input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(threads.map((t) => t.key)) : new Set())} aria-label="Select all" />
+            <Menu width={160} trigger={(open) => <button type="button" className="select-caret" aria-label="Select…" onClick={open}><ChevronDown size={13} /></button>}>
+              {(c) => <>
+                {([['All', () => threads], ['None', () => []], ['Read', () => threads.filter((t) => !t.unread)], ['Unread', () => threads.filter((t) => t.unread)], ['Starred', () => threads.filter((t) => t.starred)], ['Unstarred', () => threads.filter((t) => !t.starred)]] as [string, () => ThreadRow[]][]).map(([l, f]) => <MenuItem key={l} onClick={() => { setSelected(new Set(f().map((t) => t.key))); c(); }}>{l}</MenuItem>)}
+              </>}
+            </Menu>
+          </span>
           {selected.size > 0 ? (
             <>
               <span className="small muted" style={{ marginRight: 6 }}>{selected.size} selected</span>
-              {box !== 'archive' && box !== 'trash' && <IconButton label="Archive" onClick={() => act('archive', selectedRows, {}, 'Archived')}><Archive size={17} /></IconButton>}
-              {(box === 'archive' || box === 'trash' || box === 'junk') && <IconButton label="Move to inbox" onClick={() => act('inbox', selectedRows, {}, 'Moved to inbox')}><InboxIcon size={17} /></IconButton>}
-              <IconButton label="Delete" onClick={() => act('trash', selectedRows, {}, 'Moved to trash')}><Trash2 size={17} /></IconButton>
-              <IconButton label="Mark as junk" onClick={() => act('spam', selectedRows, {}, 'Marked as junk')}><ShieldAlert size={17} /></IconButton>
+              {box !== 'archive' && box !== 'trash' && <IconButton label="Archive (e)" onClick={() => act('archive', selectedRows, {}, 'archived')}><Archive size={17} /></IconButton>}
+              {(box === 'archive' || box === 'trash' || box === 'junk' || box === 'all') && <IconButton label="Move to inbox" onClick={() => act('inbox', selectedRows, {}, 'moved to inbox')}><InboxIcon size={17} /></IconButton>}
+              <IconButton label="Delete (#)" onClick={() => act('trash', selectedRows, {}, 'moved to trash')}><Trash2 size={17} /></IconButton>
+              <IconButton label="Mark as junk (!)" onClick={() => act('spam', selectedRows, {}, 'marked as junk')}><ShieldAlert size={17} /></IconButton>
               <span className="sep" />
-              <IconButton label="Mark read" onClick={() => act('read', selectedRows)}><MailOpen size={17} /></IconButton>
-              <IconButton label="Mark unread" onClick={() => act('unread', selectedRows)}><Mail size={17} /></IconButton>
-              <IconButton label="Snooze" onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor(selectedRows); }}><AlarmClock size={17} /></IconButton>
+              <IconButton label="Mark read (Shift+I)" onClick={() => act('read', selectedRows)}><MailOpen size={17} /></IconButton>
+              <IconButton label="Mark unread (Shift+U)" onClick={() => act('unread', selectedRows)}><Mail size={17} /></IconButton>
+              <IconButton label="Snooze (b)" onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor(selectedRows); }}><AlarmClock size={17} /></IconButton>
+              <IconButton label="Star (s)" onClick={() => act(selectedRows.every((t) => t.starred) ? 'unstar' : 'star', selectedRows)}><Star size={17} /></IconButton>
               <Menu width={240} trigger={(open) => <IconButton label="Label" onClick={open}><Tag size={17} /></IconButton>}>
-                {(c) => <>{[...new Set(selectedRows.map((r) => r.account_id))].map((accId) => <div key={accId}>{accounts.length > 1 && <div className="menu-label">{accounts.find((a) => a.id === accId)?.email}</div>}{mailboxes.filter((m) => m.account_id === accId && !m.role).map((m) => <MenuItem key={m.jmap_id} icon={<Tag size={14} />} onClick={() => { void act('label', selectedRows.filter((r) => r.account_id === accId), { mailboxId: m.jmap_id }, `Labeled ${m.name}`); c(); }}>{m.name}</MenuItem>)}</div>)}</>}
+                {(c) => <>{[...new Set(selectedRows.map((r) => r.account_id))].map((accId) => <div key={accId}>{accounts.length > 1 && <div className="menu-label">{accounts.find((a) => a.id === accId)?.email}</div>}{mailboxes.filter((m) => m.account_id === accId && !m.role).map((m) => <MenuItem key={m.jmap_id} icon={<Tag size={14} style={{ color: m.color ?? undefined }} />} onClick={() => { void act('label', selectedRows.filter((r) => r.account_id === accId), { mailboxId: m.jmap_id }, `labeled ${m.name}`); c(); }}>{m.name}</MenuItem>)}</div>)}</>}
               </Menu>
+              <IconButton label="Mute" onClick={() => act('mute', selectedRows, {}, 'muted')}><BellOff size={17} /></IconButton>
             </>
           ) : (
             <>
               <IconButton label="Refresh" onClick={() => { refetch(); accounts.forEach((a) => api.post(`/api/accounts/${a.id}/resync`).catch(() => {})); }}><RefreshCw size={16} className={isFetching ? 'spin' : ''} /></IconButton>
               <span className="strong" style={{ marginLeft: 4 }}>{q ? `Search: ${q}` : mailboxName}</span>
               {q && <IconButton label="Clear search" onClick={() => setParams({})}><X size={14} /></IconButton>}
+              {canEmpty && <Button size="sm" variant="ghost" icon={<Eraser size={14} />} onClick={() => setEmptyOpen(true)} className="desktop-only">Empty {box} now</Button>}
             </>
           )}
           <div className="pager">
             {total > 0 && <span className="desktop-only">{pageStart}–{Math.min(total, page * pageSize)} of {total}</span>}
             <IconButton label="Previous page" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton>
             <IconButton label="Next page" disabled={page * pageSize >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton>
-            {wide && <SplitToggle />}
+            {tall && <Menu align="right" width={220} trigger={(open) => <IconButton label="Reading pane" onClick={open}>{layout === 'right' ? <Columns2 size={16} /> : layout === 'bottom' ? <PanelBottom size={16} /> : <Rows3 size={16} />}</IconButton>}>
+              {(c) => <>
+                <div className="menu-label">Reading pane</div>
+                <MenuItem active={prefs.layout === 'right'} icon={<Columns2 size={15} />} onClick={() => { setPrefs({ layout: 'right' }); c(); }}>Beside the list</MenuItem>
+                <MenuItem active={prefs.layout === 'bottom'} icon={<PanelBottom size={15} />} onClick={() => { setPrefs({ layout: 'bottom' }); c(); }}>Below the list</MenuItem>
+                <MenuItem active={prefs.layout === 'off'} icon={<Rows3 size={15} />} onClick={() => { setPrefs({ layout: 'off' }); c(); }}>Off (full width)</MenuItem>
+              </>}
+            </Menu>}
           </div>
         </>}
         {!showList && showThread && <span className="small muted">{mailboxName}</span>}
       </div>
-      <div className={cls('mail-body', split && 'split')}>
+      <div className={cls('mail-body', split && 'split', layout === 'bottom' && 'split-bottom')}>
         {showList && (
           <div className="thread-list" ref={listRef}>
             {accounts.length > 0 && !box.startsWith('mailbox:') && (
@@ -155,21 +214,25 @@ export default function MailPage() {
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
                 : <Empty title={q ? 'No results' : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : 'Enjoy the quiet.'}</Empty>
             )}
-            {threads.map((t, i) => (
-              <ThreadRowView key={t.key} t={t} index={i} focused={i === focus} selected={selected.has(t.key)} active={t.key === threadKey} showAccount={accountsParam === 'all' && accounts.length > 1} accountColor={accounts.find((a) => a.id === t.account_id)?.color} myEmail={accounts.find((a) => a.id === t.account_id)?.email ?? ''}
-                onContext={(x, y) => setCtx({ x, y, row: t })}
-                labels={(t.mailbox_ids ?? []).map((id) => roleOf.get(`${t.account_id}:${id}`)).filter((m) => m && !m.role && box !== `mailbox:${t.account_id}:${m.jmap_id}`).map((m) => m!.name)}
-                onOpen={() => openThread(t)} onSelect={() => setSelected((s) => { const n = new Set(s); if (n.has(t.key)) n.delete(t.key); else n.add(t.key); return n; })}
-                onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'Archived')} onTrash={() => act('trash', [t], {}, 'Moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box} />
+            {grouped.map(({ sep, row: t, index: i }) => (
+              <div key={t.key}>
+                {sep && <div className="date-sep">{sep}</div>}
+                <ThreadRowView t={t} index={i} focused={i === focus} selected={selected.has(t.key)} active={t.key === threadKey} showAccount={accountsParam === 'all' && accounts.length > 1} accountColor={accounts.find((a) => a.id === t.account_id)?.color} myEmail={accounts.find((a) => a.id === t.account_id)?.email ?? ''}
+                  onContext={(x, y) => setCtx({ x, y, row: t })}
+                  labels={(t.mailbox_ids ?? []).map((id) => roleOf.get(`${t.account_id}:${id}`)).filter((m) => m && !m.role && box !== `mailbox:${t.account_id}:${m.jmap_id}`).map((m) => ({ name: m!.name, color: m!.color }))}
+                  dragRows={() => (selected.has(t.key) ? selectedRows : [t])}
+                  onOpen={() => openThread(t)} onSelect={() => setSelected((s) => { const n = new Set(s); if (n.has(t.key)) n.delete(t.key); else n.add(t.key); return n; })}
+                  onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'archived')} onTrash={() => act('trash', [t], {}, 'moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box} />
+              </div>
             ))}
           </div>
         )}
-        {showThread && <div className="thread-pane"><ThreadView key={threadKey} accountId={Number(accIdStr)} threadId={threadId} box={box} onBack={back} /></div>}
-        {!showThread && split && <div className="thread-pane center" style={{ color: 'var(--text-3)' }}><div className="col center"><Mail size={28} /><span className="small">Select a conversation</span></div></div>}
+        {showThread && <div className="thread-pane"><ThreadView key={threadKey} accountId={Number(accIdStr)} threadId={threadId} box={box} onBack={back} onPrev={goPrev} onNext={goNext} hasPrev={currentIndex > 0} hasNext={currentIndex >= 0 && currentIndex < threads.length - 1} /></div>}
+        {!showThread && split && <div className="thread-pane center" style={{ color: 'var(--text-3)' }}><div className="col center"><Mail size={28} /><span className="small">Select a conversation</span><span className="tiny faint">j / k to move, Enter to open, c to compose, ? for every shortcut</span></div></div>}
       </div>
       <button className="fab" aria-label="Compose" onClick={() => compose.open({ accountId: acctFilter === 'all' ? null : Number(acctFilter) || null })}><Pencil size={22} /></button>
       {ctx && createPortal(
-        <div className="menu ctx-menu" style={{ top: Math.min(ctx.y, window.innerHeight - 420), left: Math.min(ctx.x, window.innerWidth - 240) }} onClick={(e) => e.stopPropagation()}>
+        <div className="menu ctx-menu" style={{ top: Math.min(ctx.y, window.innerHeight - 460), left: Math.min(ctx.x, window.innerWidth - 240) }} onClick={(e) => e.stopPropagation()}>
           <MenuItem icon={<ExternalLink size={15} />} onClick={() => { openThread(ctx.row); setCtx(null); }}>Open</MenuItem>
           <MenuItem icon={<Reply size={15} />} onClick={() => { nav(`/mail/${box}/t/${encodeURIComponent(ctx.row.key)}?reply=1`); setCtx(null); }}>Reply</MenuItem>
           <MenuItem icon={<Forward size={15} />} onClick={() => { nav(`/mail/${box}/t/${encodeURIComponent(ctx.row.key)}?forward=1`); setCtx(null); }}>Forward</MenuItem>
@@ -177,47 +240,48 @@ export default function MailPage() {
           <MenuItem icon={ctx.row.unread ? <MailOpen size={15} /> : <Mail size={15} />} onClick={() => { void act(ctx.row.unread ? 'read' : 'unread', [ctx.row]); setCtx(null); }}>{ctx.row.unread ? 'Mark as read' : 'Mark as unread'}</MenuItem>
           <MenuItem icon={<Star size={15} />} onClick={() => { void act(ctx.row.starred ? 'unstar' : 'star', [ctx.row]); setCtx(null); }}>{ctx.row.starred ? 'Unstar' : 'Star'}</MenuItem>
           <MenuItem icon={<AlarmClock size={15} />} onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([ctx.row]); setCtx(null); }}>Snooze…</MenuItem>
+          <MenuItem icon={ctx.row.muted ? <Bell size={15} /> : <BellOff size={15} />} onClick={() => { void act(ctx.row.muted ? 'unmute' : 'mute', [ctx.row], {}, ctx.row.muted ? 'unmuted' : 'muted'); setCtx(null); }}>{ctx.row.muted ? 'Unmute' : 'Mute'}</MenuItem>
           <div className="menu-sep" />
-          {box !== 'archive' && <MenuItem icon={<Archive size={15} />} onClick={() => { void act('archive', [ctx.row], {}, 'Archived'); setCtx(null); }}>Archive</MenuItem>}
-          {(box === 'archive' || box === 'trash' || box === 'junk') && <MenuItem icon={<InboxIcon size={15} />} onClick={() => { void act('inbox', [ctx.row], {}, 'Moved to inbox'); setCtx(null); }}>Move to inbox</MenuItem>}
-          <MenuItem icon={<ShieldAlert size={15} />} onClick={() => { void act('spam', [ctx.row], {}, 'Marked as junk'); setCtx(null); }}>Move to junk</MenuItem>
-          <MenuItem icon={<Trash2 size={15} />} danger onClick={() => { void act('trash', [ctx.row], {}, 'Moved to trash'); setCtx(null); }}>Delete</MenuItem>
-          {mailboxes.some((m) => m.account_id === ctx.row.account_id && !m.role) && <><div className="menu-sep" /><div className="menu-label">Label</div>{mailboxes.filter((m) => m.account_id === ctx.row.account_id && !m.role).slice(0, 6).map((m) => <MenuItem key={m.jmap_id} icon={<Tag size={14} />} onClick={() => { void act('label', [ctx.row], { mailboxId: m.jmap_id }, `Labeled ${m.name}`); setCtx(null); }}>{m.name}</MenuItem>)}</>}
+          {box !== 'archive' && <MenuItem icon={<Archive size={15} />} onClick={() => { void act('archive', [ctx.row], {}, 'archived'); setCtx(null); }}>Archive</MenuItem>}
+          {(box === 'archive' || box === 'trash' || box === 'junk' || box === 'all') && <MenuItem icon={<InboxIcon size={15} />} onClick={() => { void act('inbox', [ctx.row], {}, 'moved to inbox'); setCtx(null); }}>Move to inbox</MenuItem>}
+          <MenuItem icon={<ShieldAlert size={15} />} onClick={() => { void act('spam', [ctx.row], {}, 'marked as junk'); setCtx(null); }}>Move to junk</MenuItem>
+          <MenuItem icon={<Trash2 size={15} />} danger onClick={() => { void act('trash', [ctx.row], {}, 'moved to trash'); setCtx(null); }}>Delete</MenuItem>
+          {mailboxes.some((m) => m.account_id === ctx.row.account_id && !m.role) && <><div className="menu-sep" /><div className="menu-label">Label</div>{mailboxes.filter((m) => m.account_id === ctx.row.account_id && !m.role).slice(0, 6).map((m) => <MenuItem key={m.jmap_id} icon={<Tag size={14} style={{ color: m.color ?? undefined }} />} onClick={() => { void act('label', [ctx.row], { mailboxId: m.jmap_id }, `labeled ${m.name}`); setCtx(null); }}>{m.name}</MenuItem>)}</>}
         </div>, document.body)}
-      <Modal open={Boolean(snoozeFor)} onClose={() => setSnoozeFor(null)} title="Snooze until" footer={<><Button onClick={() => setSnoozeFor(null)}>Cancel</Button><Button variant="primary" onClick={() => { const rows = snoozeFor ?? []; setSnoozeFor(null); void act('snooze', rows, { until: new Date(snoozeAt).toISOString() }, 'Snoozed'); }}>Snooze</Button></>}>
+      <Modal open={Boolean(snoozeFor)} onClose={() => setSnoozeFor(null)} title="Snooze until" footer={<><Button onClick={() => setSnoozeFor(null)}>Cancel</Button><Button variant="primary" onClick={() => { const rows = snoozeFor ?? []; setSnoozeFor(null); void act('snooze', rows, { until: new Date(snoozeAt).toISOString() }, `snoozed until ${fmtDateTime(snoozeAt)}`); }}>Snooze</Button></>}>
         <Field label="Return to inbox at"><Input type="datetime-local" value={snoozeAt} onChange={(e) => setSnoozeAt(e.target.value)} /></Field>
         <div className="row wrap gap-4">{[['Later today', 3], ['Tomorrow', 24], ['In 3 days', 72], ['Next week', 168]].map(([l, h]) => <Button key={String(l)} size="sm" onClick={() => { const d = new Date(Date.now() + Number(h) * 3600_000); if (Number(h) >= 24) d.setHours(9, 0, 0, 0); setSnoozeAt(localDateTimeValue(d)); }}>{l}</Button>)}</div>
       </Modal>
+      <Confirm open={emptyOpen} onClose={() => setEmptyOpen(false)} danger title={`Empty ${box}?`} message={`Every conversation in ${box} is deleted permanently. This cannot be undone.`} confirmLabel="Delete for good" onConfirm={emptyBox} />
     </div>
   );
 }
 
-function SplitToggle() {
-  const [split, setSplit] = useLocalStorage('tern.split', true);
-  return <IconButton label={split ? 'Switch to full-width list' : 'Switch to split view'} onClick={() => setSplit(!split)}>{split ? <Rows3 size={16} /> : <Columns2 size={16} />}</IconButton>;
-}
-
-function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box }: { t: ThreadRow; index: number; focused: boolean; selected: boolean; active: boolean; showAccount: boolean; accountColor?: string; myEmail: string; labels: string[]; onOpen: () => void; onSelect: () => void; onStar: () => void; onArchive: () => void; onTrash: () => void; onRead: () => void; onSnooze: () => void; onContext: (x: number, y: number) => void; box: string }) {
+function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box }: { t: ThreadRow; index: number; focused: boolean; selected: boolean; active: boolean; showAccount: boolean; accountColor?: string; myEmail: string; labels: { name: string; color: string | null }[]; dragRows: () => ThreadRow[]; onOpen: () => void; onSelect: () => void; onStar: () => void; onArchive: () => void; onTrash: () => void; onRead: () => void; onSnooze: () => void; onContext: (x: number, y: number) => void; box: string }) {
   const people = (t.participants ?? []).filter((p) => p && p.email);
   const names = people.length ? people.map((p) => (p.email.toLowerCase() === myEmail.toLowerCase() ? 'me' : addrName(p))) : t.latest?.to?.length ? ['To: ' + t.latest.to.map(addrName).join(', ')] : ['(unknown)'];
   const uniq = [...new Set(names)];
   const label = uniq.length > 3 ? `${uniq[0]}, ${uniq[1]} … ${uniq[uniq.length - 1]}` : uniq.join(', ');
   const from = t.latest?.from?.[0];
+  const atts = (t.attachments ?? []).filter(Boolean);
   return (
-    <div className={cls('thread-row', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')} style={{ '--i': index } as any} onClick={onOpen} onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}>
+    <div className={cls('thread-row', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')} style={{ '--i': index } as any} onClick={onOpen} onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
+      draggable onDragStart={(e) => { const rows = dragRows(); e.dataTransfer.setData('application/x-tern-threads', JSON.stringify(rows.map((r) => ({ key: r.key, account_id: r.account_id, thread_id: r.thread_id })))); e.dataTransfer.effectAllowed = 'move'; }}>
       {showAccount && <span className="acct-stripe" style={{ background: accountColor }} />}
       <div className="t-check" onClick={(e) => { e.stopPropagation(); onSelect(); }}><input type="checkbox" className="checkbox" checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" /></div>
       <div className={cls('t-star', t.starred && 'on')} onClick={(e) => { e.stopPropagation(); onStar(); }} title={t.starred ? 'Unstar' : 'Star'}><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
       <div className="t-avatar"><Avatar name={from?.name} email={from?.email} src={t.avatar_url} /></div>
       <div className="t-names" title={label}>{label}{t.n > 1 && <span className="t-count">{t.n}</span>}</div>
       <div className="t-main">
-        {labels.length > 0 && <span className="t-labels">{labels.slice(0, 2).map((l) => <span key={l} className="t-label">{l}</span>)}</span>}
+        {labels.length > 0 && <span className="t-labels">{labels.slice(0, 2).map((l) => <span key={l.name} className="t-label" style={l.color ? { background: l.color + '22', color: l.color } : {}}>{l.name}</span>)}</span>}
         {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
         <span className="t-subject">{t.latest?.subject || '(no subject)'}</span>
         <span className="t-snippet">— {/-----BEGIN PGP MESSAGE-----/.test(t.latest?.preview ?? '') || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>
+        {atts.length > 0 && <span className="t-atts">{atts.slice(0, 2).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}{atts.length > 2 && <span className="t-att">+{atts.length - 2}</span>}</span>}
       </div>
       <div className="t-meta">
-        {t.has_attachment && <Paperclip size={14} />}
+        {t.muted && <BellOff size={13} className="faint" />}
+        {t.has_attachment && atts.length === 0 && <Paperclip size={14} />}
         {t.snoozed_until && box === 'snoozed' ? <span title={fmtDateTime(t.snoozed_until)}><AlarmClock size={13} /> {fmtDate(t.snoozed_until)}</span> : <span title={fmtDateTime(t.last_at)}>{fmtDate(t.last_at)}</span>}
       </div>
       <div className="row-actions" onClick={(e) => e.stopPropagation()}>
@@ -233,15 +297,21 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
 function ScheduledPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const compose = useCompose();
   const { data: accounts = [] } = useAccounts();
   const { data } = useQuery({ queryKey: ['outbox'], queryFn: () => api.get<{ outbox: any[] }>('/api/mail/outbox'), refetchInterval: 30_000 });
   const rows = data?.outbox ?? [];
-  async function cancel(id: number) { await api.del(`/api/mail/outbox/${id}`); qc.invalidateQueries({ queryKey: ['outbox'] }); qc.invalidateQueries({ queryKey: ['counts'] }); toast.success('Cancelled'); }
+  async function cancel(id: number) {
+    const r = await api.del<{ cancelled: boolean; draft: any }>(`/api/mail/outbox/${id}`);
+    qc.invalidateQueries({ queryKey: ['outbox'] }); qc.invalidateQueries({ queryKey: ['counts'] }); qc.invalidateQueries({ queryKey: ['drafts'] });
+    if (r.cancelled && r.draft) toast.toast('Cancelled and kept as a draft', { action: { label: 'Open', onClick: () => compose.open(seedFromDraft(r.draft)) } });
+    else toast.success(r.cancelled ? 'Cancelled' : 'Already sent');
+  }
   async function now(id: number) { await api.post(`/api/mail/outbox/${id}/now`); qc.invalidateQueries({ queryKey: ['outbox'] }); toast.success('Sending shortly'); }
   return (
     <div className="page">
       <h1 className="mb-16">Scheduled</h1>
-      {!rows.length ? <Empty icon={<Clock size={24} />} title="Nothing scheduled">Use "Schedule send" or "Send with a natural delay" in the compose window.</Empty> : (
+      {!rows.length ? <Empty icon={<Clock size={24} />} title="Nothing scheduled">Use "Schedule send" or "Send with a natural delay" in the compose window. Messages in their undo window show here too.</Empty> : (
         <DataTable rows={rows} rowKey={(r) => r.id} minWidth={720} columns={[
           { key: 'to', header: 'To', primary: true, cell: (r) => (r.to_addr ?? []).map((a: any) => a.email ?? a).join(', ') },
           { key: 'subject', header: 'Subject', secondary: true, cell: (r) => r.subject || '(no subject)' },
@@ -267,9 +337,9 @@ function DraftsPage({ box, listQuery }: { box: string; listQuery: { threads: Thr
       {drafts.length === 0 && listQuery.threads.length === 0 && !listQuery.isLoading && <Empty icon={<FileText size={24} />} title="No drafts">Anything you start writing is saved here automatically.</Empty>}
       {drafts.length > 0 && <>
         <h4 className="mb-8">Saved in Tern</h4>
-        <div className="mb-24"><DataTable rows={drafts} rowKey={(d) => d.id} cardSize="sm" onRowClick={(d) => compose.open({ draftId: d.id, accountId: d.account_id, kind: d.kind, to: d.to_addr, cc: d.cc_addr, bcc: d.bcc_addr, subject: d.subject, html: d.body_html, replyToEmailId: d.reply_to_email_id, threadKey: d.thread_id && d.account_id ? `${d.account_id}:${d.thread_id}` : null, attachments: [] })} columns={[
+        <div className="mb-24"><DataTable rows={drafts} rowKey={(d) => d.id} cardSize="sm" onRowClick={(d) => compose.open(seedFromDraft(d))} columns={[
           { key: 'to', primary: true, width: 240, cell: (d) => (d.to_addr ?? []).map((a: any) => a.name || a.email).join(', ') || <span className="faint">(no recipients)</span> },
-          { key: 'subject', secondary: true, cell: (d) => <>{d.subject || <span className="faint">(no subject)</span>}<span className="faint"> — {String(d.body_html ?? '').replace(/<[^>]+>/g, ' ').slice(0, 80)}</span></> },
+          { key: 'subject', secondary: true, cell: (d) => <>{d.source === 'ai' && <span className="badge badge-accent" style={{ marginRight: 6 }}>AI</span>}{d.subject || <span className="faint">(no subject)</span>}<span className="faint"> — {String(d.body_html ?? '').split('<div class="tern-quote"')[0].replace(/<div class="tern-signature"[\s\S]*$/, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)}</span>{(d.attachments?.length ?? 0) > 0 && <Paperclip size={12} className="faint" style={{ marginLeft: 6 }} />}</> },
           { key: 'when', width: 120, className: 'small muted', nowrap: true, cell: (d) => fmtDate(d.updated_at) },
           { key: 'act', actions: true, width: 60, cell: (d) => <IconButton label="Discard" className="btn-sm" onClick={() => api.del(`/api/mail/drafts/${d.id}`).then(() => { qc.invalidateQueries({ queryKey: ['drafts'] }); qc.invalidateQueries({ queryKey: ['counts'] }); })}><Trash2 size={14} /></IconButton> },
         ]} /></div>

@@ -23,6 +23,9 @@ export interface ComposeInput {
   text?: string;
   replyToEmailId?: number | null;
   forwardOfEmailId?: number | null;
+  // Which of the original's attachments travel with a forward. Absent means
+  // all of them; inline (cid) images always come along so the body renders.
+  forwardBlobIds?: string[] | null;
   attachmentIds?: number[];
   includeSignature?: boolean;
   kind: 'compose' | 'reply' | 'forward' | 'scheduled' | 'sequence' | 'auto_reply';
@@ -71,6 +74,22 @@ export function normalizeAddresses(list: unknown, field: string): Address[] {
   return out;
 }
 
+// Images pasted or inserted into the editor are staged uploads referenced by
+// URL. On the wire they become inline (cid) parts, so the message renders in
+// every client and nothing points back at this server.
+const INLINE_UPLOAD_RE = /(src=["'])\/api\/mail\/uploads\/(\d+)(?:\?[^"']*)?(["'])/g;
+export function inlineUploadIds(html: string): number[] {
+  const ids = new Set<number>();
+  for (const m of html.matchAll(INLINE_UPLOAD_RE)) ids.add(Number(m[2]));
+  return [...ids];
+}
+export function rewriteInlineUploads(html: string, cidFor: (uploadId: number) => string | null): string {
+  return html.replace(INLINE_UPLOAD_RE, (whole, pre: string, id: string, post: string) => {
+    const cid = cidFor(Number(id));
+    return cid ? `${pre}cid:${cid}${post}` : whole;
+  });
+}
+
 export async function composeAndSend(acc: AccountRow, input: ComposeInput): Promise<{ log: SendLogRow; outcome: SendOutcome }> {
   const to = normalizeAddresses(input.to, 'to');
   const cc = normalizeAddresses(input.cc ?? [], 'cc');
@@ -87,7 +106,19 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     }
   }
 
+  let html = input.html || '<p></p>';
   const attachments: OutgoingAttachment[] = [];
+  const inlineIds = inlineUploadIds(html);
+  if (inlineIds.length) {
+    const rows = await query<any>('SELECT id, filename, content_type, data FROM uploads WHERE id = ANY($1) AND user_id=$2', [inlineIds, acc.user_id]);
+    const cids = new Map<number, string>();
+    for (const r of rows) {
+      const cid = `img${r.id}.${Date.now().toString(36)}@${acc.email.split('@')[1] || 'tern'}`;
+      cids.set(r.id, cid);
+      attachments.push({ filename: r.filename, content: r.data, contentType: r.content_type, cid });
+    }
+    html = rewriteInlineUploads(html, (id) => cids.get(id) ?? null);
+  }
   if (input.attachmentIds?.length) {
     const rows = await query<any>('SELECT id, filename, content_type, data FROM uploads WHERE id = ANY($1) AND user_id=$2', [input.attachmentIds, acc.user_id]);
     for (const r of rows) attachments.push({ filename: r.filename, content: r.data, contentType: r.content_type });
@@ -95,8 +126,10 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   if (input.forwardOfEmailId) {
     const orig = await one<any>('SELECT attachments FROM emails WHERE id=$1 AND account_id=$2', [input.forwardOfEmailId, acc.id]);
     const client = clientFor(acc);
+    const wanted = Array.isArray(input.forwardBlobIds) ? new Set(input.forwardBlobIds) : null;
     for (const a of orig?.attachments ?? []) {
       if (!a.blobId) continue;
+      if (wanted && !a.cid && !wanted.has(a.blobId)) continue;
       const res = await client.download(a.blobId, a.name ?? 'attachment', a.type ?? 'application/octet-stream');
       attachments.push({ filename: a.name ?? 'attachment', content: Buffer.from(await res.arrayBuffer()), contentType: a.type ?? 'application/octet-stream', cid: a.cid ?? undefined });
     }
@@ -105,7 +138,6 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   // the one place every outgoing attachment passes through.
   for (const a of attachments) a.content = scrubMedia(a.content, a.contentType, a.filename).data;
 
-  let html = input.html || '<p></p>';
   if (input.includeSignature !== false && acc.signature_html?.trim()) {
     html += `<div class="tern-signature" style="margin-top:16px">${acc.signature_html}</div>`;
   }
@@ -172,7 +204,8 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
 
   // Housekeeping: uploads are single-use, contacts remember the touch, the
   // sent copy is pulled back so the thread view shows it right away.
-  if (input.attachmentIds?.length) await query('DELETE FROM uploads WHERE id = ANY($1) AND user_id=$2', [input.attachmentIds, acc.user_id]);
+  const usedUploads = [...(input.attachmentIds ?? []), ...inlineIds];
+  if (usedUploads.length) await query('DELETE FROM uploads WHERE id = ANY($1) AND user_id=$2', [usedUploads, acc.user_id]);
   const allRecipients = [...to, ...cc, ...bcc].map((a) => a.email.toLowerCase());
   await query(`UPDATE contacts SET last_contacted_at=now(), updated_at=now() WHERE user_id=$1 AND (id=$2 OR lower(email) = ANY($3))`, [acc.user_id, input.contactId ?? -1, allRecipients]);
   if (outcome.threadId) {

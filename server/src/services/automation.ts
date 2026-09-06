@@ -36,6 +36,7 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
   const inboxId = mailboxes.find((m) => m.role === 'inbox')?.jmap_id;
   const rules = await query<any>(`SELECT * FROM rules WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
   const responders = await query<any>(`SELECT * FROM responders WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
+  const muted = new Set((await query<{ thread_id: string }>('SELECT thread_id FROM muted_threads WHERE account_id=$1', [acc.id])).map((r) => r.thread_id));
 
   for (const e of fresh) {
     const fromEmail: string = (e.from?.[0]?.email ?? '').toLowerCase();
@@ -43,6 +44,12 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
     const roles = mailboxIds.map((m) => roleOf.get(m));
     const outbound = fromEmail === own || roles.includes('sent') || roles.includes('drafts');
     if (outbound) continue;
+    // A muted conversation skips the inbox: new messages are filed straight
+    // into the archive, and nobody is asked to answer them.
+    if (muted.has(e.threadId) && inboxId && mailboxIds.includes(inboxId)) {
+      try { await actions.archive(acc, [e.id]); log.info('muted thread archived', { account: acc.id, thread: e.threadId }); } catch (err) { log.error('mute archive failed', { err: (err as Error).message }); }
+      continue;
+    }
     const refs: string[] = [...(e.inReplyTo ?? []), ...(e.references ?? [])].map((r: string) => r.replace(/^<|>$/g, ''));
     const autoSubmitted: string | null = e['header:Auto-Submitted:asText'] ?? null;
     const isAuto = Boolean(autoSubmitted && !/^\s*no\b/i.test(autoSubmitted));

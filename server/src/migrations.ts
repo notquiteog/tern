@@ -533,4 +533,20 @@ CREATE TABLE IF NOT EXISTS burner_addresses (
 );
 `,
   },
+  {
+    id: '20260906_0009_mail_client_features',
+    up: `
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS list_unsubscribe TEXT;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS list_id TEXT;
+CREATE TABLE IF NOT EXISTS muted_threads (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, thread_id)
+);
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS forward_of_email_id BIGINT REFERENCES emails(id) ON DELETE SET NULL;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS forward_blob_ids TEXT[] NOT NULL DEFAULT '{}';
+`,
+  },
 ];

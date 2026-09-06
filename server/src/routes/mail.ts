@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../errors.js';
 import { clientFor, getUserAccount, listAccounts, type AccountRow } from '../services/accounts.js';
 import * as actions from '../jmap/actions.js';
 import { syncManager } from '../workers/syncManager.js';
+import { wakeOutboxAt } from '../workers/scheduler.js';
 import { composeAndSend } from '../services/compose.js';
 import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
@@ -26,6 +27,11 @@ async function roleIds(accountIds: number[], role: string): Promise<string[]> {
   const rows = await query<{ jmap_id: string }>('SELECT jmap_id FROM mailboxes WHERE account_id = ANY($1) AND role=$2', [accountIds, role]);
   return rows.map((r) => r.jmap_id);
 }
+
+// Attachment details for a draft's staged uploads, so a reopened draft shows
+// its files instead of silently dropping them.
+const DRAFT_ATTACHMENTS = `(SELECT coalesce(jsonb_agg(jsonb_build_object('id', u.id, 'filename', u.filename, 'size', u.size, 'content_type', u.content_type) ORDER BY u.id), '[]'::jsonb) FROM uploads u WHERE u.id = ANY(d.attachment_ids)) AS attachments,
+  (SELECT coalesce(jsonb_agg(a), '[]'::jsonb) FROM emails x, jsonb_array_elements(x.attachments) a WHERE x.id = d.forward_of_email_id AND a->>'blobId' = ANY(d.forward_blob_ids)) AS forward_attachments`;
 
 // ---------- Thread list ----------
 
@@ -95,6 +101,8 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT jsonb_agg(DISTINCT x.from_addr->0) FROM emails x WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id AND jsonb_typeof(x.from_addr->0) = 'object') AS participants,
        (SELECT array_agg(DISTINCT m) FROM emails x, unnest(x.mailbox_ids) m WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id) AS mailbox_ids,
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
+       EXISTS (SELECT 1 FROM muted_threads mt WHERE mt.account_id=t.account_id AND mt.thread_id=t.thread_id) AS muted,
+       (SELECT jsonb_agg(n) FROM (SELECT a->>'name' AS n FROM emails x, jsonb_array_elements(x.attachments) a WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id AND a->>'name' IS NOT NULL AND (a->>'cid' IS NULL OR a->>'disposition' = 'attachment') ORDER BY x.received_at DESC LIMIT 4) s) AS attachments,
        (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id,
        (SELECT jsonb_build_object('id', c.id, 'v', (extract(epoch FROM c.avatar_updated_at) * 1000)::bigint) FROM contacts c
           WHERE c.user_id=${p(req.user!.id)} AND c.avatar_updated_at IS NOT NULL AND lower(c.email) = (SELECT x.from_email FROM emails x WHERE x.account_id=t.account_id AND x.thread_id=t.thread_id ORDER BY x.received_at DESC LIMIT 1) LIMIT 1) AS avatar
@@ -124,7 +132,7 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   const threadId = String(req.params.threadId);
   const messages = await query<any>(
     `SELECT id, jmap_id, blob_id, thread_id, mailbox_ids, keywords, size, received_at, sent_at, message_id, in_reply_to, references_ids, from_addr, to_addr, cc_addr, bcc_addr, reply_to,
-            subject, preview, has_attachment, body_text, body_html, attachments, is_unread, is_flagged, is_draft, from_email
+            subject, preview, has_attachment, body_text, body_html, attachments, is_unread, is_flagged, is_draft, from_email, list_unsubscribe, list_id, auto_submitted
      FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC`,
     [acc.id, threadId],
   );
@@ -150,10 +158,12 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   ) : [];
   const sends = await query<any>('SELECT id, kind, subject, sent_at, replied_at, bounced_at, status, error FROM send_log WHERE account_id=$1 AND thread_id=$2 ORDER BY sent_at', [acc.id, threadId]);
   const snooze = await one<any>('SELECT until_at FROM snoozes WHERE account_id=$1 AND thread_id=$2 AND NOT restored', [acc.id, threadId]);
-  const drafts = await query<any>(`SELECT d.*, r.name AS responder_name FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 AND d.account_id=$2 AND d.thread_id=$3 ORDER BY d.updated_at DESC`, [req.user!.id, acc.id, threadId]);
+  const muted = await one('SELECT 1 FROM muted_threads WHERE account_id=$1 AND thread_id=$2', [acc.id, threadId]);
+  const drafts = await query<any>(`SELECT d.*, r.name AS responder_name, ${DRAFT_ATTACHMENTS} FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 AND d.account_id=$2 AND d.thread_id=$3 ORDER BY d.updated_at DESC`, [req.user!.id, acc.id, threadId]);
   const pendingJobs = await one<{ n: number }>(`SELECT count(*)::int AS n FROM ai_jobs WHERE user_id=$1 AND kind='responder' AND status IN ('pending','running') AND payload->>'threadId'=$2 AND (payload->>'accountId')::bigint=$3`, [req.user!.id, threadId, acc.id]);
-  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, drafts, aiPending: pendingJobs?.n ?? 0 });
+  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color, signature_html: acc.signature_html }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, muted: Boolean(muted), drafts, aiPending: pendingJobs?.n ?? 0 });
 });
+
 
 // ---------- Actions ----------
 
@@ -161,10 +171,16 @@ const actionSchema = z.object({
   accountId: z.number().int(),
   jmapIds: z.array(z.string()).optional(),
   threadIds: z.array(z.string()).optional(),
-  action: z.enum(['read', 'unread', 'star', 'unstar', 'archive', 'trash', 'spam', 'inbox', 'delete', 'label', 'unlabel', 'snooze', 'unsnooze', 'move']),
+  action: z.enum(['read', 'unread', 'star', 'unstar', 'archive', 'trash', 'spam', 'inbox', 'delete', 'label', 'unlabel', 'snooze', 'unsnooze', 'move', 'mute', 'unmute', 'restore']),
   mailboxId: z.string().optional(),
   until: z.string().optional(),
+  // For 'restore': where each message was before the action being undone.
+  items: z.array(z.object({ jmapId: z.string(), mailboxIds: z.array(z.string()) })).max(2000).optional(),
 });
+
+// Actions that move mail somewhere can be undone from the toast in the
+// browser: the response carries where every message was before.
+const UNDOABLE = new Set(['archive', 'trash', 'spam', 'inbox', 'label', 'unlabel', 'snooze', 'move', 'mute']);
 
 async function resolveIds(acc: AccountRow, b: z.infer<typeof actionSchema>): Promise<string[]> {
   const ids = new Set(b.jmapIds ?? []);
@@ -180,7 +196,8 @@ mailRouter.post('/actions', async (req, res) => {
   const acc = await getUserAccount(req.user!.id, b.accountId);
   if (!acc) throw notFound('Account not found');
   const ids = await resolveIds(acc, b);
-  if (!ids.length && !['snooze', 'unsnooze'].includes(b.action)) { res.json({ ok: true, count: 0 }); return; }
+  if (!ids.length && !['snooze', 'unsnooze', 'restore', 'mute', 'unmute'].includes(b.action)) { res.json({ ok: true, count: 0 }); return; }
+  const before = UNDOABLE.has(b.action) && ids.length ? await query<{ jmap_id: string; mailbox_ids: string[]; thread_id: string }>('SELECT jmap_id, mailbox_ids, thread_id FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, ids]) : [];
   switch (b.action) {
     case 'read': await actions.setKeyword(acc, ids, '$seen', true); break;
     case 'unread': await actions.setKeyword(acc, ids, '$seen', false); break;
@@ -215,9 +232,52 @@ mailRouter.post('/actions', async (req, res) => {
       await actions.toInbox(acc, ids);
       break;
     }
+    case 'mute': {
+      const threads = b.threadIds?.length ? b.threadIds : [...new Set(before.map((r) => r.thread_id))];
+      if (!threads.length) throw badRequest('threadIds required');
+      for (const t of threads) await query('INSERT INTO muted_threads (user_id, account_id, thread_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [req.user!.id, acc.id, t]);
+      if (ids.length) await actions.archive(acc, ids);
+      break;
+    }
+    case 'unmute': {
+      const threads = b.threadIds?.length ? b.threadIds : [...new Set(before.map((r) => r.thread_id))];
+      await query('DELETE FROM muted_threads WHERE account_id=$1 AND thread_id = ANY($2)', [acc.id, threads]);
+      break;
+    }
+    case 'restore': {
+      if (!b.items?.length) throw badRequest('items required');
+      await actions.restoreMailboxes(acc, b.items);
+      const threads = [...new Set((await query<{ thread_id: string }>('SELECT DISTINCT thread_id FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, b.items.map((i) => i.jmapId)])).map((r) => r.thread_id))];
+      if (threads.length) {
+        await query('UPDATE snoozes SET restored=true WHERE account_id=$1 AND thread_id = ANY($2) AND NOT restored', [acc.id, threads]);
+        await query('DELETE FROM muted_threads WHERE account_id=$1 AND thread_id = ANY($2)', [acc.id, threads]);
+      }
+      break;
+    }
   }
   syncManager.requestSync(acc.id, 1200);
-  res.json({ ok: true, count: ids.length });
+  const undo = before.length ? { accountId: acc.id, items: before.map((r) => ({ jmapId: r.jmap_id, mailboxIds: r.mailbox_ids })) } : null;
+  res.json({ ok: true, count: ids.length, undo });
+});
+
+// Everything in Trash or Junk, gone for good, across the user's accounts.
+mailRouter.post('/empty', async (req, res) => {
+  const b = parse(z.object({ box: z.enum(['trash', 'junk']), accountId: z.number().int().optional() }), req.body);
+  const accounts = (await listAccounts(req.user!.id)).filter((a) => !b.accountId || a.id === b.accountId);
+  let count = 0;
+  for (const acc of accounts) {
+    const roles = b.box === 'trash' ? ['trash'] : ['junk', 'spam'];
+    const boxes = (await query<{ jmap_id: string }>('SELECT jmap_id FROM mailboxes WHERE account_id=$1 AND role = ANY($2)', [acc.id, roles])).map((r) => r.jmap_id);
+    if (!boxes.length) continue;
+    const rows = await query<{ jmap_id: string }>('SELECT jmap_id FROM emails WHERE account_id=$1 AND mailbox_ids && $2::text[]', [acc.id, boxes]);
+    for (let i = 0; i < rows.length; i += 200) {
+      const slice = rows.slice(i, i + 200).map((r) => r.jmap_id);
+      await actions.destroyEmails(acc, slice);
+      count += slice.length;
+    }
+    syncManager.requestSync(acc.id, 1200);
+  }
+  res.json({ ok: true, count });
 });
 
 // ---------- Mailboxes / labels ----------
@@ -318,14 +378,17 @@ mailRouter.post('/uploads', rawBody, async (req, res) => {
   res.json({ upload: { ...rows[0], scrubbed: scrub.handled ? { changed: scrub.changed, removed: scrub.removed, savedBytes: raw.length - data.length, note: describeScrub(scrub) } : null } });
 });
 
-// The bytes back, for a browser that signs or encrypts the message itself.
+// The bytes back: for a browser that signs or encrypts the message itself,
+// and (with ?inline=1) for an image that was inserted into the editor.
 mailRouter.get('/uploads/:id', async (req, res) => {
   const u = await one<any>('SELECT filename, content_type, data FROM uploads WHERE id=$1 AND user_id=$2', [idParam(req.params.id), req.user!.id]);
   if (!u) throw notFound('Upload not found');
-  res.setHeader('Content-Type', 'application/octet-stream');
+  const inlineImage = Boolean(req.query.inline) && /^image\/(png|jpe?g|gif|webp|bmp)$/.test(u.content_type);
+  res.setHeader('Content-Type', inlineImage ? u.content_type : 'application/octet-stream');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(u.filename)}`);
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.setHeader('Cache-Control', inlineImage ? 'private, max-age=3600' : 'private, no-store');
+  res.setHeader('Content-Disposition', `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(u.filename)}`);
   res.send(u.data);
 });
 
@@ -345,11 +408,15 @@ const sendSchema = z.object({
   html: z.string().max(2_000_000).default(''),
   replyToEmailId: z.number().int().nullable().optional(),
   forwardOfEmailId: z.number().int().nullable().optional(),
+  forwardBlobIds: z.array(z.string()).max(200).nullable().optional(),
   attachmentIds: z.array(z.number().int()).default([]),
   includeSignature: z.boolean().default(true),
   draftId: z.number().int().nullable().optional(),
   scheduleAt: z.string().nullable().optional(),
   humanize: z.boolean().default(false),
+  // Held briefly so the sender can change their mind; sent as the plain
+  // reply or compose it is, not logged as a scheduled message.
+  undoWindow: z.boolean().default(false),
   contactId: z.number().int().nullable().optional(),
   encrypt: z.enum(['always', 'if_possible']).nullable().optional(),
   pgp: z.object({ mode: z.enum(['encrypted', 'signed']), armored: z.string().max(30_000_000).optional(), inner: z.string().max(30_000_000).optional(), signature: z.string().max(20_000).optional() }).nullable().optional(),
@@ -360,13 +427,17 @@ mailRouter.post('/send', async (req, res) => {
   const acc = await getUserAccount(req.user!.id, b.accountId);
   if (!acc) throw notFound('Account not found');
   const kind = b.replyToEmailId ? 'reply' : b.forwardOfEmailId ? 'forward' : 'compose';
-  const payload = { to: b.to as any, cc: b.cc as any, bcc: b.bcc as any, subject: b.subject, html: b.html, replyToEmailId: b.replyToEmailId ?? null, forwardOfEmailId: b.forwardOfEmailId ?? null, attachmentIds: b.attachmentIds, includeSignature: b.includeSignature, kind, contactId: b.contactId ?? null, encrypt: b.encrypt ?? null, pgp: b.pgp ?? null } as const;
+  const recipients = [...b.to, ...b.cc, ...b.bcc];
+  if (!recipients.length) throw badRequest('Add at least one recipient');
+  const payload = { to: b.to as any, cc: b.cc as any, bcc: b.bcc as any, subject: b.subject, html: b.html, replyToEmailId: b.replyToEmailId ?? null, forwardOfEmailId: b.forwardOfEmailId ?? null, forwardBlobIds: b.forwardBlobIds ?? null, attachmentIds: b.attachmentIds, includeSignature: b.includeSignature, kind, contactId: b.contactId ?? null, encrypt: b.encrypt ?? null, pgp: b.pgp ?? null } as const;
   if (b.scheduleAt || b.humanize) {
     let sendAt = b.scheduleAt ? new Date(b.scheduleAt) : new Date();
     if (Number.isNaN(sendAt.getTime())) throw badRequest('Invalid schedule time');
+    if (b.undoWindow && sendAt.getTime() > Date.now() + 120_000) throw badRequest('The undo window cannot be longer than two minutes');
     if (!b.scheduleAt && b.humanize) sendAt = new Date(Date.now() + Math.max(jitterMs(acc), 15_000));
-    const rows = await query<any>('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,$4) RETURNING id, send_at', [req.user!.id, acc.id, JSON.stringify({ ...payload, humanize: b.humanize && Boolean(b.scheduleAt) }), sendAt]);
+    const rows = await query<any>('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,$4) RETURNING id, send_at', [req.user!.id, acc.id, JSON.stringify({ ...payload, humanize: b.humanize && Boolean(b.scheduleAt), undoWindow: b.undoWindow, draftId: b.draftId ?? null }), sendAt]);
     if (b.draftId) await query('DELETE FROM drafts WHERE id=$1 AND user_id=$2', [b.draftId, req.user!.id]);
+    if (b.undoWindow) wakeOutboxAt(sendAt);
     res.json({ ok: true, scheduled: true, outboxId: rows[0].id, sendAt: rows[0].send_at });
     return;
   }
@@ -382,9 +453,28 @@ mailRouter.get('/outbox', async (req, res) => {
   res.json({ outbox: rows });
 });
 
+// Cancelling a queued message hands it back as a draft, so an undone send
+// or a scheduled message that is no longer wanted loses nothing.
 mailRouter.delete('/outbox/:id', async (req, res) => {
-  await query(`UPDATE outbox SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status IN ('scheduled','failed')`, [idParam(req.params.id), req.user!.id]);
-  res.json({ ok: true });
+  const rows = await query<any>(`UPDATE outbox SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status IN ('scheduled','failed') RETURNING account_id, payload`, [idParam(req.params.id), req.user!.id]);
+  if (!rows.length) {
+    const existing = await one<{ status: string }>('SELECT status FROM outbox WHERE id=$1 AND user_id=$2', [idParam(req.params.id), req.user!.id]);
+    res.json({ ok: true, cancelled: false, status: existing?.status ?? 'gone', draft: null });
+    return;
+  }
+  const p = rows[0].payload ?? {};
+  let draft: any = null;
+  try {
+    const threadId = p.replyToEmailId || p.forwardOfEmailId ? (await one<{ thread_id: string }>('SELECT thread_id FROM emails WHERE id=$1', [p.replyToEmailId || p.forwardOfEmailId]))?.thread_id ?? null : null;
+    const kind = p.kind === 'reply' ? 'reply' : p.kind === 'forward' ? 'forward' : 'new';
+    const inserted = await query<any>(
+      `INSERT INTO drafts (user_id, account_id, kind, reply_to_email_id, forward_of_email_id, forward_blob_ids, thread_id, to_addr, cc_addr, bcc_addr, subject, body_html, attachment_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [req.user!.id, rows[0].account_id, kind, p.replyToEmailId ?? null, p.forwardOfEmailId ?? null, Array.isArray(p.forwardBlobIds) ? p.forwardBlobIds : [], threadId, JSON.stringify(p.to ?? []), JSON.stringify(p.cc ?? []), JSON.stringify(p.bcc ?? []), p.subject ?? '', p.pgp ? '' : (p.html ?? ''), Array.isArray(p.attachmentIds) ? p.attachmentIds : []],
+    );
+    draft = inserted[0];
+    if (draft) draft.attachments = await query<any>('SELECT id, filename, size, content_type FROM uploads WHERE id = ANY($1) AND user_id=$2 ORDER BY id', [draft.attachment_ids, req.user!.id]);
+  } catch { /* the message is cancelled either way */ }
+  res.json({ ok: true, cancelled: true, draft });
 });
 
 mailRouter.post('/outbox/:id/now', async (req, res) => {
@@ -399,6 +489,8 @@ const draftSchema = z.object({
   accountId: z.number().int().nullable().optional(),
   kind: z.enum(['new', 'reply', 'reply_all', 'forward']).default('new'),
   replyToEmailId: z.number().int().nullable().optional(),
+  forwardOfEmailId: z.number().int().nullable().optional(),
+  forwardBlobIds: z.array(z.string()).max(200).default([]),
   threadId: z.string().nullable().optional(),
   to: z.array(addressSchema).default([]),
   cc: z.array(addressSchema).default([]),
@@ -409,16 +501,16 @@ const draftSchema = z.object({
 });
 
 mailRouter.get('/drafts', async (req, res) => {
-  const rows = await query<any>('SELECT d.*, r.name AS responder_name FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 ORDER BY d.updated_at DESC', [req.user!.id]);
+  const rows = await query<any>(`SELECT d.*, r.name AS responder_name, ${DRAFT_ATTACHMENTS} FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 ORDER BY d.updated_at DESC`, [req.user!.id]);
   res.json({ drafts: rows });
 });
 
 mailRouter.post('/drafts', async (req, res) => {
   const b = parse(draftSchema, req.body);
-  const vals = [req.user!.id, b.accountId ?? null, b.kind, b.replyToEmailId ?? null, b.threadId ?? null, JSON.stringify(b.to), JSON.stringify(b.cc), JSON.stringify(b.bcc), b.subject, b.html, b.attachmentIds];
+  const vals = [req.user!.id, b.accountId ?? null, b.kind, b.replyToEmailId ?? null, b.threadId ?? null, JSON.stringify(b.to), JSON.stringify(b.cc), JSON.stringify(b.bcc), b.subject, b.html, b.attachmentIds, b.forwardOfEmailId ?? null, b.forwardBlobIds];
   const rows = b.id
-    ? await query<any>(`UPDATE drafts SET account_id=$2, kind=$3, reply_to_email_id=$4, thread_id=$5, to_addr=$6, cc_addr=$7, bcc_addr=$8, subject=$9, body_html=$10, attachment_ids=$11, updated_at=now() WHERE id=$12 AND user_id=$1 RETURNING *`, [...vals, b.id])
-    : await query<any>(`INSERT INTO drafts (user_id, account_id, kind, reply_to_email_id, thread_id, to_addr, cc_addr, bcc_addr, subject, body_html, attachment_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, vals);
+    ? await query<any>(`UPDATE drafts SET account_id=$2, kind=$3, reply_to_email_id=$4, thread_id=$5, to_addr=$6, cc_addr=$7, bcc_addr=$8, subject=$9, body_html=$10, attachment_ids=$11, forward_of_email_id=$12, forward_blob_ids=$13, updated_at=now() WHERE id=$14 AND user_id=$1 RETURNING *`, [...vals, b.id])
+    : await query<any>(`INSERT INTO drafts (user_id, account_id, kind, reply_to_email_id, thread_id, to_addr, cc_addr, bcc_addr, subject, body_html, attachment_ids, forward_of_email_id, forward_blob_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`, vals);
   if (!rows.length) throw notFound('Draft not found');
   res.json({ draft: rows[0] });
 });

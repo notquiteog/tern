@@ -113,6 +113,18 @@ export async function moveToOnly(acc: AccountRow, jmapIds: string[], mailboxJmap
   await patchAll(acc, jmapIds, () => ({ mailboxIds: { [mailboxJmapId]: true } }));
 }
 
+// Put messages back exactly where they were: the undo of archive, trash,
+// junk, move and label. Each message gets its own mailbox set.
+export async function restoreMailboxes(acc: AccountRow, items: { jmapId: string; mailboxIds: string[] }[]): Promise<void> {
+  const valid = items.filter((i) => i.mailboxIds.length);
+  if (!valid.length) return;
+  const known = new Set((await query<{ jmap_id: string }>('SELECT jmap_id FROM mailboxes WHERE account_id=$1', [acc.id])).map((r) => r.jmap_id));
+  const usable = valid.map((i) => ({ jmapId: i.jmapId, mailboxIds: i.mailboxIds.filter((m) => known.has(m)) })).filter((i) => i.mailboxIds.length);
+  for (const i of usable) await query(`UPDATE emails SET mailbox_ids=$3::text[], updated_at=now() WHERE account_id=$1 AND jmap_id=$2`, [acc.id, i.jmapId, i.mailboxIds]);
+  const byId = new Map(usable.map((i) => [i.jmapId, i.mailboxIds]));
+  await patchAll(acc, [...byId.keys()], (id) => ({ mailboxIds: Object.fromEntries(byId.get(id)!.map((m) => [m, true])) }));
+}
+
 export async function destroyEmails(acc: AccountRow, jmapIds: string[]): Promise<void> {
   const client = clientFor(acc);
   await query('DELETE FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, jmapIds]);

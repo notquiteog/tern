@@ -3,7 +3,7 @@
 // gives the model the facts it is allowed to use instead of letting it guess.
 import type { ChatMessage } from './llm.js';
 
-export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish';
+export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies';
 
 export interface DraftInput {
   mode: DraftMode;
@@ -102,6 +102,9 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       break;
     case 'personalize':
       parts.push(`Write the email the sender will send to the recipient below, in the first person ("I", "we") and speaking to the recipient as "you". The brief is the message to deliver; say it in the sender's words, do not describe or summarise it. Use at most two of the recipient facts, naturally, without saying you have facts about them.`, input.instruction ? `Extra direction: ${input.instruction}` : '', tone, len);
+      break;
+    case 'quick_replies':
+      parts.push(`Suggest three different short replies the sender could send to the latest message in the conversation. One reply per line, each a complete sentence under 12 words, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off. Output exactly three lines.`, tone);
       break;
   }
   const ab = addressingBlock(input); if (ab) parts.push(ab);
@@ -210,7 +213,30 @@ export function stripModelSignature(text: string, ctx: FinalizeContext): string 
   return lines.join('\n');
 }
 
+// Three one-line suggestions, whatever decoration the model added: numbers,
+// bullets, quotes, labels, or a greeting it was told not to write.
+export function parseQuickReplies(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split('\n')) {
+    let t = line.trim().replace(/^```[a-z]*$/i, '');
+    t = t.replace(/^(?:[-*•>]+|\(?\d+[.)]|[a-c][.)]|(?:option|reply)\s*\d*\s*:)\s*/i, '').trim();
+    t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+    t = t.replace(/^(?:hi|hello|hey|dear)\b[^,!.]*[,!.]\s*/i, '').trim();
+    if (!t || /^(here (are|is)|sure|okay|ok)\b/i.test(t) && t.endsWith(':')) continue;
+    if (t.length > 140) t = t.slice(0, 137).replace(/\s+\S*$/, '') + '…';
+    t = t[0].toUpperCase() + t.slice(1);
+    const key = t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
 export function finalizeOutput(raw: string, mode: DraftMode, ctx: FinalizeContext = {}): string {
+  if (mode === 'quick_replies') return parseQuickReplies(raw).join('\n');
   let t = cleanOutput(raw, mode);
   if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish'].includes(mode)) t = stripModelSignature(t, ctx);
   t = ensureGreeting(t, mode, ctx.recipient);

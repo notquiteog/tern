@@ -13,6 +13,7 @@ import { buildMessages, cleanOutput, finalizeOutput } from '../ai/prompts.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
+import { replyRecipients, replySubject } from '../services/reply.js';
 
 const log = logger('scheduler');
 let timer: NodeJS.Timeout | null = null;
@@ -44,6 +45,20 @@ export async function tick(): Promise<void> {
   }
 }
 
+// "Undo send" holds a message for a few seconds; waiting for the next
+// 20-second tick would double that, so the outbox is woken at the exact
+// moment instead. Claims are guarded, so overlapping with a tick is safe.
+let wake: NodeJS.Timeout | null = null;
+let wakeAt = Infinity;
+export function wakeOutboxAt(when: Date): void {
+  const at = when.getTime() + 250;
+  if (at >= wakeAt) return;
+  if (wake) clearTimeout(wake);
+  wakeAt = at;
+  wake = setTimeout(() => { wake = null; wakeAt = Infinity; void processOutbox().catch((e) => log.error('outbox wake failed', { err: (e as Error).message })); }, Math.max(0, at - Date.now()));
+  wake.unref();
+}
+
 // ---------- Retention ----------
 // Nothing is kept longer than the feature that needs it. Staged attachments
 // live a day, sent outbox copies a week (the mailbox has the real copy),
@@ -53,7 +68,9 @@ export async function housekeeping(force = false): Promise<Record<string, number
   if (!force && Date.now() - lastHousekeeping < 3600_000) return {};
   lastHousekeeping = Date.now();
   const jobs: [string, string][] = [
-    ['uploads', `DELETE FROM uploads WHERE created_at < now() - interval '1 day'`],
+    // Staged files live a day unless a draft still refers to them, as an
+    // attachment or as an image inserted into the body.
+    ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR d.body_html LIKE '%/api/mail/uploads/' || u.id || '?%' OR d.body_html LIKE '%/api/mail/uploads/' || u.id || '"%') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND o.payload::text LIKE '%/uploads/' || u.id || '%')`],
     ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - interval '7 days'`],
     ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - interval '30 days'`],
     ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '30 days'`],
@@ -102,7 +119,7 @@ async function processOutbox(): Promise<void> {
     if (!item) continue;
     const acc = await getAccount(item.account_id);
     if (!acc) { await query(`UPDATE outbox SET status='failed', error='Account no longer exists' WHERE id=$1`, [id]); continue; }
-    const payload: ComposeInput & { humanize?: boolean } = item.payload;
+    const payload: ComposeInput & { humanize?: boolean; undoWindow?: boolean } = item.payload;
     if (payload.humanize) {
       // The person asked for a natural gap: respect the account's pacing and
       // window rather than firing at the exact second.
@@ -114,7 +131,10 @@ async function processOutbox(): Promise<void> {
       if (slot.waitMs) await new Promise((r) => setTimeout(r, Math.min(slot.waitMs, 5000)));
     }
     try {
-      await composeAndSend(acc, { ...payload, kind: payload.kind === 'auto_reply' ? 'auto_reply' : 'scheduled' });
+      // A message held for "undo send" is an ordinary reply or compose that
+      // left a few seconds late; only a real schedule is logged as such.
+      const kind = payload.kind === 'auto_reply' ? 'auto_reply' : payload.undoWindow && ['compose', 'reply', 'forward'].includes(payload.kind) ? payload.kind : 'scheduled';
+      await composeAndSend(acc, { ...payload, kind });
       await query(`UPDATE outbox SET status='sent', sent_at=now(), error=NULL WHERE id=$1`, [id]);
     } catch (e) {
       const msg = (e as Error).message;
@@ -330,14 +350,11 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
   });
   const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
   const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
-  const me = acc.email.toLowerCase();
-  const replyTo: any[] = email.reply_to?.length ? email.reply_to : email.from_addr ?? [];
-  let to = replyTo.filter((a: any) => String(a.email).toLowerCase() !== me).map((a: any) => ({ name: a.name ?? null, email: a.email }));
-  if (responder.reply_all) {
-    for (const a of [...(email.to_addr ?? []), ...(email.cc_addr ?? [])]) if (String(a.email).toLowerCase() !== me && !to.some((t: any) => t.email.toLowerCase() === String(a.email).toLowerCase())) to.push({ name: a.name ?? null, email: a.email });
-  }
+  // The same addressing rules as the Reply button in the browser.
+  const r = replyRecipients({ from: email.from_addr, replyTo: email.reply_to, to: email.to_addr, cc: email.cc_addr }, acc.email, Boolean(responder.reply_all));
+  const to = [...r.to, ...r.cc].map((a) => ({ name: a.name ?? null, email: a.email }));
   const quote = `<div class="tern-quote" style="margin-top:16px"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">On ${escapeHtml(new Date(email.received_at).toUTCString())}, ${escapeHtml(email.from_addr?.[0]?.email ?? '')} wrote:</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0">${email.body_html ?? `<div style="white-space:pre-wrap">${escapeHtml(email.body_text ?? '')}</div>`}</blockquote></div>`;
-  return { subject: /^re:/i.test(email.subject ?? '') ? email.subject : `Re: ${email.subject ?? ''}`, html: textToHtml(text) + quote, text, to, model: settings.model };
+  return { subject: replySubject(email.subject), html: textToHtml(text) + quote, text, to, model: settings.model };
 }
 
 async function runResponderJob(job: any): Promise<string> {

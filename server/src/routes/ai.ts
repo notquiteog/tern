@@ -81,7 +81,7 @@ aiRouter.delete('/models/:name', requireAdmin, async (req, res) => {
 });
 
 const draftSchema = z.object({
-  mode: z.enum(['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish']),
+  mode: z.enum(['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies']),
   instruction: z.string().max(4000).optional(),
   tone: z.string().max(60).optional(),
   length: z.enum(['short', 'medium', 'long']).optional(),
@@ -133,7 +133,7 @@ aiRouter.post('/draft', async (req, res) => {
   let full = '';
   try {
     send('start', { model: s.model });
-    for await (const piece of chatStream({ messages: buildMessages(input), signal: abort.signal, maxTokens: b.mode === 'subject' ? 40 : b.mode === 'summarize' ? 300 : 700, temperature: b.mode === 'subject' || b.mode === 'polish' ? 0.3 : undefined })) {
+    for await (const piece of chatStream({ messages: buildMessages(input), signal: abort.signal, maxTokens: b.mode === 'subject' ? 40 : b.mode === 'summarize' ? 300 : b.mode === 'quick_replies' ? 120 : 700, temperature: b.mode === 'subject' || b.mode === 'polish' ? 0.3 : b.mode === 'quick_replies' ? 0.9 : undefined })) {
       full += piece;
       send('token', { t: piece });
     }

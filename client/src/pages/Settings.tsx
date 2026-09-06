@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Feather } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Users, Palette, Settings as SettingsIcon, Mail, ExternalLink, Server, Copy, KeySquare, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Feather, Inbox } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
@@ -15,7 +15,7 @@ import { Editor, type EditorHandle } from '../components/Editor';
 import { getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { Avatar } from '../components/ui';
-import { useLocalStorage } from '../lib/hooks';
+import { useMailPrefs } from '../state/mailPrefs';
 import { fmtBytes, fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import MailAppsSettings from './MailApps';
@@ -29,7 +29,7 @@ export default function SettingsPage() {
   const admin = user!.role === 'admin';
   const tabs: [string, string, ReactNode][] = [
     ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
-    ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
+    ['mail', 'Mail', <Inbox size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
   ];
   if (admin) tabs.push(['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />]);
   if (admin && stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
@@ -43,6 +43,7 @@ export default function SettingsPage() {
         <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
         <Route path="mailapps" element={<MailAppsSettings />} />
+        <Route path="mail" element={<MailSettings />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
         <Route path="encryption" element={<EncryptionSettings />} />
@@ -505,8 +506,43 @@ function AppearanceSettings() {
 }
 
 function ReadingPaneToggle() {
-  const [split, setSplit] = useLocalStorage('tern.split', true);
-  return <div className="row"><Toggle checked={split} onChange={setSplit} /><span className="small">Show conversations beside the list on wide screens</span></div>;
+  const [p, set] = useMailPrefs();
+  return <div className="segmented"><button className={p.layout === 'right' ? 'active' : ''} onClick={() => set({ layout: 'right' })}>Beside the list</button><button className={p.layout === 'bottom' ? 'active' : ''} onClick={() => set({ layout: 'bottom' })}>Below the list</button><button className={p.layout === 'off' ? 'active' : ''} onClick={() => set({ layout: 'off' })}>Off</button></div>;
+}
+
+// ---------------- Mail ----------------
+
+function MailSettings() {
+  const [p, set] = useMailPrefs();
+  return (
+    <div style={{ maxWidth: 820 }}>
+      <PageHeader title="Mail" sub="How reading and writing mail behaves. Saved to this browser and to your profile." />
+      <div className="card mb-16">
+        <h2 className="mb-8">Undo send</h2>
+        <p className="muted small">Messages are held for a moment after you press Send, with an Undo button in the corner. Zero sends at once.</p>
+        <div className="segmented">{([0, 5, 10, 20, 30] as const).map((n) => <button key={n} className={p.undoSendSeconds === n ? 'active' : ''} onClick={() => set({ undoSendSeconds: n })}>{n === 0 ? 'Off' : `${n} s`}</button>)}</div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Reading pane</h2>
+        <p className="muted small">Where an opened conversation appears on wide screens. Narrow screens always open it full width.</p>
+        <ReadingPaneToggle />
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Replies</h2>
+        <div className="row mb-8"><Toggle checked={p.defaultReplyAll} onChange={(v) => set({ defaultReplyAll: v })} /><span className="small">"AI reply" and the reply shortcut answer everyone on the message (reply all) by default</span></div>
+        <div className="row"><Toggle checked={p.sendAndArchive} onChange={(v) => set({ sendAndArchive: v })} /><span className="small">Show "Send and archive" as the main button on replies</span></div>
+      </div>
+      <div className="card mb-16">
+        <h2 className="mb-8">Images</h2>
+        <div className="row"><Toggle checked={p.showImagesFromContacts} onChange={(v) => set({ showImagesFromContacts: v })} /><span className="small">Show remote images automatically in mail from people in your contacts. Everyone else needs a click, or "Always from this sender".</span></div>
+      </div>
+      <div className="card">
+        <h2 className="mb-8">Mark as read</h2>
+        <p className="muted small">How long an opened conversation waits before it counts as read.</p>
+        <div className="segmented">{([0, 2, 5] as const).map((n) => <button key={n} className={p.markReadDelay === n ? 'active' : ''} onClick={() => set({ markReadDelay: n })}>{n === 0 ? 'Immediately' : `After ${n} s`}</button>)}</div>
+      </div>
+    </div>
+  );
 }
 
 // ---------------- Profile ----------------

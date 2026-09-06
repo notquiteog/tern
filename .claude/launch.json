@@ -5,23 +5,50 @@
     "from the README (Postgres on 5480, and optionally the Stalwart probe on",
     "18080 and Ollama on 11435) and reads server settings from .env.dev.",
     "The server also serves client/dist, so run `npm run build -w client`",
-    "after client changes, or start `tern-client` for Vite with HMR."
+    "after client changes, or start `tern-client` for Vite with HMR.",
+    "tern-qa is the same server on port 3090, for a second session or when 3080 is busy."
   ],
   "configurations": [
     {
       "name": "tern",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["tsx", "watch", "--env-file=../.env.dev", "src/index.ts"],
+      "runtimeArgs": [
+        "tsx",
+        "watch",
+        "--env-file=../.env.dev",
+        "src/index.ts"
+      ],
       "cwd": "server",
       "port": 3080
     },
     {
       "name": "tern-client",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "cwd": "client",
-      "env": { "TERN_API": "http://127.0.0.1:3080" },
+      "env": {
+        "TERN_API": "http://127.0.0.1:3080"
+      },
       "port": 5180
+    },
+    {
+      "name": "tern-qa",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "tsx",
+        "watch",
+        "--env-file=../.env.dev",
+        "src/index.ts"
+      ],
+      "cwd": "server",
+      "env": {
+        "PORT": "3090",
+        "APP_URL": "http://127.0.0.1:3090"
+      },
+      "port": 3090
     }
   ]
 }

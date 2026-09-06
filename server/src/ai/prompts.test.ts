@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertFreshConversation, buildMessages, cleanOutput, ensureGreeting, finalizeOutput, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, ensureGreeting, finalizeOutput, parseQuickReplies, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -74,4 +74,26 @@ test('the transport refuses conversations with history', () => {
   assert.throws(() => assertFreshConversation([{ role: 'system', content: 's' }, { role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]), /fresh conversation/);
   assert.throws(() => assertFreshConversation([{ role: 'user', content: 'a' }]), /fresh conversation/);
   assert.throws(() => assertFreshConversation([]), /fresh conversation/);
+});
+
+test('quick replies: three clean one-liners whatever the model decorated them with', () => {
+  assert.deepEqual(parseQuickReplies('1. Yes, Tuesday at 10 works for me.\n2) Could we do Wednesday instead?\n- Thanks, but I will pass this time.'), ['Yes, Tuesday at 10 works for me.', 'Could we do Wednesday instead?', 'Thanks, but I will pass this time.']);
+  assert.deepEqual(parseQuickReplies('"Sounds good!"\n\n"Sounds good!"\n"What time suits you?"\n"No thanks."\n"Extra line"'), ['Sounds good!', 'What time suits you?', 'No thanks.']);
+  assert.deepEqual(parseQuickReplies('Here are three replies:\nHi Dana, yes please.\nOption 2: maybe next week?\n* not this time, sorry'), ['Yes please.', 'Maybe next week?', 'Not this time, sorry']);
+  assert.deepEqual(parseQuickReplies(''), []);
+  assert.deepEqual(parseQuickReplies('```\nSure thing.\n```'), ['Sure thing.']);
+  const long = parseQuickReplies('a'.repeat(200));
+  assert.ok(long[0].length <= 140 && long[0].endsWith('…'));
+});
+
+test('finalizeOutput joins quick replies with newlines and never adds a greeting to them', () => {
+  assert.equal(finalizeOutput('1. Yes.\n2. No.\n3. Maybe.', 'quick_replies', { recipient: { name: 'Dana' } }), 'Yes.\nNo.\nMaybe.');
+});
+
+test('the quick replies prompt asks for exactly three lines and carries the thread', () => {
+  const m = buildMessages({ mode: 'quick_replies', thread: [{ from: 'Dana <dana@acme.example>', date: 'Mon', text: 'Can we meet Tuesday?' }], senderEmail: 'alex@team.example' });
+  assert.deepEqual(m.map((x) => x.role), ['system', 'user']);
+  assert.ok(m[1].content.includes('exactly three lines'));
+  assert.ok(m[1].content.includes('Can we meet Tuesday?'));
+  assert.ok(!m[1].content.includes('Write to'));
 });
