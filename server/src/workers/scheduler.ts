@@ -7,7 +7,7 @@ import { publish } from '../events.js';
 import { getAccount, type AccountRow } from '../services/accounts.js';
 import { composeAndSend, type ComposeInput } from '../services/compose.js';
 import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '../services/merge.js';
-import { jitterMs, reserveSendSlot } from '../services/sending.js';
+import { jitterMs, reserveSendSlot, sendingBlocked } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
 import { describeHits, findTemplateArtifacts } from '../ai/guard.js';
@@ -270,6 +270,21 @@ async function runEnrollment(enr: any): Promise<void> {
 
   // Content: an approved review, or the template, or the LLM.
   const approved = await openReview(seq.user_id, await one<any>(`SELECT * FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='approved' ORDER BY decided_at DESC LIMIT 1`, [enr.id, step.id]));
+  const willGenerate = !approved && step.ai_personalize && seq.ai_mode !== 'off';
+  // Writing a personalised email costs ten to forty seconds of a small
+  // model's time. If the account has already used its daily allowance or is
+  // outside its send window, that work would be thrown away and done again
+  // tomorrow, so a campaign that sends automatically checks before it writes
+  // rather than after. Nothing is claimed here — the real reservation still
+  // happens below, once there is something to send.
+  if (willGenerate && seq.ai_mode === 'auto') {
+    const gate = await sendingBlocked(acc);
+    if (gate) {
+      await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, new Date(gate.retryAt.getTime() + Math.random() * 60_000)]);
+      log.debug(`enrollment ${enr.id} deferred before generating (${gate.reason}) until ${gate.retryAt.toISOString()}`);
+      return;
+    }
+  }
   let subject: string, html: string;
   const rendered = await renderStep(acc, seq, step, contact, enr);
   if (approved) {

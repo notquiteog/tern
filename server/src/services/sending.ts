@@ -60,6 +60,21 @@ export async function sentToday(acc: AccountRow): Promise<number> {
 
 export type SlotResult = { ok: true; waitMs: number } | { ok: false; reason: 'cap' | 'window' | 'gap' | 'disabled'; retryAt: Date };
 
+// The same daily cap and send window `reserveSendSlot` enforces, asked
+// without claiming anything. It is for work that is expensive to prepare —
+// a personalised email a model has to write — so that work is not done for
+// a message the account could not send today anyway. The per-send gap is
+// deliberately not checked: it is seconds, and it will have passed by the
+// time the message is ready.
+export async function sendingBlocked(acc: AccountRow): Promise<{ reason: 'cap' | 'window' | 'disabled'; retryAt: Date } | null> {
+  if (!acc.enabled) return { reason: 'disabled', retryAt: new Date(Date.now() + 3600_000) };
+  const now = new Date();
+  if (!isWindowOpen(acc.send_window, now)) return { reason: 'window', retryAt: nextWindowOpen(acc.send_window, now) };
+  const used = await sentToday(acc);
+  if (used >= acc.daily_cap) return { reason: 'cap', retryAt: nextDayWindow(acc, now) };
+  return null;
+}
+
 // Decide whether an automated send may go out now, and if so claim the slot
 // by pushing next_send_at forward with fresh jitter. Uses a row lock so two
 // scheduler ticks cannot both claim the same gap.
@@ -68,22 +83,23 @@ export async function reserveSendSlot(acc: AccountRow): Promise<SlotResult> {
   const now = new Date();
   if (!isWindowOpen(acc.send_window, now)) return { ok: false, reason: 'window', retryAt: nextWindowOpen(acc.send_window, now) };
   const used = await sentToday(acc);
-  if (used >= acc.daily_cap) {
-    // Next day's window start.
-    const tomorrow = new Date(now.getTime() + 60 * 60_000);
-    let t = nextWindowOpen(acc.send_window, tomorrow);
-    // Ensure it is actually a later local day, not the same window.
-    for (let i = 0; i < 48 && partsInTz(t, acc.send_window.tz).hour === partsInTz(now, acc.send_window.tz).hour && t.getTime() - now.getTime() < 3600_000; i++) {
-      t = nextWindowOpen(acc.send_window, new Date(t.getTime() + 60 * 60_000));
-    }
-    return { ok: false, reason: 'cap', retryAt: t };
-  }
+  if (used >= acc.daily_cap) return { ok: false, reason: 'cap', retryAt: nextDayWindow(acc, now) };
   const row = await one<{ next_send_at: Date | null }>(`SELECT next_send_at FROM accounts WHERE id=$1 FOR UPDATE`, [acc.id]);
   const gate = row?.next_send_at ? new Date(row.next_send_at) : null;
   if (gate && gate.getTime() > now.getTime()) return { ok: false, reason: 'gap', retryAt: gate };
   const wait = jitterMs(acc);
   await query(`UPDATE accounts SET next_send_at = now() + ($2 || ' milliseconds')::interval WHERE id=$1`, [acc.id, String(wait)]);
   return { ok: true, waitMs: wait };
+}
+
+// When the cap is spent: the next window start that is actually a later
+// local day, not the same one an hour on.
+function nextDayWindow(acc: AccountRow, now: Date): Date {
+  let t = nextWindowOpen(acc.send_window, new Date(now.getTime() + 60 * 60_000));
+  for (let i = 0; i < 48 && partsInTz(t, acc.send_window.tz).hour === partsInTz(now, acc.send_window.tz).hour && t.getTime() - now.getTime() < 3600_000; i++) {
+    t = nextWindowOpen(acc.send_window, new Date(t.getTime() + 60 * 60_000));
+  }
+  return t;
 }
 
 export function describeWindow(w: SendWindow): string {
