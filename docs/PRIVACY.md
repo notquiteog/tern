@@ -26,7 +26,7 @@ JMAP host) keeps the mail itself under its own rules.
 | Data | Why | Kept |
 |---|---|---|
 | Users: username, display name, role, scrypt hash, TOTP secret, hashed recovery codes, appearance prefs, avatar | Sign-in | Until the user deletes the account |
-| Sessions: random id, created, last seen, user agent | Session list, "sign out everywhere" | Until expiry (30 days) or revocation; expired rows purged hourly |
+| Sessions: random id, created, last seen, user agent | Session list, "sign out everywhere" (other sessions are shown by a hash of the id, never the id) | Until expiry (30 days) or revocation; expired rows purged hourly |
 | Accounts: mailbox address, JMAP URLs, encrypted credential, sending policy, signature, voice | Sync and send | Until removed |
 | Mail cache (`emails`, `mailboxes`): headers, addresses, subject, body, attachment metadata, keywords | The inbox, search, threading, reply detection, rules, responders | Newest N messages per account (`sync_limit`); deleted with the account |
 | Contacts, suppressions, templates, sequences, enrollments, rules, responders | The outreach features | Until deleted by the user |
@@ -34,9 +34,10 @@ JMAP host) keeps the mail itself under its own rules.
 | `drafts`, `outbox` | Unsent mail | Drafts until discarded; sent or cancelled outbox rows purged after 7 days |
 | `uploads` | Attachments staged for a message being written | Deleted on send; orphans purged after 24 hours |
 | `review_queue`, `ai_jobs` | AI review and responder runs | Decided or finished rows purged after 30 days |
-| `audit_log`: who did which admin action, when | Accountability for admin actions | 365 days; a deleted user's rows keep the action but lose details |
+| `audit_log`: who did which admin or security action, when; successful and failed sign-ins with the method and the client name (never an address) | Accountability; spotting someone guessing at an account | 365 days; a deleted user's rows keep the action but lose details |
 | `invites` | Registration links | Purged 30 days after use or expiry |
 | Brand logos | BIMI | Until removed by an admin |
+| `vacation_replies`: per mailbox, the addresses that received the out-of-office reply and when | So each person is answered once per interval | Until the account is removed |
 | OpenPGP keys: your public key, your private key passphrase-protected and wrapped with the server key, other people's public keys | Encrypting mail, sign-in with the key | Until you remove them |
 
 Retention runs from the scheduler once an hour (`workers/scheduler.ts`,

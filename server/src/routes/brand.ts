@@ -94,6 +94,8 @@ bimiRouter.get('/:file', async (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  // Mail clients on other origins fetch this for BIMI.
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.send(b.svg);
 });

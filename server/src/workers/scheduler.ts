@@ -375,7 +375,11 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
   // The same addressing rules as the Reply button in the browser.
   const r = replyRecipients({ from: email.from_addr, replyTo: email.reply_to, to: email.to_addr, cc: email.cc_addr }, acc.email, Boolean(responder.reply_all));
   const to = [...r.to, ...r.cc].map((a) => ({ name: a.name ?? null, email: a.email }));
-  const quote = `<div class="tern-quote" style="margin-top:16px"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">On ${escapeHtml(new Date(email.received_at).toUTCString())}, ${escapeHtml(email.from_addr?.[0]?.email ?? '')} wrote:</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0">${email.body_html ?? `<div style="white-space:pre-wrap">${escapeHtml(email.body_text ?? '')}</div>`}</blockquote></div>`;
+  // The original is quoted as text, never as its own HTML: a message written
+  // to abuse an automatic reply must not travel back out (or into a draft
+  // the person opens in the editor) with its markup intact.
+  const original = (email.body_text || htmlToText(email.body_html ?? '') || email.preview || '').slice(0, 20_000);
+  const quote = `<div class="tern-quote" style="margin-top:16px"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">On ${escapeHtml(new Date(email.received_at).toUTCString())}, ${escapeHtml(email.from_addr?.[0]?.email ?? '')} wrote:</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0"><div style="white-space:pre-wrap">${escapeHtml(original)}</div></blockquote></div>`;
   return { subject: replySubject(email.subject), html: textToHtml(text) + quote, text, to, model: settings.model };
 }
 

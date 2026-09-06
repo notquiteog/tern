@@ -12,6 +12,8 @@ import { describeWindow, isWindowOpen, nextWindowOpen, sentToday } from '../serv
 import { decrypt, encrypt, verifyPassword } from '../crypto.js';
 import { isManagedAccount, stalwartAccountFor } from '../services/provision.js';
 import * as sw from '../services/stalwart.js';
+import { assertPublicHost, isInternalOrigin } from '../util/netguard.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(requireAuth);
@@ -27,14 +29,15 @@ const credsSchema = z.object({
   pinOrigin: z.boolean().optional(),
 });
 
-function resolveCreds(c: z.infer<typeof credsSchema>) {
+async function resolveCreds(c: z.infer<typeof credsSchema>) {
   const preset = PRESETS[c.provider];
   let sessionUrl = c.sessionUrl?.trim() || preset.sessionUrl;
   if (!sessionUrl && c.provider === 'stalwart' && config.stalwartUrl) sessionUrl = `${config.stalwartUrl}/.well-known/jmap`;
   if (!sessionUrl) throw badRequest('Session URL is required');
   // People paste the host, or the admin URL; be forgiving.
+  if (!/^https?:\/\//i.test(sessionUrl)) sessionUrl = `https://${sessionUrl}`;
   if (!/\/(\.well-known\/jmap|jmap\/session|jmap)\/?$/.test(sessionUrl) && !sessionUrl.includes('/jmap')) sessionUrl = sessionUrl.replace(/\/+$/, '') + '/.well-known/jmap';
-  sessionUrl = validateSessionUrl(sessionUrl);
+  sessionUrl = await validateSessionUrl(sessionUrl);
   const authType = c.authType ?? preset.authType;
   if (authType === 'basic' && !c.authUser) throw badRequest('Username is required for password authentication');
   const pinOrigin = c.pinOrigin ?? preset.pinOrigin;
@@ -118,10 +121,10 @@ accountsRouter.get('/client-settings', async (req, res) => {
 });
 
 // Verify credentials without saving anything.
-accountsRouter.post('/test', async (req, res) => {
+accountsRouter.post('/test', rateLimit({ name: 'account-test', perMinute: 12 }), async (req, res) => {
   const c = parse(credsSchema, req.body);
-  const r = resolveCreds(c);
-  const client = new JmapClient({ sessionUrl: r.sessionUrl, authHeader: r.authType === 'bearer' ? bearerAuth(c.secret) : basicAuth(r.authUser ?? '', c.secret), pinOrigin: r.pinOrigin, timeoutMs: 20_000 });
+  const r = await resolveCreds(c);
+  const client = new JmapClient({ sessionUrl: r.sessionUrl, authHeader: r.authType === 'bearer' ? bearerAuth(c.secret) : basicAuth(r.authUser ?? '', c.secret), pinOrigin: r.pinOrigin, allowPrivate: isInternalOrigin(r.sessionUrl), timeoutMs: 20_000 });
   try {
     const s = await client.fetchSession();
     let identities: { name: string; email: string }[] = [];
@@ -144,7 +147,7 @@ const createSchema = credsSchema.extend({
 
 accountsRouter.post('/', async (req, res) => {
   const body = parse(createSchema, req.body);
-  const r = resolveCreds(body);
+  const r = await resolveCreds(body);
   const dup = await one('SELECT 1 FROM accounts WHERE user_id=$1 AND lower(email)=lower($2)', [req.user!.id, body.email]);
   if (dup) throw conflict('That mailbox is already connected');
   const rows = await query<AccountRow>(
@@ -181,7 +184,16 @@ const updateSchema = z.object({
   sessionUrl: z.string().optional(),
   pinOrigin: z.boolean().optional(),
   sendVia: z.enum(['jmap', 'smtp']).optional(),
-  smtp: z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), secure: z.boolean(), user: z.string(), pass: z.string().optional() }).nullable().optional(),
+  smtp: z.object({ host: z.string().min(1).max(253), port: z.number().int().min(1).max(65535), secure: z.boolean(), user: z.string().max(320), pass: z.string().max(4000).optional() }).nullable().optional(),
+  vacation: z.object({
+    enabled: z.boolean(),
+    subject: z.string().max(200).default(''),
+    body: z.string().max(20000).default(''),
+    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
+    end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
+    onlyContacts: z.boolean().default(false),
+    intervalDays: z.number().int().min(1).max(60).default(4),
+  }).optional(),
 });
 
 accountsRouter.put('/:id', async (req, res) => {
@@ -190,22 +202,29 @@ accountsRouter.put('/:id', async (req, res) => {
   if (!acc) throw notFound('Account not found');
   const b = parse(updateSchema, req.body);
   if (b.jitterMinS !== undefined && b.jitterMaxS !== undefined && b.jitterMinS > b.jitterMaxS) throw badRequest('Minimum delay must not exceed the maximum');
+  if (b.vacation?.enabled && !b.vacation.body.trim()) throw badRequest('Write the auto-reply message before turning it on');
+  if (b.vacation?.start && b.vacation.end && b.vacation.end < b.vacation.start) throw badRequest('The auto-reply must end after it starts');
   let smtp = acc.smtp;
   if (b.smtp === null) smtp = null;
-  else if (b.smtp) smtp = { host: b.smtp.host, port: b.smtp.port, secure: b.smtp.secure, user: b.smtp.user, pass_enc: b.smtp.pass ? encrypt(b.smtp.pass) : acc.smtp?.pass_enc ?? '' };
+  else if (b.smtp) {
+    // The SMTP host is dialled with a stored credential; same rule as the session URL.
+    if (b.smtp.host !== acc.smtp?.host) await assertPublicHost(b.smtp.host, { what: 'The SMTP host' });
+    smtp = { host: b.smtp.host, port: b.smtp.port, secure: b.smtp.secure, user: b.smtp.user, pass_enc: b.smtp.pass ? encrypt(b.smtp.pass) : acc.smtp?.pass_enc ?? '' };
+  }
   const credsChanged = b.secret !== undefined || b.sessionUrl !== undefined || b.authUser !== undefined || b.pinOrigin !== undefined;
-  const sessionUrl = b.sessionUrl ? validateSessionUrl(b.sessionUrl) : acc.session_url;
+  const sessionUrl = b.sessionUrl ? await validateSessionUrl(b.sessionUrl) : acc.session_url;
   await query(
     `UPDATE accounts SET name=COALESCE($2,name), color=COALESCE($3,color), signature_html=COALESCE($4,signature_html), daily_cap=COALESCE($5,daily_cap),
        jitter_enabled=COALESCE($6,jitter_enabled), jitter_min_s=COALESCE($7,jitter_min_s), jitter_max_s=COALESCE($8,jitter_max_s), send_window=COALESCE($9,send_window),
        sync_limit=COALESCE($10,sync_limit), enabled=COALESCE($11,enabled), auth_secret_enc=COALESCE($12,auth_secret_enc), auth_user=COALESCE($13,auth_user), session_url=$14,
        pin_origin=COALESCE($15,pin_origin), send_via=COALESCE($16,send_via), smtp=$17,
        api_url = CASE WHEN $18 THEN NULL ELSE api_url END, sync_status = CASE WHEN $18 THEN 'idle' ELSE sync_status END, sync_error = CASE WHEN $18 THEN NULL ELSE sync_error END,
-       voice=COALESCE($19, voice)
+       voice=COALESCE($19, voice), vacation=COALESCE($20, vacation)
      WHERE id=$1`,
     [id, b.name ?? null, b.color ?? null, b.signatureHtml ?? null, b.dailyCap ?? null, b.jitterEnabled ?? null, b.jitterMinS ?? null, b.jitterMaxS ?? null, b.sendWindow ? JSON.stringify(b.sendWindow) : null,
-      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null],
+      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null, b.vacation ? JSON.stringify(b.vacation) : null],
   );
+  if (b.vacation) await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'accounts.vacation',$2,$3)`, [req.user!.id, acc.email, JSON.stringify({ enabled: b.vacation.enabled, start: b.vacation.start, end: b.vacation.end })]);
   if (credsChanged || b.enabled !== undefined) await syncManager.refresh(id);
   res.json({ account: publicAccount((await getUserAccount(req.user!.id, id))!) });
 });

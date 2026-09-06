@@ -4,6 +4,7 @@
 // differences live in the account record (session URL, auth header, whether
 // to pin returned URLs to the session origin), never in this file.
 import { logger } from '../log.js';
+import { assertPublicUrl } from '../util/netguard.js';
 
 const log = logger('jmap');
 
@@ -35,8 +36,13 @@ export interface JmapClientOptions {
   // tunnel) those URLs are unreachable, so rewrite their origin to the one we
   // actually connected to. Fastmail returns same-origin URLs, so it is a no-op.
   pinOrigin: boolean;
+  // The bundled mail server lives on the compose network; every other server
+  // must be a public host (see util/netguard.ts).
+  allowPrivate?: boolean;
   timeoutMs?: number;
 }
+
+const MAX_REDIRECTS = 5;
 
 export class JmapError extends Error {
   type: string;
@@ -76,19 +82,37 @@ export class JmapClient {
     return { Authorization: this.opts.authHeader, Accept: 'application/json', ...extra };
   }
 
+  private guard(url: string): Promise<unknown> {
+    return assertPublicUrl(url, { allowPrivate: this.opts.allowPrivate, what: 'The mail server address' });
+  }
+
   async fetchSession(): Promise<JmapSession> {
-    const res = await fetch(this.opts.sessionUrl, {
-      headers: this.headers(),
-      redirect: 'follow',
-      signal: AbortSignal.timeout(this.opts.timeoutMs!),
-    });
+    // Redirects are followed by hand so every hop is checked against the
+    // network guard; a public host must not bounce us onto an internal one.
+    let url = this.opts.sessionUrl;
+    let res: Response | null = null;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      await this.guard(url);
+      res = await fetch(url, { headers: this.headers(), redirect: 'manual', signal: AbortSignal.timeout(this.opts.timeoutMs!) });
+      if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+        if (hop === MAX_REDIRECTS) throw new JmapError('http', 'The session URL redirects too many times');
+        const next = new URL(res.headers.get('location')!, url);
+        if (next.protocol !== 'https:' && !(next.protocol === 'http:' && new URL(url).protocol === 'http:')) throw new JmapError('http', 'The session URL redirects from https to plain http, which is refused');
+        await res.body?.cancel().catch(() => {});
+        url = next.toString();
+        continue;
+      }
+      break;
+    }
+    if (!res) throw new JmapError('http', 'Session request failed');
     if (res.status === 401 || res.status === 403) throw new JmapError('unauthorized', `Mail server rejected the credentials (${res.status})`, res.status);
     if (!res.ok) throw new JmapError('http', `Session request failed with HTTP ${res.status}`, res.status, await safeText(res));
     const body: any = await res.json();
-    const base = res.url || this.opts.sessionUrl;
+    const base = url;
     const pin = this.opts.pinOrigin;
     const accountId: string | undefined = body.primaryAccounts?.[MAIL] ?? Object.keys(body.accounts ?? {})[0];
     if (!accountId) throw new JmapError('no-mail-account', 'The server session has no mail account');
+    if (typeof body.apiUrl !== 'string' || typeof body.uploadUrl !== 'string' || typeof body.downloadUrl !== 'string') throw new JmapError('http', 'The session response is missing its endpoint URLs');
     const session: JmapSession = {
       apiUrl: rewriteOrigin(body.apiUrl, base, pin),
       uploadUrl: rewriteOrigin(body.uploadUrl, base, pin),
@@ -101,6 +125,9 @@ export class JmapClient {
       state: body.state ?? '',
       hasSubmission: Boolean(body.accounts?.[accountId]?.accountCapabilities?.[SUBMISSION] ?? body.capabilities?.[SUBMISSION]),
     };
+    // The endpoints the server advertises are fetched later with the stored
+    // credential; they get the same check as the session URL.
+    for (const u of [session.apiUrl, session.uploadUrl, session.downloadUrl, session.eventSourceUrl]) if (u) await this.guard(u.replace(/\{[^}]*\}/g, 'x'));
     this.session = session;
     return session;
   }
@@ -114,10 +141,12 @@ export class JmapClient {
   // a sync that silently skipped an errored call would drift from the server.
   async call(methodCalls: MethodCall[], using: string[] = [CORE, MAIL]): Promise<MethodResponse[]> {
     const s = await this.ensureSession();
+    await this.guard(s.apiUrl);
     const res = await fetch(s.apiUrl, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ using, methodCalls }),
+      redirect: 'error',
       signal: AbortSignal.timeout(this.opts.timeoutMs!),
     });
     if (res.status === 401) throw new JmapError('unauthorized', 'Mail server rejected the credentials', 401);
@@ -144,10 +173,12 @@ export class JmapClient {
   async upload(data: Buffer | Uint8Array, contentType: string): Promise<{ blobId: string; size: number; type: string }> {
     const s = await this.ensureSession();
     const url = s.uploadUrl.replace('{accountId}', encodeURIComponent(s.accountId));
+    await this.guard(url);
     const res = await fetch(url, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': contentType }),
       body: data as any,
+      redirect: 'error',
       signal: AbortSignal.timeout(Math.max(this.opts.timeoutMs!, 120_000)),
     });
     if (!res.ok) throw new JmapError('upload', `Blob upload failed with HTTP ${res.status}`, res.status, await safeText(res));
@@ -165,8 +196,11 @@ export class JmapClient {
 
   async download(blobId: string, name: string, type: string): Promise<Response> {
     await this.ensureSession();
-    const res = await fetch(this.downloadUrl(blobId, name, type), {
+    const url = this.downloadUrl(blobId, name, type);
+    await this.guard(url);
+    const res = await fetch(url, {
       headers: this.headers(),
+      redirect: 'error',
       signal: AbortSignal.timeout(120_000),
     });
     if (!res.ok) throw new JmapError('download', `Blob download failed with HTTP ${res.status}`, res.status);
@@ -180,7 +214,8 @@ export class JmapClient {
     const s = await this.ensureSession();
     if (!s.eventSourceUrl) throw new JmapError('no-push', 'Server has no eventSourceUrl');
     const url = s.eventSourceUrl.replace('{types}', '*').replace('{closeafter}', 'no').replace('{ping}', '30');
-    const res = await fetch(url, { headers: this.headers({ Accept: 'text/event-stream' }), signal });
+    await this.guard(url);
+    const res = await fetch(url, { headers: this.headers({ Accept: 'text/event-stream' }), redirect: 'error', signal });
     if (!res.ok || !res.body) throw new JmapError('push', `Event source failed with HTTP ${res.status}`, res.status);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

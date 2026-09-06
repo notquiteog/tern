@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { notifyUser, subscribe, subscriptionCount, unsubscribe, vapidKeys } from '../services/push.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 export const pushRouter = Router();
 pushRouter.use(requireAuth);
@@ -29,7 +30,7 @@ pushRouter.post('/unsubscribe', async (req, res) => {
 });
 
 // A notification to this user's devices, so people can see it works.
-pushRouter.post('/test', async (req, res) => {
+pushRouter.post('/test', rateLimit({ name: 'push-test', perMinute: 5 }), async (req, res) => {
   const sent = await notifyUser(req.user!.id, { title: 'Notifications are on', body: 'New mail will show up here.', url: '/mail/inbox', tag: 'test' });
   res.json({ ok: true, sent });
 });

@@ -10,6 +10,7 @@ import { useMailboxes } from '../lib/queries';
 import { useMailPrefs } from '../state/mailPrefs';
 import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input } from './ui';
 import { MessageBody } from './MessageBody';
+import { SafeHtml } from './SafeHtml';
 import { EncryptedMessage, pgpKindOf } from './EncryptedMessage';
 import { Composer, type ComposeKind, type KindOptions } from './Composer';
 import { AttachmentPreview, canPreview, type PreviewItem } from './AttachmentPreview';
@@ -426,7 +427,7 @@ function SuggestedReply({ draft, accountId, threadId, onEdit }: { draft: any; ac
     <div className="card mb-16 suggested-glow" style={{ borderColor: 'var(--accent)' }}>
       <div className="row mb-8"><Bot size={15} /><span className="strong small">Suggested reply{draft.responder_name ? ` · ${draft.responder_name}` : ''}</span><span className="small faint">{fmtRelative(draft.created_at)}</span><span className="ml-auto small muted truncate">to {(draft.to_addr ?? []).map((a: any) => a.name || a.email).join(', ')}</span></div>
       <div className="strong small mb-8">{draft.subject}</div>
-      <div className="msg-text" style={{ fontSize: 13.5 }} dangerouslySetInnerHTML={{ __html: String(draft.body_html).split('<div class="tern-quote"')[0] }} />
+      <SafeHtml className="msg-text" style={{ fontSize: 13.5 }} html={String(draft.body_html).split('<div class="tern-quote"')[0]} />
       <div className="row mt-16 gap-4">
         <Button size="sm" variant="primary" icon={<Send size={13} />} loading={busy} onClick={sendNow}>Send</Button>
         <Button size="sm" icon={<Pencil size={13} />} onClick={onEdit}>Edit</Button>

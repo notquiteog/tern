@@ -4,6 +4,7 @@
 import { migrate, pool, query, waitForDb } from './db.js';
 import { hashPassword } from './crypto.js';
 import { destroyUserSessions } from './auth.js';
+import { passwordProblem } from './util/password.js';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -24,7 +25,7 @@ async function main(): Promise<void> {
       const name = arg('name') ?? username;
       const role = arg('role') ?? 'admin';
       if (!username || !password) throw new Error('usage: create-user --username U --password P [--name N] [--role admin|member] [--if-missing]');
-      if (password.length < 10) throw new Error('password must be at least 10 characters');
+      { const problem = passwordProblem(password, username); if (problem) throw new Error(problem); }
       const existing = await query('SELECT id FROM users WHERE username=$1', [username]);
       if (existing.length && process.argv.includes('--if-missing')) {
         // install.sh re-runs: keep the existing user and password untouched.
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
       const username = arg('username')?.toLowerCase();
       const password = arg('password');
       if (!username || !password) throw new Error('usage: set-password --username U --password P');
+      { const problem = passwordProblem(password, username); if (problem) throw new Error(problem); }
       const rows = await query<{ id: number }>('UPDATE users SET password_hash=$2, password_changed_at=now(), disabled=false WHERE username=$1 RETURNING id', [username, await hashPassword(password)]);
       if (!rows.length) throw new Error('no such user');
       await destroyUserSessions(rows[0].id);
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
     case 'disable-totp': {
       const username = arg('username')?.toLowerCase();
       if (!username) throw new Error('usage: disable-totp --username U');
-      await query(`UPDATE users SET totp_enabled=false, totp_secret=NULL, recovery_codes='{}' WHERE username=$1`, [username]);
+      await query(`UPDATE users SET totp_enabled=false, totp_secret=NULL, totp_last_step=NULL, recovery_codes='{}' WHERE username=$1`, [username]);
       console.log('two-factor disabled');
       break;
     }

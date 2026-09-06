@@ -572,4 +572,21 @@ ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS hold_reason TEXT;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS autocrypt_seen BOOLEAN NOT NULL DEFAULT false;
 `,
   },
+  {
+    id: '20260906_0011_security_hardening_vacation',
+    up: `
+-- A TOTP code is accepted once: the time step of the last accepted code is
+-- kept so a code seen by a shoulder-surfer cannot be replayed in its window.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;
+-- Out-of-office auto-reply per mailbox: {enabled, subject, body, start, end, onlyContacts, intervalDays}.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS vacation JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- Who already got the auto-reply, so a person writing twice is answered once per interval.
+CREATE TABLE IF NOT EXISTS vacation_replies (
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, email)
+);
+`,
+  },
 ];

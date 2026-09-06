@@ -324,6 +324,7 @@ Set in `.env` (the installer writes it; edit and `./bin/tern up` to apply).
 | `SYNC_POLL_SECONDS` | Fallback poll interval when push is unavailable | `90` |
 | `INITIAL_SYNC_LIMIT` | Newest messages fetched on first sync | `3000` |
 | `ALLOW_INSECURE_JMAP` | Allow `http://` session URLs (needed for the bundled Stalwart) | `true` |
+| `ALLOW_PRIVATE_NETWORK_HOSTS` | Allow JMAP, SMTP and key-directory hosts on private, loopback or link-local addresses. Off, so no member can point the server at the compose network; the bundled Stalwart is always allowed. Turn on for a JMAP server on your LAN. | `false` |
 | `HTTP_PORT`, `HTTPS_PORT` | Host ports Caddy binds | `80`, `443` |
 | `COMPOSE_FILE` | Compose overlays in use | `compose.yml` |
 | `STALWART_*` | Bundled mail server settings and admin credentials | set by installer |
@@ -354,6 +355,17 @@ Under **Settings → Mail** every person chooses, for themselves:
 
 The choices are stored in the browser and mirrored to the profile, so they
 follow the person to another device.
+
+## Out-of-office auto-reply
+
+**Settings → Accounts → Edit → Auto-reply**, per mailbox. A message, an
+optional first and last day (in the account's send-window timezone), and how
+many days to wait before the same person is answered again. Optionally only
+people in your contacts. The reply carries `Auto-Submitted: auto-replied`
+and `X-Auto-Response-Suppress: All`, and is never sent to mailing lists,
+notifications, no-reply senders, bounces, other auto-replies, or to your own
+address. Rules and AI responders run first; a message an AI responder picks
+up gets no auto-reply. Turning it on or off is written to the audit log.
 
 ## Muting and blocking
 

@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { adoptServerMailPrefs } from '../state/mailPrefs';
 import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, type SearchFields } from '../lib/search';
 import { useAuth } from '../state/auth';
+import { usePgp } from '../state/pgp';
 import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
 import { useHotkeys, useServerEvents } from '../lib/hooks';
@@ -24,6 +25,7 @@ import { cls } from '../lib/format';
 export function Shell({ children }: { children: ReactNode }) {
   const appName = useAppName();
   const { user, logout } = useAuth();
+  const { lock: lockKey } = usePgp();
   const compose = useCompose();
   const nav = useNavigate();
   const loc = useLocation();
@@ -171,7 +173,7 @@ export function Shell({ children }: { children: ReactNode }) {
               {user!.role === 'admin' && <MenuItem icon={<Wrench size={15} />} onClick={() => { nav('/admin/general'); close(); }}>Admin settings</MenuItem>}
               <MenuItem icon={<Keyboard size={15} />} onClick={() => { setHelp(true); close(); }} shortcut="?">Keyboard shortcuts</MenuItem>
               <div className="menu-sep" />
-              <MenuItem icon={<LogOut size={15} />} onClick={() => { void logout(); close(); }}>Sign out</MenuItem>
+              <MenuItem icon={<LogOut size={15} />} onClick={() => { lockKey(); void logout(); close(); }}>Sign out</MenuItem>
             </>}
           </Menu>
         </div>

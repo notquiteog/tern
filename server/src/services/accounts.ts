@@ -6,8 +6,13 @@ import { decrypt, encrypt } from '../crypto.js';
 import { JmapClient, basicAuth, bearerAuth, type JmapSession } from '../jmap/client.js';
 import { config } from '../config.js';
 import { badRequest } from '../errors.js';
+import { assertPublicUrl, isInternalOrigin } from '../util/netguard.js';
 
 export interface SendWindow { start: number; end: number; days: number[]; tz: string }
+// Out-of-office auto-reply. Dates are ISO days in the account's timezone;
+// an empty end means "until turned off".
+export interface VacationSettings { enabled: boolean; subject: string; body: string; start: string | null; end: string | null; onlyContacts: boolean; intervalDays: number }
+export const VACATION_DEFAULTS: VacationSettings = { enabled: false, subject: '', body: '', start: null, end: null, onlyContacts: false, intervalDays: 4 };
 
 export interface AccountRow {
   id: number; user_id: number; name: string; email: string;
@@ -21,6 +26,11 @@ export interface AccountRow {
   sync_status: string; sync_error: string | null; last_sync_at: Date | null; initial_sync_done: boolean; sync_limit: number;
   daily_cap: number; jitter_enabled: boolean; jitter_min_s: number; jitter_max_s: number; send_window: SendWindow;
   next_send_at: Date | null; enabled: boolean; created_at: Date;
+  vacation?: Partial<VacationSettings> | null;
+}
+
+export function vacationOf(acc: Pick<AccountRow, 'vacation'>): VacationSettings {
+  return { ...VACATION_DEFAULTS, ...(acc.vacation ?? {}) };
 }
 
 export interface SmtpConfig { host: string; port: number; secure: boolean; user: string; pass_enc: string }
@@ -57,7 +67,7 @@ export function authHeaderFor(acc: Pick<AccountRow, 'auth_type' | 'auth_user' | 
 }
 
 export function clientFor(acc: AccountRow): JmapClient {
-  const client = new JmapClient({ sessionUrl: acc.session_url, authHeader: authHeaderFor(acc), pinOrigin: acc.pin_origin });
+  const client = new JmapClient({ sessionUrl: acc.session_url, authHeader: authHeaderFor(acc), pinOrigin: acc.pin_origin, allowPrivate: isInternalOrigin(acc.session_url) });
   if (acc.api_url && acc.upload_url && acc.download_url && acc.jmap_account_id) {
     client.session = {
       apiUrl: acc.api_url,
@@ -89,18 +99,21 @@ export async function listAccounts(userId?: number): Promise<AccountRow[]> {
     : query<AccountRow>('SELECT * FROM accounts WHERE user_id = $1 ORDER BY id', [userId]);
 }
 
-export function validateSessionUrl(url: string): string {
+export async function validateSessionUrl(url: string): Promise<string> {
   let u: URL;
   try { u = new URL(url); } catch { throw badRequest('Session URL is not a valid URL'); }
-  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && config.allowInsecureJmap)) {
+  const internal = isInternalOrigin(u.toString());
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && (internal || config.allowInsecureJmap))) {
     throw badRequest('Session URL must use https (plain http is only allowed for a local Stalwart container)');
   }
+  // Anything but the bundled mail server has to be a public host.
+  await assertPublicUrl(u.toString(), { allowPrivate: internal, what: 'The session URL' });
   return u.toString();
 }
 
 // Fetch the session and persist the URLs so later syncs skip the round trip.
 export async function connectAccount(acc: AccountRow): Promise<JmapSession> {
-  const client = new JmapClient({ sessionUrl: acc.session_url, authHeader: authHeaderFor(acc), pinOrigin: acc.pin_origin });
+  const client = new JmapClient({ sessionUrl: acc.session_url, authHeader: authHeaderFor(acc), pinOrigin: acc.pin_origin, allowPrivate: isInternalOrigin(acc.session_url) });
   const s = await client.fetchSession();
   await query(
     `UPDATE accounts SET jmap_account_id=$2, api_url=$3, upload_url=$4, download_url=$5, event_source_url=$6, capabilities=$7, sync_error=NULL WHERE id=$1`,
@@ -118,6 +131,7 @@ export function publicAccount(acc: AccountRow) {
   const { auth_secret_enc, smtp, capabilities, ...rest } = acc;
   return {
     ...rest,
+    vacation: vacationOf(acc),
     has_smtp: Boolean(smtp),
     smtp: smtp ? { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user } : null,
     has_push: Boolean(acc.event_source_url),

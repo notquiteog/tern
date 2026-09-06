@@ -4,14 +4,18 @@
 import type { NextFunction, Request, Response } from 'express';
 import { one, query } from './db.js';
 import { config } from './config.js';
+import { createHash } from 'node:crypto';
 import { randomToken } from './crypto.js';
 import { forbidden, tooMany, unauthorized } from './errors.js';
 
-export const COOKIE = 'tern_sid';
+// Over HTTPS the cookie carries the __Host- prefix, which browsers only
+// accept when it is Secure, has no Domain and Path=/, so no subdomain or
+// plain-http origin can plant a session cookie for this app.
+export const COOKIE = config.secureCookies ? '__Host-tern_sid' : 'tern_sid';
 
 export interface UserRow {
   id: number; username: string; display_name: string; password_hash: string; role: 'admin' | 'member';
-  totp_secret: string | null; totp_enabled: boolean; recovery_codes: string[]; prefs: Record<string, unknown>;
+  totp_secret: string | null; totp_enabled: boolean; recovery_codes: string[]; prefs: Record<string, unknown>; totp_last_step?: number | null;
   disabled: boolean; password_changed_at: Date; created_at: Date; last_login_at: Date | null;
   avatar?: Buffer | null; avatar_type?: string | null; avatar_updated_at?: Date | null;
   pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless';
@@ -21,7 +25,7 @@ export type PublicUser = Omit<UserRow, 'password_hash' | 'totp_secret' | 'recove
 // Key material has its own endpoints; a row fetched with SELECT * must not
 // carry the (wrapped) private key or the public key into every user listing.
 export function publicUser(u: UserRow): PublicUser {
-  const { password_hash, totp_secret, recovery_codes, avatar, avatar_type, ...rest } = u as UserRow & { pgp_private_key_enc?: unknown; pgp_public_key?: unknown };
+  const { password_hash, totp_secret, recovery_codes, avatar, avatar_type, totp_last_step, ...rest } = u as UserRow & { pgp_private_key_enc?: unknown; pgp_public_key?: unknown };
   delete (rest as any).pgp_private_key_enc;
   delete (rest as any).pgp_public_key;
   return { ...rest, avatar_version: u.avatar_updated_at ? new Date(u.avatar_updated_at).getTime() : null };
@@ -70,7 +74,7 @@ export async function attachUser(req: Request, _res: Response, next: NextFunctio
   const sid = parseCookies(req.headers.cookie)[COOKIE];
   if (!sid) return next();
   const row = await one<UserRow & { sid: string; last_seen_at: Date }>(
-    `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.totp_secret, u.totp_enabled, u.recovery_codes, u.prefs, u.disabled, u.password_changed_at, u.created_at, u.last_login_at, u.avatar_updated_at, u.pgp_fingerprint, u.pgp_auth, s.id AS sid, s.last_seen_at
+    `SELECT u.id, u.username, u.display_name, u.password_hash, u.role, u.totp_secret, u.totp_enabled, u.recovery_codes, u.totp_last_step, u.prefs, u.disabled, u.password_changed_at, u.created_at, u.last_login_at, u.avatar_updated_at, u.pgp_fingerprint, u.pgp_auth, s.id AS sid, s.last_seen_at
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id=$1 AND s.expires_at > now()`,
     [sid],
   );
@@ -119,6 +123,13 @@ export function recordLoginFailure(key: string): void {
 }
 export function clearLoginFailures(key: string): void {
   attempts.delete(key);
+}
+
+// A public handle for a session that is not the session token itself, so
+// the session list never hands the browser (or anything reading it) the
+// credentials of every other device.
+export function sessionHandle(id: string): string {
+  return createHash('sha256').update(id).digest('hex').slice(0, 24);
 }
 
 export function clientIp(req: Request): string {

@@ -130,16 +130,25 @@ function hotp(secret: Buffer, counter: number): string {
 export function totpCode(secretB32: string, at = Date.now()): string {
   return hotp(base32Decode(secretB32), Math.floor(at / 30000));
 }
-export function verifyTotp(secretB32: string, code: string, window = 1): boolean {
+// Returns the time step the code matched, or null. A step at or before
+// `lastStep` is refused: a code is good once, so one read over a shoulder
+// or from a screenshot cannot be replayed inside its 30-second window.
+export function matchTotp(secretB32: string, code: string, lastStep: number | null = null, window = 1, at = Date.now()): number | null {
   const c = code.replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(c)) return false;
+  if (!/^\d{6}$/.test(c)) return null;
   const secret = base32Decode(secretB32);
-  const step = Math.floor(Date.now() / 30000);
+  const step = Math.floor(at / 30000);
+  let matched: number | null = null;
   for (let i = -window; i <= window; i++) {
     const expected = hotp(secret, step + i);
-    if (timingSafeEqual(Buffer.from(expected), Buffer.from(c))) return true;
+    // Every candidate is compared so timing does not reveal which step matched.
+    if (timingSafeEqual(Buffer.from(expected), Buffer.from(c)) && matched === null) matched = step + i;
   }
-  return false;
+  if (matched !== null && lastStep !== null && matched <= lastStep) return null;
+  return matched;
+}
+export function verifyTotp(secretB32: string, code: string, window = 1): boolean {
+  return matchTotp(secretB32, code, null, window) !== null;
 }
 export function otpauthUrl(issuer: string, account: string, secret: string): string {
   return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;

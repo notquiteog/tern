@@ -63,9 +63,7 @@ export function fmtNumber(n: number): string { return new Intl.NumberFormat().fo
 export function plural(n: number, s: string, p = s + 's'): string { return `${fmtNumber(n)} ${n === 1 ? s : p}`; }
 
 export function stripHtml(html: string): string {
-  const d = document.createElement('div');
-  d.innerHTML = html;
-  return d.textContent ?? '';
+  return new DOMParser().parseFromString(html, 'text/html').body?.textContent ?? '';
 }
 
 export function escapeHtml(s: string): string {

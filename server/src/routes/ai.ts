@@ -9,6 +9,7 @@ import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
 import { getUserAccount } from '../services/accounts.js';
 import { htmlToText } from '../services/merge.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 export const aiRouter = Router();
 aiRouter.use(requireAuth);
@@ -102,7 +103,7 @@ const DRAFT_MODES = new Set(['rewrite', 'polish', 'shorten', 'expand', 'subject'
 
 // Streams tokens as SSE. The browser inserts them into the editor as they
 // arrive so a slow CPU-only model still feels responsive.
-aiRouter.post('/draft', async (req, res) => {
+aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'The assistant is busy with your earlier requests; wait a moment' }), async (req, res) => {
   const b = parse(draftSchema, req.body);
   const s = await getAiSettings();
   if (!s.enabled) throw badRequest('AI drafting is turned off');

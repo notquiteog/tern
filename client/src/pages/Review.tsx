@@ -7,6 +7,7 @@ import { useToast } from '../state/toast';
 import { Avatar, Badge, Button, Empty, Input, PageHeader, Callout } from '../components/ui';
 import { ShieldAlert } from 'lucide-react';
 import { Editor, type EditorHandle } from '../components/Editor';
+import { SafeHtml } from '../components/SafeHtml';
 import { fmtRelative } from '../lib/format';
 
 export default function ReviewPage() {
@@ -44,7 +45,7 @@ function ReviewCard({ item, onDecide }: { item: any; onDecide: (id: number, a: '
       {item.hold_reason && <Callout kind="warning"><ShieldAlert size={14} /> <b>Not sent automatically.</b> {item.hold_reason.replace(/^Held for review: /, 'It still contains ')}. Fix it here and approve, or reject it.</Callout>}
       {isReply && item.original && <div className="card mb-8" style={{ padding: 10, background: 'var(--bg)' }}><div className="small muted">In reply to <b>{item.original.subject || '(no subject)'}</b> from {item.original.from?.[0]?.email}</div><div className="small muted truncate">{item.original.preview}</div></div>}
       {edit ? <Input value={subject} onChange={(e) => setSubject(e.target.value)} className="mb-8" /> : <div className="strong mb-8">{subject || <span className="faint">(no subject)</span>}</div>}
-      {edit ? <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}><Editor ref={editor} initialHtml={html.current} minHeight={160} onChange={(h) => { html.current = h; }} /></div> : <div className="msg-text" dangerouslySetInnerHTML={{ __html: isReply ? String(item.body_html).split('<div class="tern-quote"')[0] : item.body_html }} />}
+      {edit ? <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}><Editor ref={editor} initialHtml={html.current} minHeight={160} onChange={(h) => { html.current = h; }} /></div> : <SafeHtml className="msg-text" html={isReply ? String(item.body_html).split('<div class="tern-quote"')[0] : item.body_html} />}
       <div className="row mt-16">
         <Button variant="primary" icon={<Check size={15} />} loading={busy === 'approve'} onClick={async () => { setBusy('approve'); await onDecide(item.id, 'approve', edit ? { subject, body_html: html.current } : undefined); setBusy(null); }}>{edit ? 'Approve edited' : 'Approve'}</Button>
         <Button icon={<Pencil size={15} />} onClick={() => setEdit((e) => !e)}>{edit ? 'Stop editing' : 'Edit'}</Button>

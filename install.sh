@@ -148,7 +148,7 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
   ask_secret ADMIN_PASSWORD "Admin password (blank: generate one, or keep the current one on a re-run)"
   if [ -z "${ADMIN_PASSWORD:-}" ]; then ADMIN_PASSWORD="$(gen_password 20)"; ADMIN_PASSWORD_GENERATED=1; fi
 fi
-[ "${#ADMIN_PASSWORD}" -ge 10 ] || die "The admin password must be at least 10 characters."
+[ "${#ADMIN_PASSWORD}" -ge 10 ] || die "The admin password must be at least 10 characters (and not a common one; the app checks that too)."
 ok "admin user: $ADMIN_USER"
 
 # ---------- 4. AI ----------
@@ -377,8 +377,11 @@ if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then
     *) die "Could not create the admin user: $CU" ;;
   esac
 else
-  compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin >/dev/null
-  ok "admin user $ADMIN_USER: password set"
+  if CU="$(compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin 2>&1 | tail -1)"; then
+    ok "admin user $ADMIN_USER: password set"
+  else
+    die "Could not set the admin password: $CU"
+  fi
 fi
 
 if [ "$AI_ENABLED" = 1 ]; then

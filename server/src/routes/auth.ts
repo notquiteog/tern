@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { one, query } from '../db.js';
 import { config } from '../config.js';
-import { dummyHash, generateRecoveryCodes, generateTotpSecret, hashPassword, otpauthUrl, sha256hex, verifyPassword, verifyTotp } from '../crypto.js';
-import { checkLoginAllowed, clearLoginFailures, clientIp, createSession, destroySession, destroyUserSessions, publicUser, recordLoginFailure, requireAuth, setSessionCookie, type UserRow } from '../auth.js';
+import { dummyHash, generateRecoveryCodes, generateTotpSecret, hashPassword, matchTotp, otpauthUrl, sha256hex, verifyPassword } from '../crypto.js';
+import { checkLoginAllowed, clearLoginFailures, clientIp, createSession, destroySession, destroyUserSessions, publicUser, recordLoginFailure, requireAuth, sessionHandle, setSessionCookie, type UserRow } from '../auth.js';
+import { assertPasswordOk } from '../util/password.js';
+import { rateLimit } from '../util/rateLimit.js';
 import { listAccounts } from '../services/accounts.js';
 import { syncManager } from '../workers/syncManager.js';
 import { createChallenge, createDecoyChallenge, encryptStream, getUserKeys, verifyChallenge } from '../services/pgp.js';
@@ -40,6 +42,7 @@ authRouter.post('/register', async (req, res) => {
     throw forbidden('Registration is by invitation only');
   }
   const username = body.username.toLowerCase();
+  assertPasswordOk(body.password, username);
   if (await one('SELECT 1 FROM users WHERE username=$1', [username])) throw badRequest('That username is taken');
   // With the bundled mail server, the username becomes the person's address;
   // an address someone already has on the server cannot be claimed here.
@@ -85,6 +88,9 @@ authRouter.post('/login', async (req, res) => {
   const ok = user ? await verifyPassword(body.password, user.password_hash) : (await verifyPassword(body.password, await dummyHash()), false);
   if (!ok || !user || user.disabled) {
     recordLoginFailure(key); powFail('login', username);
+    // Failed attempts against a real account are visible to admins in the
+    // audit log (no address is recorded, by design; see docs/PRIVACY.md).
+    if (user) await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.login_failed',$2)`, [user.id, JSON.stringify({ reason: user.disabled ? 'disabled' : 'password' })]);
     throw unauthorized('Incorrect username or password');
   }
   // Second factors: an authenticator code, a recovery code, or the answer to
@@ -95,20 +101,28 @@ authRouter.post('/login', async (req, res) => {
   if (user.totp_enabled && user.totp_secret) methods.push('totp');
   const keys = await getUserKeys(user.id);
   if (keys.publicKey && keys.auth !== 'off') methods.push('pgp');
+  let via = 'password';
   if (methods.length) {
     let passed = false;
     const code = body.code?.trim();
     if (code) {
-      if (methods.includes('totp') && verifyTotp(user.totp_secret!, code)) passed = true;
+      if (methods.includes('totp')) {
+        const step = matchTotp(user.totp_secret!, code, user.totp_last_step ?? null);
+        if (step !== null) { passed = true; via = 'totp'; await query('UPDATE users SET totp_last_step=$2 WHERE id=$1', [user.id, step]); }
+      }
       const hashed = sha256hex(code.toLowerCase());
       if (!passed && user.recovery_codes.includes(hashed)) {
-        passed = true;
+        passed = true; via = 'recovery_code';
         await query('UPDATE users SET recovery_codes = array_remove(recovery_codes, $2) WHERE id=$1', [user.id, hashed]);
       }
     }
-    if (!passed && body.pgpResponse && methods.includes('pgp')) passed = verifyChallenge(body.pgpChallengeId, body.pgpResponse, 'login') === user.id;
+    if (!passed && body.pgpResponse && methods.includes('pgp')) { passed = verifyChallenge(body.pgpChallengeId, body.pgpResponse, 'login') === user.id; if (passed) via = 'pgp'; }
     if (!passed) {
-      if (code || body.pgpResponse) { recordLoginFailure(key); powFail('login', username); throw unauthorized('That code was not accepted'); }
+      if (code || body.pgpResponse) {
+        recordLoginFailure(key); powFail('login', username);
+        await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.login_failed',$2)`, [user.id, JSON.stringify({ reason: 'second_factor' })]);
+        throw unauthorized('That code was not accepted');
+      }
       const pgp = methods.includes('pgp') ? await createChallenge(user.id, keys.publicKey!, 'login') : null;
       res.json({ mfaRequired: true, methods, pgp: pgp ? { challengeId: pgp.id, challenge: pgp.armored, fingerprint: keys.fingerprint } : null });
       return;
@@ -118,6 +132,7 @@ authRouter.post('/login', async (req, res) => {
   const sid = await createSession(user.id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.login',$2)`, [user.id, JSON.stringify({ via, client: String(req.headers['user-agent'] ?? '').slice(0, 120) })]);
   res.json({ user: publicUser(user) });
 });
 
@@ -169,8 +184,15 @@ authRouter.put('/profile', requireAuth, async (req, res) => {
   res.json({ user: publicUser(rows[0]) });
 });
 
+// Only the two preference groups the client keeps, and small: a profile is
+// not a place to park arbitrary data.
+const prefsSchema = z.object({
+  appearance: z.record(z.string().max(40), z.union([z.string().max(200), z.boolean(), z.number()])).optional(),
+  mail: z.record(z.string().max(40), z.union([z.string().max(200), z.boolean(), z.number()])).optional(),
+}).strict();
 authRouter.put('/prefs', requireAuth, async (req, res) => {
-  const prefs = parse(z.record(z.string(), z.unknown()), req.body);
+  const prefs = parse(prefsSchema, req.body);
+  if (JSON.stringify(prefs).length > 8000) throw badRequest('Preferences are too large');
   const rows = await query<UserRow>(`UPDATE users SET prefs = prefs || $2::jsonb WHERE id=$1 RETURNING *`, [req.user!.id, JSON.stringify(prefs)]);
   res.json({ user: publicUser(rows[0]) });
 });
@@ -178,6 +200,8 @@ authRouter.put('/prefs', requireAuth, async (req, res) => {
 authRouter.post('/password', requireAuth, async (req, res) => {
   const body = parse(z.object({ current: z.string().min(1), next: z.string().min(10).max(200) }), req.body);
   if (!(await verifyPassword(body.current, req.user!.password_hash))) throw badRequest('Current password is incorrect');
+  assertPasswordOk(body.next, req.user!.username);
+  if (body.next === body.current) throw badRequest('The new password is the same as the current one');
   await query('UPDATE users SET password_hash=$2, password_changed_at=now() WHERE id=$1', [req.user!.id, await hashPassword(body.next)]);
   await destroyUserSessions(req.user!.id, req.sessionId);
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.password_changed')`, [req.user!.id]);
@@ -187,6 +211,10 @@ authRouter.post('/password', requireAuth, async (req, res) => {
 // TOTP: setup stores a pending secret; enable verifies one code and turns it
 // on with fresh recovery codes shown exactly once.
 authRouter.post('/totp/setup', requireAuth, async (req, res) => {
+  // Enrolling a second factor is a security change: it needs the password,
+  // so a session left open on a shared machine cannot bind someone else's app.
+  const { password } = parse(z.object({ password: z.string().min(1) }), req.body);
+  if (!(await verifyPassword(password, req.user!.password_hash))) throw badRequest('Password is incorrect');
   const secret = generateTotpSecret();
   await query('UPDATE users SET totp_secret=$2, totp_enabled=false WHERE id=$1', [req.user!.id, secret]);
   res.json({ secret, otpauth: otpauthUrl('Tern', req.user!.username, secret) });
@@ -196,9 +224,10 @@ authRouter.post('/totp/enable', requireAuth, async (req, res) => {
   const { code } = parse(z.object({ code: z.string().min(6).max(8) }), req.body);
   const user = await one<UserRow>('SELECT * FROM users WHERE id=$1', [req.user!.id]);
   if (!user?.totp_secret) throw badRequest('Run setup first');
-  if (!verifyTotp(user.totp_secret, code)) throw badRequest('That code was not accepted. Check the time on your device.');
+  const step = matchTotp(user.totp_secret, code);
+  if (step === null) throw badRequest('That code was not accepted. Check the time on your device.');
   const codes = generateRecoveryCodes();
-  await query('UPDATE users SET totp_enabled=true, recovery_codes=$2 WHERE id=$1', [user.id, codes.map((c) => sha256hex(c.toLowerCase()))]);
+  await query('UPDATE users SET totp_enabled=true, totp_last_step=$3, recovery_codes=$2 WHERE id=$1', [user.id, codes.map((c) => sha256hex(c.toLowerCase())), step]);
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.totp_enabled')`, [user.id]);
   res.json({ ok: true, recoveryCodes: codes });
 });
@@ -206,7 +235,7 @@ authRouter.post('/totp/enable', requireAuth, async (req, res) => {
 authRouter.post('/totp/disable', requireAuth, async (req, res) => {
   const { password } = parse(z.object({ password: z.string().min(1) }), req.body);
   if (!(await verifyPassword(password, req.user!.password_hash))) throw badRequest('Password is incorrect');
-  await query(`UPDATE users SET totp_enabled=false, totp_secret=NULL, recovery_codes='{}' WHERE id=$1`, [req.user!.id]);
+  await query(`UPDATE users SET totp_enabled=false, totp_secret=NULL, totp_last_step=NULL, recovery_codes='{}' WHERE id=$1`, [req.user!.id]);
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.totp_disabled')`, [req.user!.id]);
   res.json({ ok: true });
 });
@@ -221,13 +250,18 @@ authRouter.post('/totp/recovery', requireAuth, async (req, res) => {
 
 authRouter.get('/sessions', requireAuth, async (req, res) => {
   const rows = await query('SELECT id, created_at, last_seen_at, user_agent FROM sessions WHERE user_id=$1 AND expires_at > now() ORDER BY last_seen_at DESC', [req.user!.id]);
-  res.json({ sessions: rows.map((r) => ({ ...r, current: r.id === req.sessionId, id: r.id.slice(0, 8) + '…', fullId: r.id === req.sessionId ? null : r.id })) });
+  // Other sessions are named by a hash of their token, never the token.
+  res.json({ sessions: rows.map((r) => ({ created_at: r.created_at, last_seen_at: r.last_seen_at, user_agent: r.user_agent, current: r.id === req.sessionId, id: sessionHandle(r.id) })) });
 });
 
 authRouter.post('/sessions/revoke', requireAuth, async (req, res) => {
-  const { id, all } = parse(z.object({ id: z.string().optional(), all: z.boolean().optional() }), req.body);
+  const { id, all } = parse(z.object({ id: z.string().max(64).optional(), all: z.boolean().optional() }), req.body);
   if (all) await destroyUserSessions(req.user!.id, req.sessionId);
-  else if (id) await query('DELETE FROM sessions WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
+  else if (id) {
+    const mine = await query<{ id: string }>('SELECT id FROM sessions WHERE user_id=$1', [req.user!.id]);
+    const target = mine.find((s) => sessionHandle(s.id) === id && s.id !== req.sessionId);
+    if (target) await query('DELETE FROM sessions WHERE id=$1 AND user_id=$2', [target.id, req.user!.id]);
+  }
   res.json({ ok: true });
 });
 
@@ -285,7 +319,7 @@ async function* exportChunks(uid: number, user: UserRow): AsyncGenerator<string>
 
 // `?pgp=1` encrypts the file to the user's OpenPGP key on the way out, so an
 // export made on a shared machine is readable only where the key is.
-authRouter.get('/export', requireAuth, async (req, res) => {
+authRouter.get('/export', requireAuth, rateLimit({ name: 'export', perMinute: 3, message: 'An export is already running; try again in a minute' }), async (req, res) => {
   const uid = req.user!.id;
   const stamp = new Date().toISOString().slice(0, 10);
   const write = (chunk: string) => new Promise<void>((resolve) => { if (res.write(chunk)) resolve(); else res.once('drain', () => resolve()); });
@@ -319,7 +353,7 @@ authRouter.post('/delete-account', requireAuth, async (req, res) => {
   if (!(await verifyPassword(b.password, me.password_hash))) throw badRequest('Password is incorrect');
   if (me.totp_enabled && me.totp_secret) {
     const code = (b.code ?? '').trim();
-    const ok = verifyTotp(me.totp_secret, code) || me.recovery_codes.includes(sha256hex(code.toLowerCase()));
+    const ok = matchTotp(me.totp_secret, code, me.totp_last_step ?? null) !== null || me.recovery_codes.includes(sha256hex(code.toLowerCase()));
     if (!ok) throw badRequest('Two-factor code is required');
   }
   if (me.role === 'admin') {

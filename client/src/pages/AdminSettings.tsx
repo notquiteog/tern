@@ -642,13 +642,21 @@ function AdminAccess() {
   const toast = useToast();
   const [creds, setCreds] = useState<any>(null);
   const [show, setShow] = useState(false);
-  async function reveal() { try { setCreds(await api.get('/api/stalwart/admin-access')); setShow(true); } catch (e) { toast.error(e); } }
+  const [pw, setPw] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The mail server's master login: shown only after the admin's own password
+  // is entered again, and every view is written to the audit log.
+  async function reveal() {
+    if (pw === null) { setPw(''); return; }
+    setBusy(true);
+    try { setCreds(await api.post('/api/stalwart/admin-access', { password: pw })); setShow(true); setPw(null); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
   return (
     <div className="col gap-16" style={{ maxWidth: 700 }}>
       <Callout>Two logins run the mail system. <b>Tern admins</b> (this app) create mailboxes, set DNS and brand, and manage users. The <b>Stalwart admin</b> is the mail server's own panel for everything else: domains, aliases, relay hosts, spam rules, queues and logs. The installer created both; the Stalwart one is kept in <code>.env</code> and shown here on request.</Callout>
       <div className="card">
         <div className="card-title"><h2>Stalwart admin panel</h2></div>
-        {!show ? <Button icon={<KeyRound size={15} />} onClick={reveal}>Show admin login</Button> : (
+        {!show ? (pw === null ? <Button icon={<KeyRound size={15} />} onClick={reveal}>Show admin login</Button> : <div className="row"><Input type="password" placeholder="Your Tern password" value={pw} onChange={(e) => setPw(e.target.value)} style={{ maxWidth: 260 }} autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.key === 'Enter' && pw) void reveal(); }} /><Button variant="primary" loading={busy} disabled={!pw} onClick={reveal}>Show</Button><Button variant="ghost" onClick={() => setPw(null)}>Cancel</Button></div>) : (
           <dl className="kv">
             <dt>Panel</dt><dd>{creds.url ? <a href={creds.url} target="_blank" rel="noreferrer">{creds.url} <ExternalLink size={11} /></a> : creds.localUrl}</dd>
             <dt>Username</dt><dd><code>{creds.username}</code></dd>

@@ -12,6 +12,7 @@ import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
 import { brandDomains } from '../services/brand.js';
 import { describeScrub, scrubMedia } from '../services/scrub.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 export const mailRouter = Router();
 mailRouter.use(requireAuth);
@@ -352,7 +353,7 @@ mailRouter.get('/blob/:accountId/:blobId', async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`);
+  res.setHeader('Content-Disposition', contentDisposition(inline ? 'inline' : 'attachment', name));
   const len = upstream.headers.get('content-length');
   if (len) res.setHeader('Content-Length', len);
   const reader = upstream.body!.getReader();
@@ -366,7 +367,15 @@ mailRouter.get('/blob/:accountId/:blobId', async (req, res) => {
 
 const rawBody = raw({ type: () => true, limit: '25mb' });
 
-mailRouter.post('/uploads', rawBody, async (req, res) => {
+// Both forms of the filename: the RFC 5987 one every current browser reads,
+// and a plain ASCII fallback for the rest. Never characters that could end
+// the header or the quoted string.
+function contentDisposition(kind: 'inline' | 'attachment', name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').slice(0, 120) || 'attachment';
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
+
+mailRouter.post('/uploads', rateLimit({ name: 'uploads', perMinute: 120 }), rawBody, async (req, res) => {
   const filename = String(req.query.filename ?? 'file').slice(0, 255);
   const type = String(req.query.type ?? 'application/octet-stream').slice(0, 120);
   const raw: Buffer = req.body;
@@ -388,7 +397,7 @@ mailRouter.get('/uploads/:id', async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Cache-Control', inlineImage ? 'private, max-age=3600' : 'private, no-store');
-  res.setHeader('Content-Disposition', `${inlineImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(u.filename)}`);
+  res.setHeader('Content-Disposition', contentDisposition(inlineImage ? 'inline' : 'attachment', u.filename));
   res.send(u.data);
 });
 

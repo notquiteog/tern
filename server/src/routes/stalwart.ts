@@ -9,7 +9,8 @@ import { badRequest, notFound } from '../errors.js';
 import { config } from '../config.js';
 import * as sw from '../services/stalwart.js';
 import { connectAccount, encryptSecret, type AccountRow } from '../services/accounts.js';
-import { hashPassword } from '../crypto.js';
+import { hashPassword, verifyPassword } from '../crypto.js';
+import { assertPasswordOk } from '../util/password.js';
 import { syncManager } from '../workers/syncManager.js';
 import { jmapErrorMessage } from '../jmap/client.js';
 import { buildRecords, checkAll, checkOutbound25, detectServerIp, type DnsRecord } from '../services/dnsCheck.js';
@@ -67,6 +68,7 @@ stalwartRouter.post('/mailboxes', requireAdmin, async (req, res) => {
   let newUser: UserRow | null = null;
   if (b.connect === 'new') {
     if (!b.newUser) throw badRequest('New user details are required');
+    assertPasswordOk(b.newUser.password, b.newUser.username);
     if (await one('SELECT 1 FROM users WHERE username=$1', [b.newUser.username.toLowerCase()])) throw badRequest('That username is taken');
   }
   if (b.connect === 'user' && !b.userId) throw badRequest('Choose a user');
@@ -165,8 +167,12 @@ stalwartRouter.get('/mta-sts', requireAdmin, async (_req, res) => {
 });
 
 // The admin login for the mail server's own panel. Only admins, only on
-// request, and audit-logged: it is the master key to the mail system.
-stalwartRouter.get('/admin-access', requireAdmin, async (req, res) => {
+// request, only after re-entering the Tern password, and audit-logged: it
+// is the master key to the mail system.
+stalwartRouter.post('/admin-access', requireAdmin, async (req, res) => {
+  const { password } = parse(z.object({ password: z.string().min(1).max(200) }), req.body ?? {});
+  if (!(await verifyPassword(password, req.user!.password_hash))) throw badRequest('Your Tern password is incorrect');
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'stalwart.admin_credentials_viewed')`, [req.user!.id]);
+  res.setHeader('Cache-Control', 'no-store');
   res.json({ url: config.stalwartHost ? `https://${config.stalwartHost}/admin` : null, localUrl: 'http://127.0.0.1:8080/admin (over an SSH tunnel)', username: config.stalwartAdminUser, password: config.stalwartAdminPassword });
 });

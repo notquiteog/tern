@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, setUnauthorizedHandler } from '../api';
 
 export interface User { id: number; username: string; display_name: string; role: 'admin' | 'member'; totp_enabled: boolean; prefs: Record<string, any>; created_at: string; last_login_at: string | null; avatar_version: number | null; pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless' }
@@ -10,6 +11,7 @@ const Ctx = createContext<AuthCtx>(null as any);
 export const useAuth = () => useContext(Ctx);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const qc = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -50,9 +52,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]')?.setAttribute('href', `/icons/apple-touch-icon.png?v=${branding.version}`);
     document.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.setAttribute('href', `/manifest.webmanifest?v=${branding.version}`);
   }, [branding]);
-  useEffect(() => { setUnauthorizedHandler(() => setUser(null)); }, []);
+  useEffect(() => { setUnauthorizedHandler(() => { setUser(null); qc.clear(); }); }, [qc]);
 
-  const logout = useCallback(async () => { try { await api.post('/api/auth/logout'); } finally { setUser(null); } }, []);
+  // Signing out also empties the in-memory query cache so mail, contacts and
+  // drafts are not one Back button away on a shared machine.
+  const logout = useCallback(async () => { try { await api.post('/api/auth/logout'); } finally { setUser(null); qc.clear(); } }, [qc]);
   const value = useMemo(() => ({ user, loading, needsSetup, registrationOpen, stalwartProvisioning, accountCount, version, branding, refresh, setUser, logout }), [user, loading, needsSetup, registrationOpen, stalwartProvisioning, accountCount, version, branding, refresh, logout]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

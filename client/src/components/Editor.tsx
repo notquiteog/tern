@@ -2,6 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, forwardRef, type Reac
 import { Bold, Italic, Underline, Strikethrough, List, ListOrdered, Link2, Quote, RemoveFormatting, Undo2, Redo2, AlignLeft, AlignCenter, AlignRight, Indent, Outdent, Image as ImageIcon, Smile, Type, Palette } from 'lucide-react';
 import { IconButton, Menu } from './ui';
 import { cls } from '../lib/format';
+import { sanitizeForEditor } from '../lib/sanitize';
 
 export interface EditorHandle {
   getHtml: () => string;
@@ -21,6 +22,11 @@ const EMOJI = ['😀', '😄', '😊', '🙂', '😉', '😍', '🤔', '😅', '
 // contentEditable with a Gmail-shaped toolbar. execCommand is what every
 // browser still ships, and the tags it produces (b, i, u, font, blockquote,
 // ul/ol) are exactly the ones mail clients render best.
+//
+// Everything that enters the editor as HTML (a draft, a quoted original, a
+// template, a paste) is sanitised first: the editor is part of the app
+// page, not a sandboxed frame, so a received message must never be able
+// to put markup of its choosing here.
 export const Editor = forwardRef<EditorHandle, {
   initialHtml?: string; placeholder?: string; onChange?: (html: string) => void; minHeight?: number; maxHeight?: number; toolbar?: boolean; className?: string; extraToolbar?: ReactNode;
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
@@ -34,7 +40,7 @@ export const Editor = forwardRef<EditorHandle, {
   const saved = useRef<Range | null>(null);
   const imgInput = useRef<HTMLInputElement>(null);
   const [linkUrl, setLinkUrl] = useState('');
-  useEffect(() => { if (el.current && el.current.innerHTML !== initialHtml) el.current.innerHTML = initialHtml; if (autoFocus) focusStart(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { if (el.current) { const clean = sanitizeForEditor(initialHtml); if (el.current.innerHTML !== clean) el.current.innerHTML = clean; } if (autoFocus) focusStart(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   const emit = () => onChange?.(el.current?.innerHTML ?? '');
   const saveSel = () => { const s = window.getSelection(); if (s && s.rangeCount && el.current?.contains(s.anchorNode)) saved.current = s.getRangeAt(0).cloneRange(); };
@@ -50,8 +56,8 @@ export const Editor = forwardRef<EditorHandle, {
   }
   useImperativeHandle(ref, () => ({
     getHtml: () => el.current?.innerHTML ?? '',
-    setHtml: (h) => { if (el.current) { el.current.innerHTML = h; emit(); } },
-    insertHtml: (h) => { el.current?.focus(); restoreSel(); document.execCommand('insertHTML', false, h); emit(); },
+    setHtml: (h) => { if (el.current) { el.current.innerHTML = sanitizeForEditor(h); emit(); } },
+    insertHtml: (h) => { el.current?.focus(); restoreSel(); document.execCommand('insertHTML', false, sanitizeForEditor(h)); emit(); },
     insertText: (t) => { el.current?.focus(); restoreSel(); document.execCommand('insertText', false, t); emit(); },
     appendText: (t) => { if (!el.current) return; const last = el.current.lastElementChild; const span = document.createTextNode(t); if (last && last.tagName === 'P') last.appendChild(span); else { const p = document.createElement('p'); p.appendChild(span); el.current.appendChild(p); } emit(); },
     focus: () => el.current?.focus(),
@@ -79,10 +85,14 @@ export const Editor = forwardRef<EditorHandle, {
         onPaste={(e) => {
           const files = Array.from(e.clipboardData.files ?? []);
           if (files.length && onFiles) { const handled = onFiles(files, 'paste'); if (handled !== false) { e.preventDefault(); return; } }
-          // Keep paste plain unless it is HTML from another mail; strips tracking pixels and font soup.
+          // Pasted HTML goes through the same sanitiser as everything else;
+          // big pastes (a whole web page) come in as plain text instead.
           const html = e.clipboardData.getData('text/html');
           const text = e.clipboardData.getData('text/plain');
-          if (!html || html.length > 20000) { e.preventDefault(); document.execCommand('insertText', false, text); }
+          e.preventDefault();
+          if (!html || html.length > 200_000) document.execCommand('insertText', false, text);
+          else document.execCommand('insertHTML', false, sanitizeForEditor(html));
+          emit();
         }}
         onDrop={(e) => {
           const files = Array.from(e.dataTransfer.files ?? []);

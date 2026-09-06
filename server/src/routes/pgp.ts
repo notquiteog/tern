@@ -12,6 +12,7 @@ import { clearUserKeys, createChallenge, getUserKeys, lookupKey, readPrivateKey,
 import { forgetPeer, getPeer, isStale, listPeers, recommend, updateGossip } from '../services/autocrypt.js';
 import { listAccounts } from '../services/accounts.js';
 import { describeKeyShape } from '../services/pgpPackets.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 export const pgpRouter = Router();
 pgpRouter.use(requireAuth);
@@ -116,7 +117,7 @@ pgpRouter.delete('/recipients/:email', async (req, res) => {
   res.json({ ok: true });
 });
 
-pgpRouter.post('/lookup', async (req, res) => {
+pgpRouter.post('/lookup', rateLimit({ name: 'pgp-lookup', perMinute: 20 }), async (req, res) => {
   const { email } = parse(z.object({ email: z.string().max(320) }), req.body);
   const e = emailParam(email);
   const found = await lookupKey(e);

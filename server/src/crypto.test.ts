@@ -31,3 +31,15 @@ test('TOTP matches RFC 6238 style codes', () => {
   assert.equal(verifyTotp(secret, totpCode(secret)), true);
   assert.equal(verifyTotp(secret, '000000'), false);
 });
+
+test('a TOTP code is accepted once: the matched step is refused when it is not newer than the last one', async () => {
+  const { matchTotp } = await import('./crypto.js');
+  const secret = base32Encode(Buffer.from('12345678901234567890'));
+  const at = 59_000;
+  const step = matchTotp(secret, '287082', null, 1, at);
+  assert.equal(step, 1);
+  assert.equal(matchTotp(secret, '287082', step, 1, at), null, 'same code replayed');
+  assert.equal(matchTotp(secret, '287082', 0, 1, at), 1, 'an older last step still allows it');
+  assert.equal(matchTotp(secret, '000000', null, 1, at), null);
+  assert.equal(matchTotp(secret, '28 70 82', null, 1, at), 1, 'spaces are ignored');
+});

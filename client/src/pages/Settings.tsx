@@ -192,8 +192,9 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function EditAccount({ account, onClose }: { account: Account; onClose: () => void }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const [tab, setTab] = useState<'sending' | 'identity' | 'connection'>('sending');
-  const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin });
+  const [tab, setTab] = useState<'sending' | 'identity' | 'autoreply' | 'connection'>('sending');
+  const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin,
+    vacation: { ...{ enabled: false, subject: '', body: '', start: null as string | null, end: null as string | null, onlyContacts: false, intervalDays: 4 }, ...(account.vacation ?? {}) } });
   const sig = useRef(account.signature_html);
   const editor = useRef<EditorHandle>(null);
   const [busy, setBusy] = useState(false);
@@ -201,7 +202,9 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   async function save() {
     setBusy(true);
     try {
-      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null };
+      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null,
+        vacation: { ...f.vacation, start: f.vacation.start || null, end: f.vacation.end || null, intervalDays: Number(f.vacation.intervalDays) || 4 } };
+      if (body.vacation.enabled && !body.vacation.body.trim()) { toast.error('Write the auto-reply message before turning it on'); setTab('autoreply'); setBusy(false); return; }
       if (f.secret) body.secret = f.secret;
       if (f.authUser !== (account.auth_user ?? '')) body.authUser = f.authUser;
       if (f.sessionUrl !== account.session_url) body.sessionUrl = f.sessionUrl;
@@ -215,7 +218,23 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   const perDayEstimate = f.jitterEnabled ? Math.round(((f.sendWindow.end - f.sendWindow.start) * 3600) / Math.max(1, (f.jitterMinS + f.jitterMaxS) / 2)) : null;
   return (
     <Modal open onClose={onClose} title={`${account.email}`} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} onClick={save}>Save</Button></>}>
-      <div className="tabs"><button className={tab === 'sending' ? 'active' : ''} onClick={() => setTab('sending')}>Sending policy</button><button className={tab === 'identity' ? 'active' : ''} onClick={() => setTab('identity')}>Identity & signature</button><button className={tab === 'connection' ? 'active' : ''} onClick={() => setTab('connection')}>Connection</button></div>
+      <div className="tabs"><button className={tab === 'sending' ? 'active' : ''} onClick={() => setTab('sending')}>Sending policy</button><button className={tab === 'identity' ? 'active' : ''} onClick={() => setTab('identity')}>Identity & signature</button><button className={tab === 'autoreply' ? 'active' : ''} onClick={() => setTab('autoreply')}>Auto-reply{f.vacation.enabled ? ' · on' : ''}</button><button className={tab === 'connection' ? 'active' : ''} onClick={() => setTab('connection')}>Connection</button></div>
+      {tab === 'autoreply' && (
+        <>
+          <Callout>An out-of-office message sent once to each person who writes to this mailbox while it is on (again after the interval below). Never sent to mailing lists, notifications, no-reply senders, bounces or other auto-replies, and marked as automatic so their software ignores it too. Rules and AI responders run first; a message an AI responder answers gets no auto-reply.</Callout>
+          <div className="row mt-16 mb-16"><Toggle checked={f.vacation.enabled} onChange={(v) => set({ vacation: { ...f.vacation, enabled: v } })} /><div><div className="strong small">Auto-reply is {f.vacation.enabled ? 'on' : 'off'}</div><div className="help-text">{f.vacation.enabled && (f.vacation.start || f.vacation.end) ? `Active ${f.vacation.start ? `from ${f.vacation.start}` : 'now'}${f.vacation.end ? ` until ${f.vacation.end}` : ' until turned off'} (${f.sendWindow.tz} days).` : 'Optionally limit it to a date range.'}</div></div></div>
+          <div className="form-row">
+            <Field label="First day (optional)"><Input type="date" value={f.vacation.start ?? ''} onChange={(e) => set({ vacation: { ...f.vacation, start: e.target.value || null } })} /></Field>
+            <Field label="Last day (optional)"><Input type="date" value={f.vacation.end ?? ''} onChange={(e) => set({ vacation: { ...f.vacation, end: e.target.value || null } })} /></Field>
+          </div>
+          <Field label="Subject" hint="Leave empty to reply with the original subject."><Input value={f.vacation.subject} onChange={(e) => set({ vacation: { ...f.vacation, subject: e.target.value } })} placeholder="Out of the office until 14 October" maxLength={200} /></Field>
+          <Field label="Message" hint="Plain text; your signature is added after it."><Textarea value={f.vacation.body} onChange={(e) => set({ vacation: { ...f.vacation, body: e.target.value } })} placeholder={"Thanks for your message. I'm away until 14 October with limited access to email and will reply when I'm back. For anything urgent, contact hello@example.com."} style={{ minHeight: 120 }} /></Field>
+          <div className="form-row">
+            <Field label="Reply to the same person again after (days)"><Input type="number" min={1} max={60} value={f.vacation.intervalDays} onChange={(e) => set({ vacation: { ...f.vacation, intervalDays: Number(e.target.value) } })} /></Field>
+            <div className="row" style={{ alignItems: 'center' }}><Toggle checked={f.vacation.onlyContacts} onChange={(v) => set({ vacation: { ...f.vacation, onlyContacts: v } })} /><span className="small">Only reply to people in my contacts</span></div>
+          </div>
+        </>
+      )}
       {tab === 'sending' && (
         <>
           <Callout>These limits apply to sequences and to "send with a natural delay". Manual sends are never blocked. A new mailbox should start low, around 20 to 30 a day, and rise over a few weeks.</Callout>
@@ -353,13 +372,15 @@ function SecuritySettings() {
   const [code, setCode] = useState('');
   const [codes, setCodes] = useState<string[] | null>(null);
   const [pw, setPw] = useState('');
+  const [setupPw, setSetupPw] = useState<string | null>(null);
   const { data: sessions, refetch } = useQuery({ queryKey: ['sessions'], queryFn: () => api.get<{ sessions: any[] }>('/api/auth/sessions') });
   async function changePw() {
     if (next !== conf) { toast.error('Passwords do not match'); return; }
     try { await api.post('/api/auth/password', { current: cur, next }); toast.success('Password changed; other sessions signed out'); setCur(''); setNext(''); setConf(''); refetch(); } catch (e) { toast.error(e); }
   }
   async function startTotp() {
-    try { const r = await api.post<any>('/api/auth/totp/setup'); const qr = await QRCode.toDataURL(r.otpauth, { margin: 1, width: 180 }); setSetup({ ...r, qr }); } catch (e) { toast.error(e); }
+    if (!setupPw) { setSetupPw(''); return; }
+    try { const r = await api.post<any>('/api/auth/totp/setup', { password: setupPw }); const qr = await QRCode.toDataURL(r.otpauth, { margin: 1, width: 180 }); setSetup({ ...r, qr }); setSetupPw(null); } catch (e) { toast.error(e); }
   }
   async function enable() {
     try { const r = await api.post<any>('/api/auth/totp/enable', { code }); setCodes(r.recoveryCodes); setSetup(null); setCode(''); await refresh(); toast.success('Two-factor enabled'); } catch (e) { toast.error(e); }
@@ -369,7 +390,7 @@ function SecuritySettings() {
   }
   return (
     <div style={{ maxWidth: 720 }}>
-      <PageHeader title="Security" sub={`Signed in as ${user!.username}`} />
+      <PageHeader title="Security" sub={`Signed in as ${user!.username}${user!.last_login_at ? ` · last sign-in ${fmtDateTime(user!.last_login_at)}` : ''}`} />
       <div className="card mb-16">
         <h2 className="mb-8">Change password</h2>
         <Field label="Current password"><Input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" /></Field>
@@ -378,7 +399,8 @@ function SecuritySettings() {
       </div>
       <div className="card mb-16">
         <div className="card-title"><h2>Two-factor authentication</h2>{user!.totp_enabled ? <Badge kind="success">on</Badge> : <Badge>off</Badge>}</div>
-        {!user!.totp_enabled && !setup && <><p className="muted small">Adds a 6-digit code from an authenticator app at sign-in. Recovery codes are shown once.</p><Button icon={<KeyRound size={15} />} onClick={startTotp}>Set up</Button></>}
+        {!user!.totp_enabled && !setup && <><p className="muted small">Adds a 6-digit code from an authenticator app at sign-in. Recovery codes are shown once.</p>
+          {setupPw === null ? <Button icon={<KeyRound size={15} />} onClick={startTotp}>Set up</Button> : <div className="row"><Input type="password" placeholder="Password to confirm" value={setupPw} onChange={(e) => setSetupPw(e.target.value)} style={{ maxWidth: 260 }} autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.key === 'Enter' && setupPw) void startTotp(); }} /><Button variant="primary" disabled={!setupPw} onClick={startTotp}>Continue</Button><Button variant="ghost" onClick={() => setSetupPw(null)}>Cancel</Button></div>}</>}
         {setup && (
           <div className="row" style={{ alignItems: 'flex-start', gap: 20 }}>
             <img src={setup.qr} alt="QR code" width={180} height={180} style={{ borderRadius: 8, background: '#fff' }} />
@@ -399,7 +421,7 @@ function SecuritySettings() {
           { key: 'ua', secondary: true, className: 'small muted', cell: (s) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 320, verticalAlign: 'bottom' }} title={s.user_agent}>{s.user_agent || 'unknown client'}</span> },
           { key: 'seen', header: 'Last active', className: 'small muted', nowrap: true, cell: (s) => fmtRelative(s.last_seen_at) },
           { key: 'started', header: 'Signed in', className: 'small muted', nowrap: true, cell: (s) => fmtDateTime(s.created_at) },
-          { key: 'act', actions: true, cell: (s) => !s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.fullId }).then(() => refetch())}>Sign out</Button> },
+          { key: 'act', actions: true, cell: (s) => !s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.id }).then(() => refetch())}>Sign out</Button> },
         ]} />
       </div>
       <div className="card mt-16">

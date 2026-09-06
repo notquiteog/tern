@@ -15,6 +15,7 @@ import { badRequest } from '../errors.js';
 import { logger } from '../log.js';
 import { describeKeyShape } from './pgpPackets.js';
 import { getPeer, recommend, type PreferEncrypt, type Recommendation } from './autocrypt.js';
+import { assertPublicUrl } from '../util/netguard.js';
 
 const log = logger('pgp');
 
@@ -174,7 +175,9 @@ export function zbase32(buf: Buffer): string {
 
 async function fetchKey(url: string, binary: boolean): Promise<openpgp.Key | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'follow', headers: { Accept: binary ? 'application/octet-stream' : 'application/pgp-keys, text/plain' } });
+    // The host comes from an address someone typed; it must be a public one.
+    await assertPublicUrl(url, { what: 'The key server' });
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'error', headers: { Accept: binary ? 'application/octet-stream' : 'application/pgp-keys, text/plain' } });
     if (!res.ok) return null;
     if (binary) {
       const buf = new Uint8Array(await res.arrayBuffer());

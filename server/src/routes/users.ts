@@ -8,6 +8,7 @@ import { randomToken } from '../crypto.js';
 import { config } from '../config.js';
 import { assertMailboxFree, provisionMailbox, provisioningEnabled } from '../services/provision.js';
 import { stalwartEnabled } from '../services/stalwart.js';
+import { assertPasswordOk } from '../util/password.js';
 
 // provisionMailboxes: with the bundled mail server, every new login also
 // gets <username>@<domain> created and connected.
@@ -63,6 +64,7 @@ const createSchema = z.object({
 
 usersRouter.post('/', async (req, res) => {
   const body = parse(createSchema, req.body);
+  assertPasswordOk(body.password, body.username);
   const exists = await one('SELECT 1 FROM users WHERE username=$1', [body.username.toLowerCase()]);
   if (exists) throw conflict('That username is taken');
   const provision = body.provisionMailbox ?? (await provisioningEnabled());
@@ -93,6 +95,9 @@ usersRouter.put('/:id', async (req, res) => {
 usersRouter.post('/:id/password', async (req, res) => {
   const id = idParam(req.params.id);
   const { password } = parse(z.object({ password: z.string().min(10).max(200) }), req.body);
+  const target = await one<{ username: string }>('SELECT username FROM users WHERE id=$1', [id]);
+  if (!target) throw notFound('User not found');
+  assertPasswordOk(password, target.username);
   const rows = await query('UPDATE users SET password_hash=$2, password_changed_at=now() WHERE id=$1 RETURNING id', [id, await hashPassword(password)]);
   if (!rows.length) throw notFound('User not found');
   await destroyUserSessions(id);

@@ -23,6 +23,18 @@ Admin → Audit log shows the audit log.
 - Behind another proxy or a CDN, set `SITE_ADDRESS=:80` in `.env`, terminate
   TLS there and keep `APP_URL` as the public https URL.
 
+## "The session URL points at a private or internal address"
+
+The server refuses to connect to mail servers, SMTP hosts or key directories
+on loopback, private (10/8, 172.16/12, 192.168/16), link-local or
+carrier-NAT addresses, and to names without a dot, so a signed-in member can
+never make it talk to the other containers. The bundled Stalwart is the one
+exception. If your JMAP server really lives on your LAN, set
+`ALLOW_PRIVATE_NETWORK_HOSTS=true` in `.env` and `./bin/tern up`; every
+member can then connect any reachable host, so only do this on a trusted
+network. A public hostname that resolves to a private address (split-horizon
+DNS on the server) trips the same check.
+
 ## "Mail server rejected the credentials"
 
 - Fastmail: the API token needs Mail read/write scope; tokens are shown once.

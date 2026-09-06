@@ -8,6 +8,8 @@ import { config } from '../config.js';
 import { logger } from '../log.js';
 import { mailboxByRole } from '../jmap/actions.js';
 import type { AccountRow } from './accounts.js';
+import { assertPublicUrl } from '../util/netguard.js';
+import { badRequest } from '../errors.js';
 
 const log = logger('push');
 
@@ -33,6 +35,10 @@ function subject(): string {
 export interface SubscriptionInput { endpoint: string; keys: { p256dh: string; auth: string } }
 
 export async function subscribe(userId: number, sub: SubscriptionInput, userAgent: string | null): Promise<void> {
+  // The endpoint is where this server will POST later; it has to be a
+  // browser vendor's push service, never something on the local network.
+  const u = await assertPublicUrl(sub.endpoint, { what: 'The push endpoint' });
+  if (u.protocol !== 'https:') throw badRequest('Push endpoints must use https');
   await query(
     `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent) VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (endpoint) DO UPDATE SET user_id=EXCLUDED.user_id, p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth, user_agent=EXCLUDED.user_agent, failures=0`,

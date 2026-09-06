@@ -6,6 +6,7 @@ import { useToast } from '../state/toast';
 import { useAccounts, useTemplates } from '../lib/queries';
 import { Badge, Button, Callout, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
+import { SafeHtml } from '../components/SafeHtml';
 import { cls, fmtDate, textToHtml } from '../lib/format';
 
 export const MERGE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'title', 'email', 'domain', 'greeting', 'sender_name', 'sender_first_name', 'today', 'weekday', 'month', 'year', 'unsubscribe_url'];
@@ -101,7 +102,7 @@ function LibraryModal({ open, onClose, owned, onAdded }: { open: boolean; onClos
         ))}
       </div>
       <Modal open={Boolean(preview)} onClose={() => setPreview(null)} title={preview?.name} size="wide" footer={<><Button onClick={() => setPreview(null)}>Close</Button>{preview && !owned.has(preview.key) && <Button variant="primary" onClick={() => { add([preview.key]); setPreview(null); }}>Add to my templates</Button>}</>}>
-        {preview && <><div className="strong mb-8">{preview.subject || '(thread subject)'}</div><div className="msg-text" style={{ fontSize: 13.5 }} dangerouslySetInnerHTML={{ __html: preview.body_html }} /><div className="small muted mt-16">Fields used: {preview.fields.join(', ') || 'none'}</div>{preview.ai_brief && <div className="small muted mt-8">AI brief: {preview.ai_brief}</div>}</>}
+        {preview && <><div className="strong mb-8">{preview.subject || '(thread subject)'}</div><SafeHtml className="msg-text" style={{ fontSize: 13.5 }} html={preview.body_html} /><div className="small muted mt-16">Fields used: {preview.fields.join(', ') || 'none'}</div>{preview.ai_brief && <div className="small muted mt-8">AI brief: {preview.ai_brief}</div>}</>}
       </Modal>
     </Modal>
   );
@@ -187,7 +188,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
               {preview && (
                 <div className="card">
                   <div className="strong mb-8">{preview.subject || <span className="faint">(no subject)</span>}</div>
-                  <div className="msg-text" dangerouslySetInnerHTML={{ __html: preview.html }} />
+                  <SafeHtml className="msg-text" html={preview.html} />
                   {preview.errors?.length > 0 && <Callout kind="danger">{preview.errors.join(' · ')}</Callout>}
                   {preview.missing?.length > 0 && <div className="small mt-8" style={{ color: 'var(--warning)' }}>Fields without a value for this contact (they render empty or use the fallback): {preview.missing.join(', ')}</div>}
                 </div>

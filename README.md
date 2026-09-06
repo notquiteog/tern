@@ -47,7 +47,10 @@ Nothing leaves your server except the mail itself.
   send**, and **Send with a natural delay**.
 - Remote images blocked by default, with "always show from this sender" and
   automatic display for people in your contacts; HTML mail renders in a
-  sandboxed frame.
+  sandboxed frame, and a link whose text names one site but leads to
+  another asks before it opens.
+- **Out-of-office auto-reply** per mailbox: a message, an optional date
+  range, once per sender per interval, never to lists or other robots.
 - Live updates over JMAP push, so new mail appears without reloading; the
   tab title carries the unread count.
 
@@ -108,6 +111,8 @@ Nothing leaves your server except the mail itself.
   and MOV files. Forwarded attachments are scrubbed too.
 - Every user can export everything the server holds about them as one JSON
   file, and delete their account with all of it, from Settings → Security.
+- The security design (sign-in, sessions, hostile mail, the network guard)
+  is written up in [docs/SECURITY.md](docs/SECURITY.md).
 - No IP addresses are stored anywhere. Staged attachments, finished AI jobs,
   decided reviews, sent outbox copies and expired sessions are purged on a
   schedule. The full inventory is in [docs/PRIVACY.md](docs/PRIVACY.md);
@@ -159,6 +164,7 @@ Then open the web app and go to **Settings → Accounts → Add account**.
 - [docs/DNS.md](docs/DNS.md): every DNS record for trusted mail, MTA-STS, BIMI logos, and how to verify them.
 - [docs/CUSTOMIZING.md](docs/CUSTOMIZING.md): sending policy, sequences, AI models, rules, theming, environment variables.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it is built.
+- [docs/SECURITY.md](docs/SECURITY.md): the threat model and what defends against each part of it.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): logs, common errors, recovery.
 
 ## Development

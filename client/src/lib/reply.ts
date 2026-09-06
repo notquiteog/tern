@@ -2,6 +2,7 @@
 // quoted original. The addressing rules are the same ones the server's AI
 // responders use (server/src/services/reply.ts), kept in step by the tests.
 import { addrFull, escapeHtml, fmtDateTime, type Addr } from './format';
+import { sanitizeForEditor } from './sanitize';
 
 export interface ReplySource { from?: Addr[] | null; replyTo?: Addr[] | null; to?: Addr[] | null; cc?: Addr[] | null }
 
@@ -58,8 +59,10 @@ export function forwardSubject(subject: string | null | undefined): string {
 
 export interface QuotableMessage { received_at: string; sent_at?: string | null; from_addr?: Addr[] | null; to_addr?: Addr[] | null; cc_addr?: Addr[] | null; subject?: string | null; body_html?: string | null; body_text?: string | null }
 
+// The original's HTML is someone else's; it is cleaned before it becomes
+// part of a message we write, so the draft saved to the server is clean too.
 function bodyOf(m: QuotableMessage): string {
-  if (m.body_html) return m.body_html;
+  if (m.body_html) return sanitizeForEditor(m.body_html);
   if (m.body_text) return `<div style="white-space:pre-wrap">${escapeHtml(m.body_text)}</div>`;
   return '';
 }

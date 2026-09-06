@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { one, query } from '../db.js';
+import { one, query, withTx } from '../db.js';
+import { assertPasswordOk } from '../util/password.js';
 import { config } from '../config.js';
 import { hashPassword } from '../crypto.js';
 import { createSession, publicUser, setSessionCookie, type UserRow } from '../auth.js';
@@ -54,10 +55,17 @@ setupRouter.post('/', async (req, res) => {
   if (!(await needsSetup())) throw conflict('Setup is already complete');
   const body = parse(setupSchema, req.body);
   verifySolution('setup', body.username, body.pow);
-  const rows = await query<UserRow>(
-    `INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,'admin') RETURNING *`,
-    [body.username.toLowerCase(), body.displayName, await hashPassword(body.password)],
-  );
+  assertPasswordOk(body.password, body.username);
+  const hash = await hashPassword(body.password);
+  // Two first-run submissions racing each other must not both make an admin:
+  // the count is re-checked under a lock in the same transaction as the insert.
+  const rows = await withTx(async (c) => {
+    await c.query('SELECT pg_advisory_xact_lock(7245002)');
+    const n = await c.query('SELECT count(*)::int AS n FROM users');
+    if (n.rows[0].n > 0) throw conflict('Setup is already complete');
+    const r = await c.query(`INSERT INTO users (username, display_name, password_hash, role) VALUES ($1,$2,$3,'admin') RETURNING *`, [body.username.toLowerCase(), body.displayName, hash]);
+    return r.rows as UserRow[];
+  });
   const sid = await createSession(rows[0].id, req.headers['user-agent']);
   setSessionCookie(res, sid);
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'setup.admin_created',$2)`, [rows[0].id, JSON.stringify({ username: body.username })]);

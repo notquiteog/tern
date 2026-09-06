@@ -30,16 +30,29 @@ import { pgpRouter } from './routes/pgp.js';
 
 const log = logger('http');
 
+// Scripts only from our own bundle (no inline handlers, so injected markup
+// cannot run code even if it slipped past sanitising); styles inline because
+// the editor and mail rendering need them; frames only our own sandboxed
+// message frames; never embedded anywhere.
+export const APP_CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
 export function createApp(): express.Express {
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', 1);
 
+  // One policy for every response. Routes that hand out files (attachments,
+  // logos) replace it with a stricter sandboxed one; API JSON carries it
+  // harmlessly. Setting it here rather than only on the SPA fallback means
+  // /index.html fetched directly gets the same protection.
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Content-Security-Policy', APP_CSP);
     next();
   });
 
@@ -95,7 +108,6 @@ export function createApp(): express.Express {
     app.get('{*rest}', (req, res, next) => {
       if (req.path.startsWith('/api/')) return next();
       res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'");
       res.sendFile(path.join(dist, 'index.html'));
     });
   } else {
@@ -111,7 +123,9 @@ export function createApp(): express.Express {
     if (anyErr?.type === 'entity.too.large') { res.status(413).json({ error: 'That upload is too large' }); return; }
     if (anyErr?.type === 'entity.parse.failed') { res.status(400).json({ error: 'Malformed JSON' }); return; }
     log.error(`unhandled error on ${req.method} ${req.path}`, { err: anyErr?.message ?? String(err), stack: anyErr?.stack });
-    res.status(500).json({ error: anyErr?.message ?? 'Something went wrong' });
+    // Internal messages (driver errors, file paths, upstream replies) stay in
+    // the log; the browser gets a generic line outside development.
+    res.status(500).json({ error: config.env === 'production' ? 'Something went wrong on the server. The details are in the server log.' : anyErr?.message ?? 'Something went wrong' });
   });
   return app;
 }

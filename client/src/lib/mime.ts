@@ -49,9 +49,9 @@ export function buildMime(msg: { html: string; text?: string; attachments?: { na
 }
 
 export function htmlToPlain(html: string): string {
-  const d = document.createElement('div');
-  d.innerHTML = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, '\n');
-  return (d.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
+  // Parsed inertly: nothing in the HTML loads or runs while its text is read.
+  const doc = new DOMParser().parseFromString(html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, '\n'), 'text/html');
+  return (doc.body?.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ---------- parsing ----------

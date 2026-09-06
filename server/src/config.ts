@@ -48,6 +48,11 @@ export const config = {
   // Permit plain-http JMAP session URLs. Needed for a Stalwart container on the
   // compose network; leave off when every mailbox is on the public internet.
   allowInsecureJmap: bool('ALLOW_INSECURE_JMAP', true),
+  // Let people connect mail servers on private or loopback addresses (a
+  // JMAP server on the LAN). Off by default: otherwise any member could make
+  // this server talk to the compose network (Ollama, Postgres, Stalwart's
+  // management API). The bundled Stalwart is always allowed.
+  allowPrivateHosts: bool('ALLOW_PRIVATE_NETWORK_HOSTS', false),
   // AI
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiModel: env('AI_MODEL', ''),

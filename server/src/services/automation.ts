@@ -7,6 +7,7 @@ import { publish } from '../events.js';
 import type { AccountRow } from './accounts.js';
 import * as actions from '../jmap/actions.js';
 import { autocryptHeadersOf, updatePeerFromMessage } from './autocrypt.js';
+import { maybeVacationReply, vacationActive } from './vacation.js';
 
 const log = logger('automation');
 
@@ -38,6 +39,7 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
   const rules = await query<any>(`SELECT * FROM rules WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
   const responders = await query<any>(`SELECT * FROM responders WHERE user_id=$1 AND enabled AND (account_id IS NULL OR account_id=$2) ORDER BY position, id`, [acc.user_id, acc.id]);
   const muted = new Set((await query<{ thread_id: string }>('SELECT thread_id FROM muted_threads WHERE account_id=$1', [acc.id])).map((r) => r.thread_id));
+  const vacationOn = vacationActive(acc);
 
   for (const e of fresh) {
     const fromEmail: string = (e.from?.[0]?.email ?? '').toLowerCase();
@@ -94,8 +96,13 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
     if (rules.length && inboxId && mailboxIds.includes(inboxId)) {
       try { await applyRules(acc, e, rules, text); } catch (err) { log.error('rule application failed', { err: (err as Error).message }); }
     }
+    let answered = false;
     if (responders.length && !isAuto && !bounceLike) {
-      try { await enqueueResponders(acc, e, responders, text, roles); } catch (err) { log.error('responder queueing failed', { err: (err as Error).message }); }
+      try { answered = await enqueueResponders(acc, e, responders, text, roles); } catch (err) { log.error('responder queueing failed', { err: (err as Error).message }); }
+    }
+    // The out-of-office reply, unless a responder is already answering.
+    if (!answered && !isAuto && !bounceLike && vacationOn && !roles.some((r) => r === 'junk' || r === 'spam' || r === 'trash')) {
+      try { await maybeVacationReply(acc, e); } catch (err) { log.error('vacation reply failed', { err: (err as Error).message }); }
     }
   }
 }
@@ -104,10 +111,10 @@ export async function onNewEmails(acc: AccountRow, fresh: any[]): Promise<void> 
 // Matching happens here, at sync time; the slow part (asking the model) is a
 // job the scheduler works through so a mailbox sync is never blocked on a
 // 30-second generation.
-async function enqueueResponders(acc: AccountRow, e: any, responders: any[], text: string, roles: (string | null | undefined)[]): Promise<void> {
-  if (roles.includes('junk') || roles.includes('spam') || roles.includes('trash')) return;
+async function enqueueResponders(acc: AccountRow, e: any, responders: any[], text: string, roles: (string | null | undefined)[]): Promise<boolean> {
+  if (roles.includes('junk') || roles.includes('spam') || roles.includes('trash')) return false;
   const fromEmail: string = (e.from?.[0]?.email ?? '').toLowerCase();
-  if (!fromEmail) return;
+  if (!fromEmail) return false;
   for (const r of responders) {
     if (r.skip_lists && isListMail(e)) continue;
     const conds: RuleCondition[] = Array.isArray(r.conditions) ? r.conditions : [];
@@ -129,8 +136,9 @@ async function enqueueResponders(acc: AccountRow, e: any, responders: any[], tex
     if ((today?.n ?? 0) >= (r.daily_cap ?? 20)) { log.info('responder daily cap reached', { responder: r.id }); continue; }
     await query(`INSERT INTO ai_jobs (user_id, kind, payload) VALUES ($1, 'responder', $2)`, [acc.user_id, JSON.stringify({ responderId: r.id, accountId: acc.id, emailDbId: e._id, jmapId: e.id, threadId: e.threadId })]);
     log.info('responder queued', { responder: r.id, email: e.id });
-    break; // first matching responder wins
+    return true; // first matching responder wins
   }
+  return false;
 }
 
 async function handleBounce(acc: AccountRow, e: any, logs: SendLogRow[]): Promise<void> {

@@ -7,6 +7,7 @@ import { useToast } from '../state/toast';
 import { useAccounts, useContactTags, useTemplates } from '../lib/queries';
 import { Badge, Button, Callout, Confirm, Field, IconButton, Input, Modal, Select, Spinner, Textarea, Toggle, Tabs } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
+import { SafeHtml } from '../components/SafeHtml';
 import { MERGE_FIELDS } from './Templates';
 import { fmtDateTime, fmtDuration, plural } from '../lib/format';
 import { DataTable } from '../components/DataTable';
@@ -111,7 +112,7 @@ export default function SequenceEditorPage() {
       )}
       <EnrollDialog open={enrollOpen} onClose={() => setEnrollOpen(false)} sid={sid} onDone={() => { qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['enrollments', sid] }); setTab('enrollments'); }} />
       <Modal open={Boolean(preview)} onClose={() => setPreview(null)} title="Preview for a sample contact" size="wide">
-        {preview?.preview?.map((p: any, i: number) => p.kind === 'wait' ? <div key={i} className="row small muted mb-16"><Clock size={14} /> wait {fmtDuration(p.step.wait_days, p.step.wait_hours)}</div> : <div key={i} className="card mb-16"><div className="strong mb-8">{p.subject || '(no subject)'}{p.step.ai_personalize && <Badge kind="accent"><Sparkles size={12} /> AI rewrites this per contact</Badge>}</div><div className="msg-text" dangerouslySetInnerHTML={{ __html: p.html }} />{p.brief && <div className="small muted mt-8">Brief: {p.brief}</div>}</div>)}
+        {preview?.preview?.map((p: any, i: number) => p.kind === 'wait' ? <div key={i} className="row small muted mb-16"><Clock size={14} /> wait {fmtDuration(p.step.wait_days, p.step.wait_hours)}</div> : <div key={i} className="card mb-16"><div className="strong mb-8">{p.subject || '(no subject)'}{p.step.ai_personalize && <Badge kind="accent"><Sparkles size={12} /> AI rewrites this per contact</Badge>}</div><SafeHtml className="msg-text" html={p.html} />{p.brief && <div className="small muted mt-8">Brief: {p.brief}</div>}</div>)}
       </Modal>
       <Confirm open={del} onClose={() => setDel(false)} danger title="Delete this sequence?" message="Enrollments are removed. Sent messages stay in the mailbox and the send log." confirmLabel="Delete" onConfirm={async () => { await api.del(`/api/sequences/${sid}`); qc.invalidateQueries({ queryKey: ['sequences'] }); nav('/sequences'); }} />
     </div>
@@ -151,7 +152,7 @@ function StepCard({ step, index, stats, templates, onChange, onMove, onRemove, f
             <div className="row mb-8 wrap"><span className="small muted">Insert:</span>{MERGE_FIELDS.slice(0, 8).map((f) => <button key={f} type="button" className="tag" style={{ cursor: 'pointer', border: 0 }} onClick={() => editor.current?.insertHtml(`{{${f}}}`)}>{`{{${f}}}`}</button>)}</div>
             <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}><Editor ref={editor} initialHtml={step.body_html} minHeight={140} placeholder="Hi {{first_name|there}}," onChange={(h) => onChange({ body_html: h })} /></div>
           </>}
-          {tpl && <div className="card small mt-8" style={{ padding: 12 }}><div className="strong mb-8">{tpl.subject}</div><div dangerouslySetInnerHTML={{ __html: tpl.body_html }} /></div>}
+          {tpl && <div className="card small mt-8" style={{ padding: 12 }}><div className="strong mb-8">{tpl.subject}</div><SafeHtml html={tpl.body_html} /></div>}
           <div className="row mt-16 wrap gap-16">
             {index > 0 && <div className="row"><Toggle checked={step.reply_in_thread} onChange={(v) => onChange({ reply_in_thread: v })} /><span className="small">Send as a reply in the same thread</span></div>}
             <div className="row"><Toggle checked={step.ai_personalize} onChange={(v) => onChange({ ai_personalize: v })} /><span className="small"><Sparkles size={13} /> AI personalise for each contact</span></div>
