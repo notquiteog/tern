@@ -35,19 +35,27 @@ export async function cachedSummaries(userId: number, accountIds: number[], thre
   const out = new Map<string, Summary>();
   if (!accountIds.length || !threadIds.length) return out;
   const rows = await query<any>(
-    `SELECT s.account_id, s.thread_id, s.summary, s.latest_at,
+    `SELECT s.account_id, s.thread_id, s.summary, s.latest_at, s.model,
             (SELECT max(e.received_at) FROM emails e WHERE e.account_id=s.account_id AND e.thread_id=s.thread_id) AS newest
        FROM thread_summaries s
       WHERE s.account_id = ANY($1) AND s.thread_id = ANY($2)`,
     [accountIds, threadIds],
   );
   if (!rows.length) return out;
+  const s = await getAiSettings();
   const dek = await dataKey(userId);
   for (const r of rows) {
     const text = openWith(dek, r.summary);
-    if (!text) continue;
-    const stale = Boolean(r.newest && new Date(r.newest).getTime() > new Date(r.latest_at).getTime());
-    out.set(key(r.account_id, r.thread_id), { threadId: r.thread_id, accountId: r.account_id, text, stale });
+    // null means the ciphertext would not open, which is a real failure and
+    // worth another go. An empty string is a decline that was written down on
+    // purpose — the model had nothing to add — and asking again would only
+    // get the same nothing, more slowly.
+    if (text === null) continue;
+    const newer = Boolean(r.newest && new Date(r.newest).getTime() > new Date(r.latest_at).getTime());
+    // A different model deserves another attempt: an install that moves off a
+    // model too small to summarise should not keep its declines for ever.
+    const staleModel = Boolean(r.model && s.model && r.model !== s.model);
+    out.set(key(r.account_id, r.thread_id), { threadId: r.thread_id, accountId: r.account_id, text, stale: newer || staleModel });
   }
   return out;
 }
@@ -62,6 +70,20 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
     [acc.id, threadId],
   );
   if (!sealed.length) return null;
+  // Every path below that gives up writes an empty line against the
+  // conversation rather than leaving the row absent. Without that the browser
+  // sees a summary it never got, asks again, and a local model spends the
+  // rest of the session rewriting nothing.
+  const decline = async (at: Date | string): Promise<Summary> => {
+    const dek = await dataKey(userId);
+    await query(
+      `INSERT INTO thread_summaries (account_id, thread_id, summary, latest_at, model, updated_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (account_id, thread_id) DO UPDATE SET summary=EXCLUDED.summary, latest_at=EXCLUDED.latest_at, model=EXCLUDED.model, updated_at=now()`,
+      [acc.id, threadId, sealWith(dek, ''), at, s.model],
+    );
+    return { threadId, accountId: acc.id, text: '', stale: false };
+  };
   const msgs = await openEmails(userId, sealed);
   const newest = msgs.reduce((a: any, m: any) => (new Date(m.received_at) > new Date(a.received_at) ? m : a), msgs[0]);
   const thread = msgs.map((m: any) => ({
@@ -69,10 +91,10 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
     date: new Date(m.received_at).toDateString(),
     text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim(),
   })).filter((m: any) => m.text);
-  if (!thread.length) return null;
+  if (!thread.length) return await decline(newest.received_at);
   // A message the assistant cannot read is not summarised, and saying so is
   // more useful than a line invented from the armour header.
-  if (thread.every((m: any) => /-----BEGIN PGP MESSAGE-----/.test(m.text))) return null;
+  if (thread.every((m: any) => /-----BEGIN PGP MESSAGE-----/.test(m.text))) return await decline(newest.received_at);
 
   const tuning = modeTuning('gist');
   const threadChars = Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity);
@@ -89,7 +111,9 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
     'gist',
   );
   const line = tidyGist(text, newest.subject ?? '');
-  if (!line) return null;
+  // The model answered, but with a greeting, a fragment or the subject again.
+  // That is a decline, and it is recorded as one.
+  if (!line) return await decline(newest.received_at);
   const dek = await dataKey(userId);
   await query(
     `INSERT INTO thread_summaries (account_id, thread_id, summary, latest_at, model, updated_at)

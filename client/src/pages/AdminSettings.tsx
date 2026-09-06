@@ -293,8 +293,11 @@ function AiAdminSettings() {
         <div className="row mt-8 mb-8">
           <Toggle checked={Boolean(f.allowThinking)} onChange={(v) => setF({ ...f, allowThinking: v })} />
           <div>
-            <div className="strong small">Let reasoning models think</div>
-            <div className="help-text">Models like qwen3 and deepseek-r1 work an answer out before writing it. The reasoning is never put in a draft and is paid for out of its own budget below, so it cannot eat the email. It is much slower — on a CPU-only box expect a minute or two per email instead of a few seconds — and for writing email it rarely reads better, so off is the sensible setting unless you have a GPU. Models that cannot reason ignore this.</div>
+            <div className="strong small row gap-8">Let reasoning models think
+              {data.modelCanThink === false && <Badge kind="warning">{f.model} cannot think</Badge>}
+              {data.modelCanThink === true && <Badge kind="success">{f.model} can think</Badge>}
+            </div>
+            <div className="help-text">Models like qwen3 and deepseek-r1 work an answer out before writing it. The reasoning is never put in a draft and is paid for out of its own budget below, so it cannot eat the email. It is much slower — on a CPU-only box expect a minute or two per email instead of a few seconds — and for writing email it rarely reads better, so off is the sensible setting unless you have a GPU. When it is on and the model can reason, the working-out streams into the page everywhere the assistant writes: the composer, a thread summary, quick replies, templates and the playground below. One-line inbox summaries never think — they are not worth a reasoning budget. A model that cannot reason ignores this setting, which is why the badge above says which you have.</div>
           </div>
         </div>
         {f.allowThinking && (

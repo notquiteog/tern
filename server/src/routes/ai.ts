@@ -3,7 +3,7 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults } from '../ai/llm.js';
+import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults } from '../ai/llm.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
@@ -42,6 +42,10 @@ aiRouter.get('/status', async (req, res) => {
     res.json({ settings: { enabled: s.enabled, model: s.model, provider: s.provider }, health: { ok: health.ok, error: health.ok ? undefined : 'not reachable' }, modelInstalled, models: [], loaded: [], curated: [], tiers: [] });
     return;
   }
+  // Whether the chosen model can reason at all. Turning "let reasoning models
+  // think" on for a model that cannot is the usual reason someone sees no
+  // working-out and assumes the streamer is broken.
+  const canThink = health.ok && s.provider === 'ollama' ? await modelCanThink(s.baseUrl, s.model) : null;
   const { apiKey, ...safe } = s;
   res.json({
     settings: { ...safe, hasApiKey: Boolean(apiKey) },
@@ -49,6 +53,7 @@ aiRouter.get('/status', async (req, res) => {
     models,
     loaded,
     modelInstalled,
+    modelCanThink: canThink,
     recommended: recommendModel(config.totalMemBytes),
     tiers: MODEL_TIERS,
     curated: CURATED_MODELS,

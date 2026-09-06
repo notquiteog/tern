@@ -29,7 +29,23 @@ Nothing leaves your server except the mail itself.
   and drafts shown in the conversation they belong to.
 - Clean, modern interface (monochrome "Ink" over a barely moving "Mist" by
   default) with light, dark and auto themes, eighteen colour palettes and
-  fifteen WebGL2 shader backgrounds; works on phones and desktops.
+  fifteen WebGL2 shader backgrounds that follow the cursor, warm and cool
+  with the hour, and pick up the colour of the category being read; works on
+  phones and desktops.
+- Two ways to read a list: the dense **List** view, or **Cards** with room
+  for the summary, the people and the attachments. On a phone, swipe a
+  conversation right to archive it or left to delete it.
+- Everything the list can tell you about a sender at a glance: a **verified
+  brand** tick where the domain publishes a BIMI logo and passes DMARC, a
+  lock on end-to-end encrypted threads, and a shield on bulk mail whose
+  remote images and tracking pixels are held back.
+- **Optional, all off until you ask for them:** smart categories (Primary,
+  Transactions, Updates, Promotions, worked out from the headers as mail
+  arrives — never from a model, and never for someone in your contacts),
+  stacking a run of messages from one sender into one row, and a one-line
+  **AI summary** above each conversation.
+- The search box is an omnibox: every operator you type becomes a chip you
+  can take off one at a time, and Backspace in an empty box removes the last.
 - Settings split in two: **Settings** is about you (profile, mailboxes,
   mail apps, appearance, security, encryption); **Admin** is the workspace
   (users and sign-up, the mail server, the AI model, branding, audit log).
@@ -49,6 +65,10 @@ Nothing leaves your server except the mail itself.
   automatic display for people in your contacts; HTML mail renders in a
   sandboxed frame, and a link whose text names one site but leads to
   another asks before it opens.
+- A **burner address** gets its own place in the sidebar, directly under
+  Inbox: everything that arrived at the masked address, with its own unread
+  count. Recipients are encrypted at rest, so it is matched on the blind
+  index and only ever on the exact address.
 - **Out-of-office auto-reply** per mailbox: a message, an optional date
   range, once per sender per interval, never to lists or other robots.
 - Live updates over JMAP push, so new mail appears without reloading; the
@@ -91,10 +111,23 @@ Nothing leaves your server except the mail itself.
   the opening ones, where the dates and figures were agreed — so a reply
   twenty messages deep still quotes what was actually said.
 - **Reasoning models** (qwen3, deepseek-r1) are supported: the working-out
-  is streamed into the page while it happens, so a slow generation shows its
-  progress rather than a spinner; it never reaches a draft, it is paid for
-  out of its own budget so it cannot leave the email empty, and a model that
-  spends it all is asked again without it rather than failing.
+  is streamed into the page while it happens — in the composer, a thread
+  summary, quick replies, templates and the admin playground alike — so a
+  slow generation shows its progress rather than a spinner; it never reaches
+  a draft, it is paid for out of its own budget so it cannot leave the email
+  empty, and a model that spends it all is asked again without it rather than
+  failing. Admin → AI model says whether the chosen model can reason at all,
+  because turning the setting on for one that cannot is the usual reason no
+  working-out appears. One-line inbox summaries never think, whatever the
+  setting says: they are not worth a reasoning budget.
+- **One model at a time.** Choosing a different model unloads the previous
+  one instead of leaving it to time out beside its replacement, which on a
+  4.5 GB box is the difference between working and being killed. Changing
+  "keep model loaded" reaches the model already in memory, so a `-1` set once
+  is no longer permanent. Admin → AI model shows what is resident, what it is
+  holding and when it expires, with an **Unload** button, and deleting a
+  model frees its memory first and reports a refusal rather than failing
+  quietly.
 - Any OpenAI-compatible endpoint works too.
 
 **Accounts and admin**

@@ -99,15 +99,28 @@ export default function MailPage() {
   // back at once; a few missing ones are written per request, so the list
   // fills in over a few passes rather than queueing fifty generations.
   const summaryKeys = prefs.summaries ? threads.map((t) => t.key) : [];
+  // How many rows had an answer last time we looked. A round that settles
+  // nothing new means the model is unreachable or refusing, and asking again
+  // every four seconds would keep a local model busy for the rest of the
+  // session; two such rounds and the polling stops.
+  const summaryProgress = useRef({ settled: -1, idle: 0 });
   const { data: summaryData } = useQuery({
     queryKey: ['summaries', summaryKeys.join(',')],
     queryFn: () => api.post<{ summaries: Record<string, string>; enabled: boolean }>('/api/ai/summaries', { keys: summaryKeys, generate: true }),
     enabled: summaryKeys.length > 0,
-    // Keep asking while there are still rows without a line, then stop.
     refetchInterval: (q) => {
-      const got = q.state.data?.summaries ?? {};
+      const got = q.state.data?.summaries;
       if (q.state.data && !q.state.data.enabled) return false;
-      return summaryKeys.some((k) => !got[k]) ? 4000 : false;
+      if (!got) return 4000;
+      // A key present with an empty string is a conversation the model
+      // declined to summarise. That is an answer, not a gap: asking again
+      // would only get the same nothing.
+      const settled = summaryKeys.filter((k) => got[k] !== undefined).length;
+      const p = summaryProgress.current;
+      p.idle = settled > p.settled ? 0 : p.idle + 1;
+      p.settled = settled;
+      if (settled >= summaryKeys.length) return false;
+      return p.idle >= 2 ? false : 4000;
     },
     staleTime: 60_000,
   });
@@ -116,7 +129,7 @@ export default function MailPage() {
   const mailboxName = box.startsWith('mailbox:') ? mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === box)?.name ?? 'Label' : BOX_TITLES[box] ?? box;
   const roleOf = useMemo(() => new Map(mailboxes.map((m) => [`${m.account_id}:${m.jmap_id}`, m])), [mailboxes]);
 
-  useEffect(() => { setSelected(new Set()); setFocus(0); setOpenStacks(new Set()); }, [box, q, page, accountsParam, filter, cat]);
+  useEffect(() => { setSelected(new Set()); setFocus(0); setOpenStacks(new Set()); summaryProgress.current = { settled: -1, idle: 0 }; }, [box, q, page, accountsParam, filter, cat]);
   // The background picks up the mood of whatever is being read. Only while
   // the tabs are actually in use; otherwise the inbox is one thing and the
   // colour behind it should not keep changing.
