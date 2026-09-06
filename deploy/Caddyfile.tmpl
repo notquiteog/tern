@@ -2,6 +2,9 @@
 # are substituted at install time; edit the template and re-run ./install.sh.
 {
 	email ${ACME_EMAIL}
+	# Bound the wait for open connections on stop/reload; otherwise a lingering
+	# client keeps Caddy alive until podman gives up and SIGKILLs it.
+	grace_period 5s
 	${CADDY_GLOBAL}
 }
 

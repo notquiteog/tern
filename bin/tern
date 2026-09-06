@@ -187,21 +187,30 @@ else: print("ok")' $SUBNETS)"
     SW="http://127.0.0.1:${STALWART_HTTP_PORT:-8080}"
     api() { curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "$SW/jmap" -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}"; }
     CERT_DIR="/data/caddy/certificates"
-    CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
-    KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+    CADDY="$(podman ps -q --filter label=com.docker.compose.service=caddy --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1)"
+    # Contents of the first file matching the -path glob under Caddy's data
+    # volume. Read through the running Caddy container (busybox has find and
+    # cat); when it is not running, use its image, which is already local, so
+    # nothing is ever pulled here.
+    caddy_file() {
+      local script="cat \$(find $CERT_DIR -path '$1' | head -1) 2>/dev/null"
+      if [ -n "$CADDY" ]; then podman exec "$CADDY" sh -c "$script" 2>/dev/null || true
+      else podman run --rm --pull=never -v tern_tern-caddy-data:/data:ro docker.io/library/caddy:2-alpine sh -c "$script" 2>/dev/null || true; fi
+    }
+    CRT="$(caddy_file "*/$STALWART_HOST/$STALWART_HOST.crt")"
+    KEY="$(caddy_file "*/$STALWART_HOST/$STALWART_HOST.key")"
     if [ -z "$CRT" ] || [ -z "$KEY" ]; then
       # Caddy asks for the certificate when it starts and then retries with a
       # growing backoff, so a name pointed here after that stays without one
       # for hours. Restart Caddy so it tries again now, then wait for the file.
       echo "No certificate for $STALWART_HOST in Caddy yet; restarting Caddy so it asks for one now…"
-      CADDY="$(podman ps -q --filter label=com.docker.compose.service=caddy --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1)"
       if [ -n "$CADDY" ]; then podman restart "$CADDY" >/dev/null; else compose restart caddy >/dev/null 2>&1 || true; fi
       for i in $(seq 1 45); do
         sleep 2
-        CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
+        CRT="$(caddy_file "*/$STALWART_HOST/$STALWART_HOST.crt")"
         [ -n "$CRT" ] && break
       done
-      KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+      KEY="$(caddy_file "*/$STALWART_HOST/$STALWART_HOST.key")"
       if [ -z "$CRT" ] || [ -z "$KEY" ]; then
         echo "Still no certificate for $STALWART_HOST after 90 s. Caddy's log lines about it:" >&2
         { [ -n "$CADDY" ] && podman logs --since 3m "$CADDY" 2>&1 || compose logs --tail=200 caddy 2>&1; } | grep -i "$STALWART_HOST" | grep -iv '"level":"info"' | tail -5 >&2

@@ -432,12 +432,12 @@ fi
 # ---------- 8. systemd ----------
 step "8/8 Start on boot"
 if have systemctl && [ -d /etc/systemd/system ]; then
-  render deploy/tern.service.tmpl > /etc/systemd/system/tern.service
+  render_template deploy/tern.service.tmpl > /etc/systemd/system/tern.service
   systemctl daemon-reload
   systemctl enable tern.service >/dev/null 2>&1 && ok "tern.service enabled (starts the stack at boot)"
   if [ "$STALWART_ENABLED" = 1 ]; then
-    render deploy/tern-certsync.service.tmpl > /etc/systemd/system/tern-certsync.service
-    render deploy/tern-certsync.timer.tmpl > /etc/systemd/system/tern-certsync.timer
+    render_template deploy/tern-certsync.service.tmpl > /etc/systemd/system/tern-certsync.service
+    render_template deploy/tern-certsync.timer.tmpl > /etc/systemd/system/tern-certsync.timer
     systemctl daemon-reload; systemctl enable --now tern-certsync.timer >/dev/null 2>&1 && ok "daily certificate sync timer enabled"
   fi
 else
