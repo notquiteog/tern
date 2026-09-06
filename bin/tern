@@ -7,7 +7,7 @@
 #   ./bin/tern cert-sync             copy Caddy's certificate for the mail host into Stalwart
 #   ./bin/tern stalwart-api '<methodCalls json>'   raw JMAP management call as the Stalwart admin
 #   ./bin/tern stalwart-unban [ip…]  lift Stalwart's automatic IP bans (all, or the given addresses) and restart it
-#   ./bin/tern stalwart-trust-proxy  never ban our own containers; trust X-Forwarded-For from them
+#   ./bin/tern stalwart-trust-proxy  never ban our own containers (Caddy proxies every browser request)
 #   ./bin/tern backup [dir]          dump the database and the .env into a dated tarball
 #   ./bin/tern restore <tarball>     restore a backup made by `backup`
 #   ./bin/tern update                same as ./update.sh
@@ -24,10 +24,17 @@ export COMPOSE_FILE="${COMPOSE_FILE:-compose.yml}"
 compose() { podman-compose --env-file "$ROOT/.env" "$@"; }
 . "$ROOT/deploy/lib.sh"
 # One JMAP management call to the bundled Stalwart, as its admin. Usage: sw_call '<methodCalls json>'
-sw_call() { curl -sS -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}"; }
+# If Stalwart was told to expect the PROXY protocol on this network (an
+# earlier version of stalwart-trust-proxy did that by mistake), plain HTTP is
+# reset; curl can send the PROXY header itself, so retry that way.
+sw_call() {
+  local body="{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}" out
+  out="$(curl -sS -m 20 -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" -d "$body" 2>/dev/null)" && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  curl -sS -m 20 --haproxy-protocol -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" -H 'Content-Type: application/json' "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/jmap" -d "$body"
+}
 stalwart_container() { podman ps -q --filter label=com.docker.compose.service=stalwart --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1; }
 # Wait until Stalwart's management API answers (after a restart it takes a few seconds).
-sw_wait() { local i; for i in $(seq 1 30); do curl -sf -m 5 -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" "http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/api/account" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
+sw_wait() { local i u="http://127.0.0.1:${STALWART_HTTP_PORT:-8080}/api/account"; for i in $(seq 1 30); do { curl -sf -m 5 -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" "$u" || curl -sf -m 5 --haproxy-protocol -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" "$u"; } >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
@@ -46,10 +53,11 @@ case "$cmd" in
     # Caddy proxies every browser request to Stalwart, so without this one
     # visitor's failed logins (or a bot probing /admin) get Caddy's own
     # address banned and the admin panel answers 502 for everyone. Allow-list
-    # the container network and trust X-Forwarded-For from it, so bans land
-    # on the real client instead. Idempotent; install.sh runs it.
+    # the container network so our own containers are never banned.
+    # Idempotent; install.sh and update.sh run it.
     [ "${STALWART_ENABLED:-0}" = 1 ] || { echo "Stalwart is not enabled."; exit 0; }
     command -v python3 >/dev/null || { echo "python3 is required for this command." >&2; exit 1; }
+    sw_wait || { echo "Stalwart is not answering on port ${STALWART_HTTP_PORT:-8080}; see ./bin/tern logs stalwart" >&2; exit 1; }
     SUBNETS="$(stack_subnets | tr '\n' ' ')"; [ -n "${SUBNETS// }" ] || SUBNETS="10.89.0.0/16"
     ALLOWED="$(sw_call '[["x:AllowedIp/get",{"ids":null,"properties":["address"]},"c1"]]')"
     for net in $SUBNETS; do
@@ -57,10 +65,20 @@ case "$cmd" in
         sw_call "[[\"x:AllowedIp/set\",{\"create\":{\"a\":{\"address\":\"$net\",\"reason\":\"Tern containers (Caddy, app)\"}}},\"c1\"]]" | grep -q '"created"' || { echo "could not allow-list $net" >&2; exit 1; }
       fi
     done
+    echo "Stalwart never bans: $SUBNETS"
+    # An earlier version put these networks into Stalwart's PROXY-protocol
+    # trust list, which makes it reject plain HTTP from them. Take them out
+    # again; the change only applies after a restart.
     CUR="$(sw_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["proxyTrustedNetworks"]},"c1"]]')"
-    MERGED="$(printf '%s' "$CUR" | python3 -c 'import json,sys; m=(json.load(sys.stdin)["methodResponses"][0][1]["list"][0].get("proxyTrustedNetworks") or {}); m.update({n: True for n in sys.argv[1:]}); print(json.dumps(m))' $SUBNETS)"
-    sw_call "[[\"x:SystemSettings/set\",{\"update\":{\"singleton\":{\"proxyTrustedNetworks\":$MERGED}}},\"c1\"]]" | grep -q '"updated"' || { echo "could not set the trusted proxy networks" >&2; exit 1; }
-    echo "Stalwart never bans and trusts X-Forwarded-For from: $SUBNETS" ;;
+    FIXED="$(printf '%s' "$CUR" | python3 -c 'import json,sys; m=(json.load(sys.stdin)["methodResponses"][0][1]["list"][0].get("proxyTrustedNetworks") or {}); drop=set(sys.argv[1:])|{"10.89.0.0/16"}; n={k:v for k,v in m.items() if k not in drop}; print(json.dumps(n) if n != m else "")' $SUBNETS)"
+    if [ -n "$FIXED" ]; then
+      sw_call "[[\"x:SystemSettings/set\",{\"update\":{\"singleton\":{\"proxyTrustedNetworks\":$FIXED}}},\"c1\"]]" | grep -q '"updated"' || { echo "could not clear the PROXY-protocol networks" >&2; exit 1; }
+      CID="$(stalwart_container)"
+      echo "Removed our networks from Stalwart's PROXY-protocol list; restarting Stalwart so plain HTTP works again…"
+      if [ -n "$CID" ]; then podman restart "$CID" >/dev/null; else compose restart stalwart >/dev/null; fi
+      sw_wait || { echo "Stalwart did not come back within 60 s; see ./bin/tern logs stalwart" >&2; exit 1; }
+      echo "Stalwart is back."
+    fi ;;
   stalwart-unban)
     # Stalwart keeps banned addresses in memory until it restarts, so
     # removing the entries alone is not enough.

@@ -76,7 +76,7 @@ on purpose.
   mail still flows: Stalwart has auto-banned Caddy's container address after
   someone's failed logins or a bot probing the panel (`Blocked IP address` in
   `./bin/tern logs stalwart`). Run `./bin/tern stalwart-trust-proxy` once so
-  our own containers are never banned and bans land on the real client, then
+  our own containers are never banned, then
   `./bin/tern stalwart-unban` to lift the existing bans and restart Stalwart.
 - Lost the admin password: set `STALWART_RECOVERY_MODE=1` and
   `STALWART_RECOVERY_ADMIN=recovery:newpass` in `.env`, `./bin/tern up`,
