@@ -11,6 +11,10 @@ import { createChallenge, createDecoyChallenge, encryptStream, getUserKeys, veri
 import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../errors.js';
 import { authSettings } from './users.js';
+import { listCredentials, type CredentialRow } from './passkeys.js';
+import { newCeremony, rpId, verifyAssertion } from '../services/webauthn.js';
+import { openDrafts, openEmails, openReviews } from '../services/mailVault.js';
+import { open } from '../services/vault.js';
 import { clearFailures as powClear, issueChallenge, recordFailure as powFail, verifySolution, type PowPurpose } from '../pow.js';
 import { assertMailboxFree, provisionMailbox } from '../services/provision.js';
 
@@ -72,7 +76,35 @@ authRouter.get('/invite/:token', async (req, res) => {
   res.json({ valid: true, role: inv.role, note: inv.note, expiresAt: inv.expires_at });
 });
 
-const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional(), pgpChallengeId: z.string().max(64).optional(), pgpResponse: z.string().max(200).optional(), pow: powSchema.optional() });
+const assertionSchema = z.object({
+  ceremonyId: z.string().max(64),
+  credentialId: z.string().max(1400),
+  clientDataJSON: z.string().max(8000),
+  authenticatorData: z.string().max(8000),
+  signature: z.string().max(4000),
+  userHandle: z.string().max(200).nullish(),
+});
+
+// Checks one assertion against the credentials a user actually holds, and
+// rolls the signature counter forward. Returns the credential that answered,
+// or null when nothing matched.
+async function acceptAssertion(userId: number, purpose: 'login' | 'reauth', body: z.infer<typeof assertionSchema>): Promise<CredentialRow | null> {
+  const creds = await listCredentials(userId);
+  const cred = creds.find((c) => c.credential_id === body.credentialId);
+  if (!cred) return null;
+  const { result } = verifyAssertion({ ceremonyId: body.ceremonyId, purpose, clientDataJSON: body.clientDataJSON, authenticatorData: body.authenticatorData, signature: body.signature, stored: cred });
+  if (result.clonedWarning) {
+    // Two authenticators answering with one key means the credential has
+    // been copied. Refuse it and say so in the log rather than let either
+    // one in.
+    await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.passkey_cloned',$2)`, [userId, JSON.stringify({ name: cred.name })]);
+    throw unauthorized('That passkey was not accepted');
+  }
+  await query('UPDATE webauthn_credentials SET sign_count=$2, last_used_at=now(), backed_up=$3, user_verified = user_verified OR $4 WHERE id=$1', [cred.id, result.signCount, result.backedUp, result.userVerified]);
+  return { ...cred, user_verified: cred.user_verified || result.userVerified };
+}
+
+const loginSchema = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200), code: z.string().max(32).optional(), pgpChallengeId: z.string().max(64).optional(), pgpResponse: z.string().max(200).optional(), passkey: assertionSchema.optional(), pow: powSchema.optional() });
 
 // One response for "no such user", "wrong password" and "disabled", and
 // bcrypt-equivalent work in every branch, so the login form cannot be used
@@ -101,10 +133,16 @@ authRouter.post('/login', async (req, res) => {
   if (user.totp_enabled && user.totp_secret) methods.push('totp');
   const keys = await getUserKeys(user.id);
   if (keys.publicKey && keys.auth !== 'off') methods.push('pgp');
+  const passkeys = await listCredentials(user.id);
+  if (passkeys.length) methods.push('passkey');
   let via = 'password';
   if (methods.length) {
     let passed = false;
     const code = body.code?.trim();
+    if (body.passkey && methods.includes('passkey')) {
+      const cred = await acceptAssertion(user.id, 'login', body.passkey);
+      if (cred) { passed = true; via = 'passkey'; }
+    }
     if (code) {
       if (methods.includes('totp')) {
         const step = matchTotp(user.totp_secret!, code, user.totp_last_step ?? null);
@@ -118,13 +156,21 @@ authRouter.post('/login', async (req, res) => {
     }
     if (!passed && body.pgpResponse && methods.includes('pgp')) { passed = verifyChallenge(body.pgpChallengeId, body.pgpResponse, 'login') === user.id; if (passed) via = 'pgp'; }
     if (!passed) {
-      if (code || body.pgpResponse) {
+      if (code || body.pgpResponse || body.passkey) {
         recordLoginFailure(key); powFail('login', username);
         await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.login_failed',$2)`, [user.id, JSON.stringify({ reason: 'second_factor' })]);
-        throw unauthorized('That code was not accepted');
+        throw unauthorized(body.passkey ? 'That passkey was not accepted' : 'That code was not accepted');
       }
       const pgp = methods.includes('pgp') ? await createChallenge(user.id, keys.publicKey!, 'login') : null;
-      res.json({ mfaRequired: true, methods, pgp: pgp ? { challengeId: pgp.id, challenge: pgp.armored, fingerprint: keys.fingerprint } : null });
+      // The passkey challenge names the credentials this account holds, which
+      // is safe: the password has already been checked, so the list is not a
+      // way for a stranger to learn anything about the account.
+      const wa = methods.includes('passkey') ? newCeremony('login', user.id) : null;
+      res.json({
+        mfaRequired: true, methods,
+        pgp: pgp ? { challengeId: pgp.id, challenge: pgp.armored, fingerprint: keys.fingerprint } : null,
+        passkey: wa ? { ceremonyId: wa.id, challenge: wa.challenge, rpId: rpId(), allowCredentials: passkeys.map((c) => ({ type: 'public-key', id: c.credential_id, transports: c.transports })) } : null,
+      });
       return;
     }
   }
@@ -163,6 +209,43 @@ authRouter.post('/pgp/finish', async (req, res) => {
   setSessionCookie(res, sid);
   await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
   await query(`INSERT INTO audit_log (user_id, action) VALUES ($1,'auth.pgp_login')`, [user.id]);
+  res.json({ user: publicUser(user) });
+});
+
+// Sign in with a passkey alone. No username is asked for and none is sent:
+// the browser picks a discoverable credential and the authenticator returns
+// the account it belongs to in the user handle, so this exchange cannot be
+// used to find out whether a name exists. Proof of work applies as to any
+// sign-in attempt, bound to the empty username.
+authRouter.post('/passkey/start', async (req, res) => {
+  const b = parse(z.object({ pow: powSchema.optional() }), req.body);
+  verifySolution('login', '', b.pow);
+  const { id, challenge } = newCeremony('login', null);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ceremonyId: id, challenge, rpId: rpId(), userVerification: 'required' });
+});
+
+authRouter.post('/passkey/finish', async (req, res) => {
+  const b = parse(assertionSchema, req.body);
+  const handle = b.userHandle ? Buffer.from(b.userHandle, 'base64url').toString('utf8') : '';
+  const uid = /^tern:\d+$/.test(handle) ? Number(handle.slice(5)) : 0;
+  // A passkey with no user handle is not discoverable, so it cannot be the
+  // whole sign-in; it is still usable as a second factor after a password.
+  if (!uid) throw unauthorized('That passkey cannot sign in on its own. Use your password, then the passkey.');
+  const user = await one<UserRow>('SELECT * FROM users WHERE id=$1', [uid]);
+  const key = sha256hex(`${user?.username ?? String(uid)}|${clientIp(req)}`);
+  checkLoginAllowed(key);
+  const fail = () => { recordLoginFailure(key); powFail('login', ''); return unauthorized('That passkey was not accepted'); };
+  if (!user || user.disabled || (user as any).passkey_auth !== 'passwordless') throw fail();
+  const cred = await acceptAssertion(user.id, 'login', b);
+  // Only a passkey that verified the person replaces the password. One that
+  // merely proved presence stops here.
+  if (!cred || !cred.user_verified) throw fail();
+  clearLoginFailures(key); powClear('login', '');
+  const sid = await createSession(user.id, req.headers['user-agent']);
+  setSessionCookie(res, sid);
+  await query('UPDATE users SET last_login_at=now() WHERE id=$1', [user.id]);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'auth.login',$2)`, [user.id, JSON.stringify({ via: 'passkey', client: String(req.headers['user-agent'] ?? '').slice(0, 120) })]);
   res.json({ user: publicUser(user) });
 });
 
@@ -296,6 +379,11 @@ const EXPORT_SECTIONS: { name: string; sql: string }[] = [
   { name: 'emails', sql: 'SELECT e.id, e.account_id, e.jmap_id, e.thread_id, e.mailbox_ids, e.keywords, e.size, e.received_at, e.sent_at, e.message_id, e.in_reply_to, e.references_ids, e.from_addr, e.to_addr, e.cc_addr, e.bcc_addr, e.reply_to, e.subject, e.preview, e.has_attachment, e.body_text, e.body_html, e.attachments FROM emails e JOIN accounts a ON a.id=e.account_id WHERE a.user_id=$1' },
 ];
 
+function safeJson(text: string | null): unknown {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
 async function* exportChunks(uid: number, user: UserRow): AsyncGenerator<string> {
   const avatar = await one<{ avatar: Buffer | null; avatar_type: string | null }>('SELECT avatar, avatar_type FROM users WHERE id=$1', [uid]);
   const profile = { ...publicUser(user), avatar: avatar?.avatar ? `data:${avatar.avatar_type};base64,${avatar.avatar.toString('base64')}` : null };
@@ -306,7 +394,14 @@ async function* exportChunks(uid: number, user: UserRow): AsyncGenerator<string>
     for (;;) {
       const rows = await query<any>(`SELECT * FROM (${section.sql}) t WHERE (t.id::text ~ '^[0-9]+$' AND t.id::bigint > $2) OR t.id::text !~ '^[0-9]+$' ORDER BY 1 LIMIT 500`, [uid, last]);
       if (!rows.length) break;
-      yield (first ? '' : ',') + rows.map((r) => JSON.stringify(r)).join(',');
+      // The mail cache and drafts are ciphertext at rest; an export of your
+      // own data is readable, which is the point of it.
+      const opened = section.name === 'emails' ? await openEmails(uid, rows)
+        : section.name === 'drafts' ? await openDrafts(uid, rows)
+        : section.name === 'review_queue' ? await openReviews(uid, rows)
+        : section.name === 'outbox' ? await Promise.all(rows.map(async (r: any) => ({ ...r, payload: safeJson(await open(uid, r.payload)) })))
+        : rows;
+      yield (first ? '' : ',') + opened.map((r) => JSON.stringify(r)).join(',');
       first = false;
       const numeric = rows.filter((r) => /^[0-9]+$/.test(String(r.id)));
       if (numeric.length < rows.length || rows.length < 500) break;

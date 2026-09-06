@@ -27,6 +27,7 @@ import { stalwartRouter } from './routes/stalwart.js';
 import { avatarsRouter } from './routes/avatars.js';
 import { brandRouter, bimiRouter } from './routes/brand.js';
 import { pgpRouter } from './routes/pgp.js';
+import { passkeysRouter } from './routes/passkeys.js';
 
 const log = logger('http');
 
@@ -89,6 +90,7 @@ export function createApp(): express.Express {
   app.use('/api/avatars', avatarsRouter);
   app.use('/api/brand', brandRouter);
   app.use('/api/pgp', pgpRouter);
+  app.use('/api/passkeys', passkeysRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/push', pushRouter);

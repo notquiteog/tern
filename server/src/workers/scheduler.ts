@@ -15,6 +15,11 @@ import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
 import { replyRecipients, replySubject } from '../services/reply.js';
+import { runRetention } from '../services/retention.js';
+import { pushDirtyDrafts } from '../services/draftSync.js';
+import { openEmail, openEmails, openReview, sealReview } from '../services/mailVault.js';
+import { open, seal } from '../services/vault.js';
+import { backfillBatch, backfillDraftsAndOutbox, backfillPending } from '../services/backfill.js';
 
 const log = logger('scheduler');
 let timer: NodeJS.Timeout | null = null;
@@ -35,7 +40,10 @@ export async function tick(): Promise<void> {
   ticking = true;
   try {
     await housekeeping();
+    await encryptCache();
+    await retention();
     await processSnoozes();
+    await syncDrafts();
     await processOutbox();
     await processEnrollments();
     await processAiJobs();
@@ -71,7 +79,7 @@ export async function housekeeping(force = false): Promise<Record<string, number
   const jobs: [string, string][] = [
     // Staged files live a day unless a draft still refers to them, as an
     // attachment or as an image inserted into the body.
-    ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR d.body_html LIKE '%/api/mail/uploads/' || u.id || '?%' OR d.body_html LIKE '%/api/mail/uploads/' || u.id || '"%') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND o.payload::text LIKE '%/uploads/' || u.id || '%')`],
+    ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR u.id = ANY(d.inline_upload_ids)) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND u.id = ANY(o.upload_ids))`],
     ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - interval '7 days'`],
     ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - interval '30 days'`],
     ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '30 days'`],
@@ -85,6 +93,60 @@ export async function housekeeping(force = false): Promise<Record<string, number
   }
   if (Object.values(counts).some((n) => n > 0)) log.info('housekeeping', counts);
   return counts;
+}
+
+// ---------- Encrypting the cache ----------
+// An install upgrading from an unencrypted cache converts a batch on each
+// tick until nothing is left, then stops asking. Reads work throughout: a
+// row that has not been converted is plaintext and the vault passes it
+// through, so there is no moment when mail is unavailable.
+let backfillDone = false;
+let backfillStarted = false;
+async function encryptCache(): Promise<void> {
+  if (backfillDone) return;
+  try {
+    if (!backfillStarted) {
+      backfillStarted = true;
+      const pending = await backfillPending();
+      if (pending) log.info(`encrypting the mail cache: ${pending} messages to convert`);
+      await backfillDraftsAndOutbox();
+    }
+    const p = await backfillBatch();
+    if (p.done) log.info(`encrypted ${p.done} messages, ${p.remaining} to go`);
+    if (p.finished) { backfillDone = true; log.info('the mail cache is fully encrypted'); }
+  } catch (e) {
+    log.error('cache encryption pass failed', { err: (e as Error).message });
+  }
+}
+
+// ---------- Emptying Trash and Junk ----------
+// Trash and Junk empty themselves after the account's window. Hourly is
+// often enough for a daily job and means a box that was off catches up soon
+// after it starts; the work itself is skipped per account until 20 hours
+// have passed since its last run.
+let lastRetention = 0;
+async function retention(): Promise<void> {
+  if (Date.now() - lastRetention < 3600_000) return;
+  lastRetention = Date.now();
+  try {
+    const r = await runRetention();
+    if (r.trash || r.junk) log.info('retention', { ...r });
+  } catch (e) {
+    log.error('retention failed', { err: (e as Error).message });
+  }
+}
+
+// ---------- Drafts to the mail server ----------
+// Drafts saved here are mirrored into the mailbox's Drafts folder so other
+// clients see them. Autosave marks a draft dirty on every save; the push
+// waits until it has been quiet, so a burst of typing is one message.
+async function syncDrafts(): Promise<void> {
+  try {
+    const r = await pushDirtyDrafts();
+    if (r.pushed || r.failed) log.debug('draft sync', { ...r });
+  } catch (e) {
+    log.error('draft sync failed', { err: (e as Error).message });
+  }
 }
 
 // ---------- Snoozes ----------
@@ -120,7 +182,9 @@ async function processOutbox(): Promise<void> {
     if (!item) continue;
     const acc = await getAccount(item.account_id);
     if (!acc) { await query(`UPDATE outbox SET status='failed', error='Account no longer exists' WHERE id=$1`, [id]); continue; }
-    const payload: ComposeInput & { humanize?: boolean; undoWindow?: boolean } = item.payload;
+    const raw = await open(item.user_id, item.payload);
+    let payload: ComposeInput & { humanize?: boolean; undoWindow?: boolean };
+    try { payload = JSON.parse(raw ?? '{}'); } catch { await query(`UPDATE outbox SET status='failed', error='The queued message could not be read' WHERE id=$1`, [id]); continue; }
     if (payload.humanize) {
       // The person asked for a natural gap: respect the account's pacing and
       // window rather than firing at the exact second.
@@ -205,7 +269,7 @@ async function runEnrollment(enr: any): Promise<void> {
   if (!acc || !acc.enabled) { await query(`UPDATE enrollments SET next_run_at = now() + interval '1 hour', error='Sending account is paused', updated_at=now() WHERE id=$1`, [enr.id]); return; }
 
   // Content: an approved review, or the template, or the LLM.
-  const approved = await one<any>(`SELECT * FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='approved' ORDER BY decided_at DESC LIMIT 1`, [enr.id, step.id]);
+  const approved = await openReview(seq.user_id, await one<any>(`SELECT * FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='approved' ORDER BY decided_at DESC LIMIT 1`, [enr.id, step.id]));
   let subject: string, html: string;
   const rendered = await renderStep(acc, seq, step, contact, enr);
   if (approved) {
@@ -215,9 +279,10 @@ async function runEnrollment(enr: any): Promise<void> {
     subject = gen.subject; html = gen.html;
     if (seq.ai_mode === 'review') {
       await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
+      const sealedReview = await sealReview(seq.user_id, { subject, body_html: html });
       await query(
         `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [seq.user_id, enr.id, acc.id, contact.id, step.id, subject, html, gen.model],
+        [seq.user_id, enr.id, acc.id, contact.id, step.id, sealedReview.subject, sealedReview.body_html, gen.model],
       );
       await query(`UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1`, [enr.id]);
       const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
@@ -236,9 +301,10 @@ async function runEnrollment(enr: any): Promise<void> {
     if (hits.length) {
       const reason = `Held for review: ${describeHits(hits)}`;
       await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
+      const heldReview = await sealReview(seq.user_id, { subject, body_html: html });
       await query(
         `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model, hold_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [seq.user_id, enr.id, acc.id, contact.id, step.id, subject, html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason],
+        [seq.user_id, enr.id, acc.id, contact.id, step.id, heldReview.subject, heldReview.body_html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason],
       );
       await query(`UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1`, [enr.id]);
       const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
@@ -355,7 +421,7 @@ async function processAiJobs(): Promise<void> {
 
 export async function generateResponderReply(responder: any, acc: AccountRow, email: any): Promise<{ subject: string; html: string; text: string; to: { name: string | null; email: string }[]; model: string }> {
   const settings = await getAiSettings();
-  const thread = await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]);
+  const thread = await openEmails(acc.user_id, await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]));
   const contact = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, String(email.from_addr?.[0]?.email ?? '').toLowerCase()]);
   const messages = buildMessages({
     mode: 'reply',
@@ -389,11 +455,13 @@ async function runResponderJob(job: any): Promise<string> {
   if (!responder) return 'responder gone or disabled';
   const acc = await getAccount(p.accountId);
   if (!acc || !acc.enabled) return 'account unavailable';
-  const email = await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id=$2', [p.emailDbId, acc.id]);
+  const email = await openEmail(acc.user_id, await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id=$2', [p.emailDbId, acc.id]));
   if (!email) return 'email gone';
-  // Someone may have answered by hand in the meantime.
-  const answered = await one(`SELECT 1 FROM emails WHERE account_id=$1 AND thread_id=$2 AND from_email=$3 AND received_at > $4`, [acc.id, email.thread_id, acc.email.toLowerCase(), email.received_at]);
-  if (answered) return 'already answered';
+  // Someone may have answered by hand in the meantime. The sender is
+  // ciphertext now, so the candidates are opened rather than matched in SQL;
+  // there are only ever a handful later in one thread.
+  const later = await openEmails(acc.user_id, await query<any>('SELECT from_addr FROM emails WHERE account_id=$1 AND thread_id=$2 AND received_at > $3', [acc.id, email.thread_id, email.received_at]));
+  if (later.some((m) => String(m.from_email ?? '') === acc.email.toLowerCase())) return 'already answered';
   const gen = await generateResponderReply(responder, acc, email);
   if (!gen.to.length) return 'no recipient';
   const contact = await one<{ id: number }>('SELECT id FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, gen.to[0].email.toLowerCase()]);
@@ -408,10 +476,11 @@ async function runResponderJob(job: any): Promise<string> {
     return 'draft created';
   }
   if (responder.mode === 'review') {
+    const r = await sealReview(acc.user_id, { subject: gen.subject, body_html: gen.html, to_addr: gen.to, context: (email.body_text || email.preview || '').slice(0, 2000) });
     await query(
       `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context)
        VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11)`,
-      [acc.user_id, acc.id, contact?.id ?? null, gen.subject, gen.html, gen.model, responder.id, email.id, email.thread_id, JSON.stringify(gen.to), (email.body_text || email.preview || '').slice(0, 2000)],
+      [acc.user_id, acc.id, contact?.id ?? null, r.subject, r.body_html, gen.model, responder.id, email.id, email.thread_id, r.to_addr, r.context],
     );
     const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
     publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
@@ -423,10 +492,11 @@ async function runResponderJob(job: any): Promise<string> {
   const hits = findTemplateArtifacts({ subject: gen.subject, html: gen.html });
   if (hits.length) {
     const reason = `Held for review: ${describeHits(hits)}`;
+    const held = await sealReview(acc.user_id, { subject: gen.subject, body_html: gen.html, to_addr: gen.to, context: (email.body_text || email.preview || '').slice(0, 2000) });
     await query(
       `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context, hold_reason)
        VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11,$12)`,
-      [acc.user_id, acc.id, contact?.id ?? null, gen.subject, gen.html, gen.model, responder.id, email.id, email.thread_id, JSON.stringify(gen.to), (email.body_text || email.preview || '').slice(0, 2000), reason],
+      [acc.user_id, acc.id, contact?.id ?? null, held.subject, held.body_html, gen.model, responder.id, email.id, email.thread_id, held.to_addr, held.context, reason],
     );
     const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
     publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });
@@ -436,7 +506,7 @@ async function runResponderJob(job: any): Promise<string> {
   // A reply to someone whose key is on file goes back encrypted.
   const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible' };
   if (responder.humanize) {
-    await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, JSON.stringify({ ...payload, humanize: true })]);
+    await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, await seal(acc.user_id, JSON.stringify({ ...payload, humanize: true }))]);
     return 'queued to send with natural delay';
   }
   await composeAndSend(acc, payload as any);

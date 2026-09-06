@@ -14,6 +14,7 @@ import { isManagedAccount, stalwartAccountFor } from '../services/provision.js';
 import * as sw from '../services/stalwart.js';
 import { assertPublicHost, isInternalOrigin } from '../util/netguard.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { previewRetention, retentionOf, RETENTION_MAX_DAYS, RETENTION_MIN_DAYS } from '../services/retention.js';
 
 export const accountsRouter = Router();
 accountsRouter.use(requireAuth);
@@ -194,6 +195,10 @@ const updateSchema = z.object({
     onlyContacts: z.boolean().default(false),
     intervalDays: z.number().int().min(1).max(60).default(4),
   }).optional(),
+  retentionEnabled: z.boolean().optional(),
+  trashRetentionDays: z.number().int().min(RETENTION_MIN_DAYS).max(RETENTION_MAX_DAYS).optional(),
+  junkRetentionDays: z.number().int().min(RETENTION_MIN_DAYS).max(RETENTION_MAX_DAYS).optional(),
+  syncDrafts: z.boolean().optional(),
 });
 
 accountsRouter.put('/:id', async (req, res) => {
@@ -219,14 +224,30 @@ accountsRouter.put('/:id', async (req, res) => {
        sync_limit=COALESCE($10,sync_limit), enabled=COALESCE($11,enabled), auth_secret_enc=COALESCE($12,auth_secret_enc), auth_user=COALESCE($13,auth_user), session_url=$14,
        pin_origin=COALESCE($15,pin_origin), send_via=COALESCE($16,send_via), smtp=$17,
        api_url = CASE WHEN $18 THEN NULL ELSE api_url END, sync_status = CASE WHEN $18 THEN 'idle' ELSE sync_status END, sync_error = CASE WHEN $18 THEN NULL ELSE sync_error END,
-       voice=COALESCE($19, voice), vacation=COALESCE($20, vacation)
+       voice=COALESCE($19, voice), vacation=COALESCE($20, vacation),
+       retention_enabled=COALESCE($21, retention_enabled), trash_retention_days=COALESCE($22, trash_retention_days),
+       junk_retention_days=COALESCE($23, junk_retention_days), sync_drafts=COALESCE($24, sync_drafts)
      WHERE id=$1`,
     [id, b.name ?? null, b.color ?? null, b.signatureHtml ?? null, b.dailyCap ?? null, b.jitterEnabled ?? null, b.jitterMinS ?? null, b.jitterMaxS ?? null, b.sendWindow ? JSON.stringify(b.sendWindow) : null,
-      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null, b.vacation ? JSON.stringify(b.vacation) : null],
+      b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null, b.vacation ? JSON.stringify(b.vacation) : null,
+      b.retentionEnabled ?? null, b.trashRetentionDays ?? null, b.junkRetentionDays ?? null, b.syncDrafts ?? null],
   );
+  // Turning automatic emptying on or changing its window destroys mail on
+  // the next run, so it is worth an audit entry of its own.
+  if (b.retentionEnabled !== undefined || b.trashRetentionDays !== undefined || b.junkRetentionDays !== undefined) {
+    await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'accounts.retention',$2,$3)`, [req.user!.id, acc.email, JSON.stringify({ enabled: b.retentionEnabled, trashDays: b.trashRetentionDays, junkDays: b.junkRetentionDays })]);
+  }
   if (b.vacation) await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'accounts.vacation',$2,$3)`, [req.user!.id, acc.email, JSON.stringify({ enabled: b.vacation.enabled, start: b.vacation.start, end: b.vacation.end })]);
   if (credsChanged || b.enabled !== undefined) await syncManager.refresh(id);
   res.json({ account: publicAccount((await getUserAccount(req.user!.id, id))!) });
+});
+
+// What automatic emptying would remove on its next run, so the switch can
+// say "12 messages" before anyone turns it on.
+accountsRouter.get('/:id/retention-preview', async (req, res) => {
+  const acc = await getUserAccount(req.user!.id, idParam(req.params.id));
+  if (!acc) throw notFound('Account not found');
+  res.json({ settings: retentionOf(acc), ...(await previewRetention(acc)) });
 });
 
 accountsRouter.delete('/:id', async (req, res) => {

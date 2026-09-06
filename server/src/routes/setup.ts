@@ -12,6 +12,7 @@ import { stalwartEnabled } from '../services/stalwart.js';
 import { verifySolution } from '../pow.js';
 import { getBranding, publicBranding } from '../services/branding.js';
 import { localPartFor, mailboxExists, provisionMailbox, provisioningEnabled } from '../services/provision.js';
+import { passkeysAvailable } from '../services/webauthn.js';
 
 export const setupRouter = Router();
 
@@ -28,7 +29,7 @@ setupRouter.get('/status', async (_req, res) => {
   const fresh = await needsSetup();
   const branding = publicBranding(await getBranding());
   res.setHeader('Cache-Control', 'no-store');
-  if (!fresh) { res.json({ needsSetup: false, registrationOpen: auth.allowRegistration, version: config.version, branding }); return; }
+  if (!fresh) { res.json({ needsSetup: false, registrationOpen: auth.allowRegistration, passkeys: passkeysAvailable().ok, version: config.version, branding }); return; }
   res.json({
     needsSetup: true,
     branding,

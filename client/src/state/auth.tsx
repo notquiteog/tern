@@ -5,7 +5,7 @@ import { api, setUnauthorizedHandler } from '../api';
 export interface User { id: number; username: string; display_name: string; role: 'admin' | 'member'; totp_enabled: boolean; prefs: Record<string, any>; created_at: string; last_login_at: string | null; avatar_version: number | null; pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless' }
 export interface Branding { name: string; logo: string | null; version: number }
 const DEFAULT_BRANDING: Branding = { name: 'Tern', logo: null, version: 0 };
-interface AuthCtx { user: User | null; loading: boolean; needsSetup: boolean; registrationOpen: boolean; stalwartProvisioning: boolean; accountCount: number; version: string; branding: Branding; refresh: () => Promise<void>; setUser: (u: User | null) => void; logout: () => Promise<void> }
+interface AuthCtx { user: User | null; loading: boolean; needsSetup: boolean; registrationOpen: boolean; passkeysAvailable: boolean; stalwartProvisioning: boolean; accountCount: number; version: string; branding: Branding; refresh: () => Promise<void>; setUser: (u: User | null) => void; logout: () => Promise<void> }
 
 const Ctx = createContext<AuthCtx>(null as any);
 export const useAuth = () => useContext(Ctx);
@@ -16,6 +16,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [passkeysAvailable, setPasskeysAvailable] = useState(false);
   const [stalwartProvisioning, setStalwartProvisioning] = useState(false);
   const [accountCount, setAccountCount] = useState(0);
   const [version, setVersion] = useState('');
@@ -23,10 +24,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const status = await api.get<{ needsSetup: boolean; version: string; registrationOpen?: boolean; branding?: Branding }>('/api/setup/status');
+      const status = await api.get<{ needsSetup: boolean; version: string; registrationOpen?: boolean; passkeys?: boolean; branding?: Branding }>('/api/setup/status');
       setBranding(status.branding?.name ? status.branding : DEFAULT_BRANDING);
       setNeedsSetup(status.needsSetup);
       setRegistrationOpen(Boolean(status.registrationOpen));
+      setPasskeysAvailable(Boolean(status.passkeys));
       setVersion(status.version);
       if (status.needsSetup) { setUser(null); return; }
       const me = await api.get<{ user: User; accountCount: number; stalwartProvisioning?: boolean }>('/api/auth/me');
@@ -57,6 +59,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Signing out also empties the in-memory query cache so mail, contacts and
   // drafts are not one Back button away on a shared machine.
   const logout = useCallback(async () => { try { await api.post('/api/auth/logout'); } finally { setUser(null); qc.clear(); } }, [qc]);
-  const value = useMemo(() => ({ user, loading, needsSetup, registrationOpen, stalwartProvisioning, accountCount, version, branding, refresh, setUser, logout }), [user, loading, needsSetup, registrationOpen, stalwartProvisioning, accountCount, version, branding, refresh, logout]);
+  const value = useMemo(() => ({ user, loading, needsSetup, registrationOpen, passkeysAvailable, stalwartProvisioning, accountCount, version, branding, refresh, setUser, logout }), [user, loading, needsSetup, registrationOpen, passkeysAvailable, stalwartProvisioning, accountCount, version, branding, refresh, logout]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

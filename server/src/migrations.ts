@@ -589,4 +589,159 @@ CREATE TABLE IF NOT EXISTS vacation_replies (
 );
 `,
   },
+  {
+    id: '20260906_0012_passkeys',
+    up: `
+-- Passkeys (WebAuthn). One row per authenticator; the public key is not a
+-- secret, so it is stored as it arrived. A passkey that verified the person
+-- (PIN, fingerprint, face) can stand in for the password entirely, exactly
+-- as the OpenPGP key can; one that only proved presence is a second factor.
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id TEXT NOT NULL UNIQUE,
+  public_key TEXT NOT NULL,
+  alg INT NOT NULL,
+  sign_count BIGINT NOT NULL DEFAULT 0,
+  aaguid TEXT,
+  transports TEXT[] NOT NULL DEFAULT '{}',
+  name TEXT NOT NULL DEFAULT 'Passkey',
+  backed_up BOOLEAN NOT NULL DEFAULT false,
+  user_verified BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS webauthn_user_idx ON webauthn_credentials(user_id);
+-- off: passkeys are only a second factor. passwordless: a verifying passkey
+-- is the whole sign-in, like pgp_auth.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS passkey_auth TEXT NOT NULL DEFAULT 'second_factor' CHECK (passkey_auth IN ('second_factor','passwordless'));
+`,
+  },
+  {
+    id: '20260906_0013_retention_draft_sync',
+    up: `
+-- Automatic emptying of Trash and Junk, per account, on by default at 30
+-- days as Gmail and Proton do. This applies to accounts that already exist:
+-- the first run after upgrading destroys mail that has sat in Trash or Junk
+-- for longer than a month, on the mail server as well as in the cache. The
+-- window is per account and the whole thing can be turned off in
+-- Settings -> Mailboxes.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS trash_retention_days INT NOT NULL DEFAULT 30;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS junk_retention_days INT NOT NULL DEFAULT 30;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS retention_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_retention_at TIMESTAMPTZ;
+
+-- Drafts are pushed to the mail server's Drafts mailbox so other clients on
+-- the same mailbox see them. The ids are the server's copy; a draft whose
+-- push failed keeps a null jmap_id and is retried.
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS jmap_id TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS jmap_blob_id TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS sync_error TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS sync_dirty BOOLEAN NOT NULL DEFAULT true;
+CREATE INDEX IF NOT EXISTS drafts_sync_idx ON drafts(sync_dirty) WHERE sync_dirty;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS sync_drafts BOOLEAN NOT NULL DEFAULT true;
+`,
+  },
+  {
+    id: '20260906_0014_cache_at_rest',
+    up: `
+-- Encryption at rest for the mail cache (ENCRYPTION.md layer 1). Each user
+-- gets a data key, wrapped with the server master key from .env and never
+-- stored in the clear. Content columns become ciphertext under it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dek_wrapped TEXT;
+
+-- The blind search index. A tsvector over plaintext would hold every word of
+-- every message in the clear, which is exactly what this is meant to stop,
+-- so searchable text becomes a set of HMAC terms instead. Ranking, stemming
+-- and phrase search go with it; see docs/SECURITY.md.
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS search_terms BYTEA[] NOT NULL DEFAULT '{}';
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS address_terms BYTEA[] NOT NULL DEFAULT '{}';
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS from_terms BYTEA[] NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS emails_search_terms_idx ON emails USING GIN (search_terms);
+CREATE INDEX IF NOT EXISTS emails_address_terms_idx ON emails USING GIN (address_terms);
+CREATE INDEX IF NOT EXISTS emails_from_terms_idx ON emails USING GIN (from_terms);
+
+-- from_email and search_tsv were generated from the plaintext, so they
+-- cannot survive it: a generated column over ciphertext is noise, and the
+-- tsvector index would leak what the encryption is hiding. Their jobs are
+-- taken by from_terms and search_terms.
+DROP INDEX IF EXISTS emails_search_idx;
+DROP INDEX IF EXISTS emails_from_idx;
+ALTER TABLE emails DROP COLUMN IF EXISTS search_tsv;
+ALTER TABLE emails DROP COLUMN IF EXISTS from_email;
+-- Kept plain and indexed: threading needs it, and a Message-ID is a random
+-- token plus a domain the addresses already reveal.
+CREATE INDEX IF NOT EXISTS emails_received_only_idx ON emails(received_at DESC);
+
+-- How far the backfill has got, so an upgrade encrypts existing mail in the
+-- background instead of locking the table on startup.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cache_encrypted_at TIMESTAMPTZ;
+`,
+  },
+  {
+    // 0014 shipped in two halves during development: a database that applied
+    // the first half has the keys and the index columns but not the column
+    // type changes. Splitting the rest out means either state converges here.
+    id: '20260906_0015_cache_at_rest_columns',
+    up: `
+-- The address and attachment columns were JSONB, which cannot hold
+-- ciphertext. They become TEXT carrying sealed JSON. Existing rows convert to
+-- their JSON text unchanged and stay readable: an unsealed value has no
+-- "k1." prefix, so the vault hands it back as it is until the backfill
+-- reaches it.
+ALTER TABLE emails ALTER COLUMN from_addr TYPE TEXT USING from_addr::text;
+ALTER TABLE emails ALTER COLUMN to_addr   TYPE TEXT USING to_addr::text;
+ALTER TABLE emails ALTER COLUMN cc_addr   TYPE TEXT USING cc_addr::text;
+ALTER TABLE emails ALTER COLUMN bcc_addr  TYPE TEXT USING bcc_addr::text;
+ALTER TABLE emails ALTER COLUMN reply_to  TYPE TEXT USING reply_to::text;
+ALTER TABLE emails ALTER COLUMN attachments TYPE TEXT USING attachments::text;
+ALTER TABLE emails ALTER COLUMN from_addr SET DEFAULT '[]';
+ALTER TABLE emails ALTER COLUMN to_addr   SET DEFAULT '[]';
+ALTER TABLE emails ALTER COLUMN cc_addr   SET DEFAULT '[]';
+ALTER TABLE emails ALTER COLUMN bcc_addr  SET DEFAULT '[]';
+ALTER TABLE emails ALTER COLUMN reply_to  SET DEFAULT '[]';
+ALTER TABLE emails ALTER COLUMN attachments SET DEFAULT '[]';
+
+-- Drafts and the outbox hold the same content before it is sent.
+ALTER TABLE drafts ALTER COLUMN to_addr  TYPE TEXT USING to_addr::text;
+ALTER TABLE drafts ALTER COLUMN cc_addr  TYPE TEXT USING cc_addr::text;
+ALTER TABLE drafts ALTER COLUMN bcc_addr TYPE TEXT USING bcc_addr::text;
+ALTER TABLE drafts ALTER COLUMN to_addr  SET DEFAULT '[]';
+ALTER TABLE drafts ALTER COLUMN cc_addr  SET DEFAULT '[]';
+ALTER TABLE drafts ALTER COLUMN bcc_addr SET DEFAULT '[]';
+
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS emails_unsealed_idx ON emails(account_id) WHERE NOT sealed;
+
+-- A scheduled send holds the whole message until it goes out, sometimes for
+-- weeks. Same treatment: the payload becomes sealed text.
+ALTER TABLE outbox ALTER COLUMN payload TYPE TEXT USING payload::text;
+
+-- Housekeeping used to find the staged uploads a draft or a queued message
+-- still needs by looking for their URLs in the body text. Sealed text cannot
+-- be searched that way, so the ids are recorded when the row is written and
+-- the daily sweep reads them instead of guessing.
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS upload_ids BIGINT[] NOT NULL DEFAULT '{}';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS inline_upload_ids BIGINT[] NOT NULL DEFAULT '{}';
+
+-- The review queue holds AI-drafted replies and, in its context column, a
+-- slice of the message being answered. That is mail content, sealed with the
+-- rest.
+-- send_log keeps its subject in the clear on purpose: it is looked up by
+-- subject, and a random IV per value makes equality impossible.
+ALTER TABLE review_queue ALTER COLUMN to_addr TYPE TEXT USING to_addr::text;
+ALTER TABLE review_queue ALTER COLUMN to_addr SET DEFAULT '[]';
+`,
+  },
+  {
+    // Automatic emptying is on by default for every account, including ones
+    // that existed before it was added. An intermediate build of 0013 turned
+    // it off for those, so the flag is settled here at the intended default.
+    // It runs once; anyone who turns it off afterwards keeps it off.
+    id: '20260906_0016_retention_default_on',
+    up: `
+UPDATE accounts SET retention_enabled = true WHERE NOT retention_enabled;
+`,
+  },
 ];

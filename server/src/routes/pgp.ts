@@ -13,6 +13,7 @@ import { forgetPeer, getPeer, isStale, listPeers, recommend, updateGossip } from
 import { listAccounts } from '../services/accounts.js';
 import { describeKeyShape } from '../services/pgpPackets.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { openEmail } from '../services/mailVault.js';
 
 export const pgpRouter = Router();
 pgpRouter.use(requireAuth);
@@ -168,7 +169,7 @@ pgpRouter.post('/autocrypt/peers/:email/trust', async (req, res) => {
 pgpRouter.post('/autocrypt/gossip', async (req, res) => {
   const b = parse(z.object({ emailId: z.number().int(), headers: z.array(z.string().max(20_000)).max(50) }), req.body);
   const accountIds = (await listAccounts(req.user!.id)).map((a) => a.id);
-  const m = await one<any>('SELECT id, to_addr, cc_addr, from_addr, sent_at, received_at FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accountIds]);
+  const m = await openEmail(req.user!.id, await one<any>('SELECT id, to_addr, cc_addr, from_addr, sent_at, received_at FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accountIds]));
   if (!m) throw notFound('Message not found');
   const recipients = [...(m.to_addr ?? []), ...(m.cc_addr ?? [])].map((a: any) => String(a.email ?? '').toLowerCase()).filter(Boolean);
   const n = await updateGossip(req.user!.id, recipients, b.headers, new Date(m.sent_at ?? m.received_at));

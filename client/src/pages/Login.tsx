@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { BrandLogo, useAppName } from '../components/Brand';
 import { Link, useNavigate } from 'react-router-dom';
-import { KeyRound, Copy } from 'lucide-react';
+import { KeyRound, Copy, Fingerprint } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { usePgp } from '../state/pgp';
@@ -10,13 +10,15 @@ import { Background } from '../components/Background';
 import { PowFootnote, PowStatus } from '../components/PowStatus';
 import { withPow, type PowProgress } from '../lib/pow';
 import { decryptArmored, loadDeviceKey } from '../lib/pgp';
+import { discoverableSupported, getAssertion, passkeysSupported, type AssertionPayload } from '../lib/passkeys';
 
 interface Challenge { challengeId: string; challenge: string; fingerprint?: string | null }
-interface LoginResponse { mfaRequired?: boolean; methods?: string[]; pgp?: Challenge | null; user?: any }
+interface PasskeyChallenge { ceremonyId: string; challenge: string; rpId: string; userVerification?: string; allowCredentials?: { type: string; id: string; transports?: string[] }[] }
+interface LoginResponse { mfaRequired?: boolean; methods?: string[]; pgp?: Challenge | null; passkey?: PasskeyChallenge | null; user?: any }
 
 export default function LoginPage() {
   const appName = useAppName();
-  const { setUser, refresh, registrationOpen } = useAuth();
+  const { setUser, refresh, registrationOpen, passkeysAvailable } = useAuth();
   const { requestKey } = usePgp();
   const nav = useNavigate();
   const [mode, setMode] = useState<'password' | 'key'>('password');
@@ -26,18 +28,21 @@ export default function LoginPage() {
   const [step, setStep] = useState<'credentials' | 'second'>('credentials');
   const [methods, setMethods] = useState<string[]>([]);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [passkeyChallenge, setPasskeyChallenge] = useState<PasskeyChallenge | null>(null);
+  const [passkeyReady, setPasskeyReady] = useState(false);
   const [manual, setManual] = useState(false);
   const [answer, setAnswer] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [pow, setPow] = useState<PowProgress | null>(null);
   const deviceKey = loadDeviceKey();
+  useEffect(() => { void discoverableSupported().then((ok) => setPasskeyReady(ok && passkeysAvailable)); }, [passkeysAvailable]);
 
   function finish(user: any) { setUser(user); void refresh().then(() => nav('/mail/inbox', { replace: true })); }
 
   async function login(extra: Record<string, unknown> = {}) {
     const r = await withPow('login', username, (proof) => api.post<LoginResponse>('/api/auth/login', { username: username.trim(), password, pow: proof, ...extra }), setPow);
-    if (r.mfaRequired) { setMethods(r.methods ?? []); setChallenge(r.pgp ?? null); setStep('second'); return null; }
+    if (r.mfaRequired) { setMethods(r.methods ?? []); setChallenge(r.pgp ?? null); setPasskeyChallenge(r.passkey ?? null); setStep('second'); return null; }
     return r.user;
   }
 
@@ -51,6 +56,32 @@ export default function LoginPage() {
     e.preventDefault();
     setBusy(true); setError('');
     try { const u = await login({ code: code.trim() }); if (u) finish(u); } catch (err: any) { setError(err.message ?? 'That code was not accepted'); } finally { setBusy(false); setPow(null); }
+  }
+
+  // Passwordless: the browser picks a discoverable passkey and the
+  // authenticator says which account it belongs to, so no username is typed
+  // and none is sent. The proof of work is bound to the empty username.
+  async function signInWithPasskey() {
+    setBusy(true); setError('');
+    try {
+      const c = await withPow('login', '', (proof) => api.post<PasskeyChallenge>('/api/auth/passkey/start', { pow: proof }), setPow);
+      setPow(null);
+      const assertion = await getAssertion(c);
+      const r = await api.post<{ user: any }>('/api/auth/passkey/finish', assertion);
+      finish(r.user);
+    } catch (err: any) { setError(err.message ?? 'That passkey was not accepted'); } finally { setBusy(false); setPow(null); }
+  }
+
+  // As a second factor, after the password: the server has already named the
+  // credentials this account holds.
+  async function answerWithPasskey() {
+    if (!passkeyChallenge) return;
+    setBusy(true); setError('');
+    try {
+      const assertion: AssertionPayload = await getAssertion(passkeyChallenge);
+      const u = await login({ passkey: assertion });
+      if (u) finish(u);
+    } catch (err: any) { setError(err.message ?? 'That passkey was not accepted'); } finally { setBusy(false); setPow(null); }
   }
 
   // Answer the key challenge: with the key on this device, or with a pasted
@@ -93,7 +124,7 @@ export default function LoginPage() {
     try { const r = await api.post<{ user: any }>('/api/auth/pgp/finish', { username: username.trim(), challengeId: challenge.challengeId, response: answer.trim() }); finish(r.user); } catch (err: any) { setError(err.message ?? 'That answer was not accepted'); } finally { setBusy(false); }
   }
 
-  const reset = () => { setStep('credentials'); setCode(''); setAnswer(''); setChallenge(null); setError(''); setManual(false); };
+  const reset = () => { setStep('credentials'); setCode(''); setAnswer(''); setChallenge(null); setPasskeyChallenge(null); setError(''); setManual(false); };
   const title = step === 'second' ? (mode === 'key' ? 'Answer the challenge' : 'One more step') : mode === 'key' ? 'Sign in with your key' : 'Sign in';
 
   return (
@@ -111,6 +142,7 @@ export default function LoginPage() {
             {error && <div className="login-error">{error}</div>}
             <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>Sign in</Button>
             <PowStatus progress={pow} />
+            {passkeyReady && <Button type="button" variant="ghost" className="w-full mt-8" icon={<Fingerprint size={15} />} onClick={signInWithPasskey}>Use a passkey</Button>}
             <Button type="button" variant="ghost" className="w-full mt-8" icon={<KeyRound size={15} />} onClick={() => { setMode('key'); setError(''); }}>Sign in with your key instead</Button>
           </form>
         )}
@@ -129,6 +161,13 @@ export default function LoginPage() {
 
         {step === 'second' && (
           <div>
+            {passkeyChallenge && passkeysSupported() && (
+              <div className="mb-16">
+                <p className="muted" style={{ marginBottom: 12 }}>Confirm with the passkey on this device.</p>
+                <Button type="button" variant="primary" size="lg" className="w-full" icon={<Fingerprint size={15} />} loading={busy} onClick={answerWithPasskey}>Use a passkey</Button>
+                {methods.includes('totp') && <div className="divider" />}
+              </div>
+            )}
             {methods.includes('totp') && mode === 'password' && (
               <form onSubmit={submitCode}>
                 <p className="muted" style={{ marginBottom: 18 }}>Enter the 6-digit code from your authenticator app, or a recovery code.</p>

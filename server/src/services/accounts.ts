@@ -27,6 +27,8 @@ export interface AccountRow {
   daily_cap: number; jitter_enabled: boolean; jitter_min_s: number; jitter_max_s: number; send_window: SendWindow;
   next_send_at: Date | null; enabled: boolean; created_at: Date;
   vacation?: Partial<VacationSettings> | null;
+  trash_retention_days?: number; junk_retention_days?: number; retention_enabled?: boolean; last_retention_at?: Date | null;
+  sync_drafts?: boolean;
 }
 
 export function vacationOf(acc: Pick<AccountRow, 'vacation'>): VacationSettings {
@@ -132,6 +134,8 @@ export function publicAccount(acc: AccountRow) {
   return {
     ...rest,
     vacation: vacationOf(acc),
+    retention: { enabled: acc.retention_enabled !== false, trashDays: acc.trash_retention_days ?? 30, junkDays: acc.junk_retention_days ?? 30, lastRunAt: acc.last_retention_at ?? null },
+    sync_drafts: acc.sync_drafts !== false,
     has_smtp: Boolean(smtp),
     smtp: smtp ? { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user } : null,
     has_push: Boolean(acc.event_source_url),

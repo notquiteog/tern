@@ -8,7 +8,10 @@ export interface Account {
   daily_cap: number; jitter_enabled: boolean; jitter_min_s: number; jitter_max_s: number; send_window: { start: number; end: number; days: number[]; tz: string }; next_send_at: string | null; enabled: boolean;
   has_smtp: boolean; smtp: { host: string; port: number; secure: boolean; user: string } | null; has_push: boolean; has_submission: boolean; push: { push: string; lastPushAt: string | null };
   vacation: Vacation;
+  retention: Retention;
+  sync_drafts: boolean;
 }
+export interface Retention { enabled: boolean; trashDays: number; junkDays: number; lastRunAt: string | null }
 export interface Vacation { enabled: boolean; subject: string; body: string; start: string | null; end: string | null; onlyContacts: boolean; intervalDays: number }
 export interface Mailbox { id: number; account_id: number; jmap_id: string; name: string; parent_id: string | null; role: string | null; sort_order: number; total_emails: number; unread_emails: number; total_threads: number; unread_threads: number; color: string | null }
 export interface Counts { inboxUnread: Record<string, number>; inboxUnreadTotal: number; drafts: number; snoozed: number; scheduled: number; review: number; labelUnread: Record<string, number> }

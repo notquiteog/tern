@@ -1,10 +1,10 @@
-# Encrypting mail in Tern: the plan
+# Encrypting mail in Tern
 
-Layer 2 (OpenPGP: keys, encrypted and signed mail, decryption in the
-browser, sign-in with the key) is built; see "What runs today" at the end.
-Layers 1 and 3 remain designs. This document sets out what "encrypt the
-emails" can mean for an app like Tern, what each option protects against,
-what it costs in features, and the order to build it in.
+Layers 1 (encryption at rest) and 2 (OpenPGP) are built; see "What runs
+today" at the end. Layer 3, sealed accounts, remains a design. This document
+sets out what "encrypt the emails" can mean for an app like Tern, what each
+option protects against, what it costs in features, and the order to build
+it in.
 
 ## The constraint that shapes everything
 
@@ -47,7 +47,16 @@ something the database does not contain: the server's `ENCRYPTION_KEY`
 in `.env`, the user's password (which the server sees only at sign-in), or
 a key the user holds (PGP). Those are the three roots used below.
 
-## Layer 1: encryption at rest, per user, server-held keys
+## Layer 1: encryption at rest, per user, server-held keys — built
+
+Built as described below, with two deliberate differences from the original
+design, both recorded in the sections that follow: the address and
+attachment columns became `TEXT` holding sealed JSON rather than staying
+`JSONB`, and the blind index is one set of terms per message rather than one
+per field, so `subject:` matches a word anywhere in the message. The code is
+`server/src/services/vault.ts` (keys, sealing, the blind index),
+`mailVault.ts` (which columns, and the terms a message contributes) and
+`backfill.ts` (converting an install that already has mail).
 
 **What it protects against.** Database dumps, backups, disk images, a
 compromised Postgres role, and one user's data being readable through a
@@ -94,11 +103,33 @@ on the box while the app runs, because the app must decrypt to work.
   include an explicit warning and offer to write the master key to a
   separate file.
 
+**What shipped, against that design.** The DEK, the wrapping, the
+`v1.<iv>.<tag>.<ct>` format (behind a `k1.` prefix that says which key opens
+a value) and the blind index are as written. Differences worth knowing:
+
+- The columns that were `JSONB` (`from_addr`, `to_addr`, `cc_addr`,
+  `bcc_addr`, `reply_to`, `attachments`, and `outbox.payload`) are now
+  `TEXT`. Ciphertext is not JSON, and the queries that used to pick fields
+  out of them in SQL — thread participants, attachment names, address
+  autocomplete — now open the blob and do that work in JavaScript.
+- Prefix terms are the first 3, 5 and 8 characters as planned, and a query
+  emits both the exact hash and the one bucket that fits its length. Without
+  that pair a word of exactly 3, 5 or 8 characters would never match itself.
+- Terms are grouped per word, and the groups are ANDed. A two-word search
+  therefore still means both words.
+- `-word` exclusion is implemented as a negated overlap, because the
+  advanced search form emits it and `websearch_to_tsquery` used to honour it.
+- `review_queue` is sealed (subject, body, recipients and the context slice
+  of the message being answered). `send_log.subject` is not: the send log is
+  looked up by subject, and a random IV per value would make that impossible.
+- Contacts keep their own plaintext `tsvector`. Contacts, templates, the
+  audit log and the send log are outside this layer.
+
 **Effort.** Roughly two days: vault module, migration, sync writers, the
 search rewrite, and tests. It touches every query that reads bodies, so it
 is a single focused change rather than something to do piecemeal.
 
-## Layer 2: OpenPGP
+## Layer 2: OpenPGP — built
 
 Users upload a **public key**. From that point:
 
@@ -136,7 +167,7 @@ about 400 KB in the browser bundle, loaded only on pages that need it.
 encrypted and decrypting in the browser: two to three days including the
 composer indicator and a message view that handles inline and PGP/MIME.
 
-## Layer 3: sealed accounts (opt-in end-to-end)
+## Layer 3: sealed accounts (opt-in end-to-end) — still a design
 
 A per-account switch: *"Seal this mailbox: only my browser can read it."*
 When on:
@@ -177,16 +208,11 @@ for the private key rather than a password-derived wrap.
 
 ## Order of work
 
-1. Layer 1, at rest, everyone, no visible change except a faster export and
-   a "Backups need the key in `.env`" note in the installer.
-2. Layer 2a: public key upload and encrypted export.
-3. Layer 2b: PGP on the wire (send encrypted and signed, decrypt inbound in
-   the browser).
-4. Layer 3: sealed accounts.
-
-Steps 2 and 3 are independent of step 1 and could ship first if PGP mail
-matters more to you than the at-rest copy. Say which, and that is where the
-next commit goes.
+1. ~~Layer 1, at rest, everyone.~~ Built. The visible change is search:
+   whole-word and prefix matching, no ranking, no stemming, no phrases.
+2. ~~Layer 2a: public key upload and encrypted export.~~ Built.
+3. ~~Layer 2b: PGP on the wire.~~ Built.
+4. Layer 3: sealed accounts. Still open.
 
 ## What runs today
 
@@ -251,5 +277,22 @@ Settings → Encryption, `server/src/services/pgp.ts`, `routes/pgp.ts`,
   Encryption → Post-quantum shows where your key and your recipients' keys
   stand.
 
-Still open from the plan: layer 1 (at-rest encryption of the cache with
-server-held keys and a blind search index) and layer 3 (sealed accounts).
+- **At rest (layer 1).** `server/src/services/vault.ts`, `mailVault.ts`,
+  `backfill.ts`. Every user has a data key, wrapped under `ENCRYPTION_KEY`
+  and never stored in the clear. Subjects, previews, bodies, address lists
+  and attachment metadata on `emails`, the same fields on `drafts`, and the
+  whole `outbox` payload are AES-256-GCM under it. Search runs on an HMAC
+  blind index with a separate key for addresses. Mailbox membership,
+  keywords, dates, sizes and the threading headers stay plain, because the
+  inbox is built from them. An install that already had mail converts in the
+  background, a batch per scheduler tick, and reads work throughout;
+  `./bin/tern cli encrypt-cache` does it immediately and
+  `encryption-status` reports progress.
+- **Passkeys.** `server/src/services/webauthn.ts` verifies WebAuthn
+  registration and assertions with Node's crypto alone — its own CBOR and
+  COSE readers, ES256/EdDSA/RS256, origin and relying-party checks bound to
+  `APP_URL`, single-use challenges, and a clone check on the signature
+  counter. A verifying passkey can replace the password; a
+  presence-only one is a second factor.
+
+Still open from the plan: layer 3 (sealed accounts).

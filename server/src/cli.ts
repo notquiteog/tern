@@ -124,8 +124,28 @@ async function main(): Promise<void> {
       console.table(r);
       break;
     }
+    // The scheduler encrypts an existing cache in the background anyway; this
+    // is for doing it now, before handing a machine over or taking a backup
+    // that is meant to be unreadable without .env.
+    case 'encrypt-cache': {
+      const { backfillAll, backfillPending } = await import('./services/backfill.js');
+      const pending = await backfillPending();
+      if (!pending) { console.log('The mail cache is already encrypted.'); break; }
+      console.log(`Encrypting ${pending} messages. Back up .env with the database: without ENCRYPTION_KEY this mail cannot be read.`);
+      let last = Date.now();
+      const total = await backfillAll((p) => {
+        if (Date.now() - last > 2000) { console.log(`  ${p.remaining} to go`); last = Date.now(); }
+      });
+      console.log(`Encrypted ${total} messages.`);
+      break;
+    }
+    case 'encryption-status': {
+      const r = await query(`SELECT (SELECT count(*) FROM emails WHERE sealed) AS encrypted, (SELECT count(*) FROM emails WHERE NOT sealed) AS plaintext, (SELECT count(*) FROM users WHERE dek_wrapped IS NOT NULL) AS users_with_keys`);
+      console.table(r);
+      break;
+    }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | dns-check | stats');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | dns-check | stats | encrypt-cache | encryption-status');
   }
   await pool.end();
 }

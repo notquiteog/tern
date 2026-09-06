@@ -4,6 +4,8 @@ import { requireAuth } from '../auth.js';
 import { idParam, parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
 import { guessMapping, parseCsv, toCsv } from '../util/csv.js';
+import { openEmailWith } from '../services/mailVault.js';
+import { dataKey } from '../services/vault.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(requireAuth);
@@ -86,6 +88,12 @@ contactsRouter.get('/:id', async (req, res) => {
      FROM contact_threads ct WHERE ct.contact_id=$1 ORDER BY ct.created_at DESC LIMIT 50`,
     [id],
   );
+  const dek = await dataKey(req.user!.id);
+  for (const t of threads) {
+    if (!t.latest) continue;
+    const o = openEmailWith(dek, { subject: t.latest.subject, preview: t.latest.preview, from_addr: t.latest.from });
+    t.latest = { ...t.latest, subject: o.subject, preview: o.preview, from: o.from_addr };
+  }
   const suppressed = await one<any>('SELECT * FROM suppressions WHERE user_id=$1 AND lower(email)=lower($2)', [req.user!.id, c.email]);
   res.json({ contact: c, sends, enrollments, threads: threads.filter((t) => t.latest), suppression: suppressed });
 });

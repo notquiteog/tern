@@ -6,8 +6,19 @@ import { badRequest, notFound } from '../errors.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
 import { generateResponderReply } from '../workers/scheduler.js';
 import { isListMail } from '../services/automation.js';
+import { openEmail, openEmails } from '../services/mailVault.js';
 
 export const respondersRouter = Router();
+
+// The newest message that did not come from one of the user's own addresses,
+// used as a sample when testing a responder.
+async function firstNotFromMe(userId: number, accountIds: number[], mine: string[]): Promise<any | null> {
+  const rows = await query<any>('SELECT * FROM emails WHERE account_id = ANY($1) ORDER BY received_at DESC LIMIT 50', [accountIds]);
+  for (const r of await openEmails(userId, rows)) {
+    if (!mine.includes(String(r.from_email ?? ''))) return r;
+  }
+  return null;
+}
 respondersRouter.use(requireAuth);
 
 const condition = z.object({ field: z.enum(['from', 'to', 'cc', 'subject', 'body', 'any', 'has_attachment', 'list']), op: z.enum(['contains', 'not_contains', 'equals', 'starts_with', 'ends_with', 'matches', 'is_true', 'is_false']), value: z.string().max(500).optional() });
@@ -93,7 +104,9 @@ respondersRouter.post('/:id/test', async (req, res) => {
   const accIds = accounts.filter(Boolean).map((a) => a!.id);
   const email = b.emailId
     ? await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accIds])
-    : await one<any>(`SELECT e.* FROM emails e WHERE e.account_id = ANY($1) AND e.from_email <> ALL($2) ORDER BY e.received_at DESC LIMIT 1`, [accIds, accounts.map((a) => a!.email.toLowerCase())]);
+    // from_email was a generated column over the plaintext and is gone; the
+    // sender is compared after opening instead.
+    : await firstNotFromMe(req.user!.id, accIds, accounts.map((a) => a!.email.toLowerCase()));
   if (!email) throw badRequest('No inbound message to test with yet');
   const acc = accounts.find((a) => a!.id === email.account_id)!;
   const skipped = responder.skip_lists && isListMail({ from: email.from_addr, 'header:List-Unsubscribe:asText': null });

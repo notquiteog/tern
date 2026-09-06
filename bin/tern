@@ -242,7 +242,8 @@ else: print("ok")' $SUBNETS)"
     cp .env "$TMP/env"
     tar -C "$TMP" -czf "$DEST/tern-backup-$STAMP.tar.gz" tern.pgdump env
     rm -rf "$TMP"
-    echo "Backup written to $DEST/tern-backup-$STAMP.tar.gz (database + .env; Ollama models and Stalwart data are not included)" ;;
+    echo "Backup written to $DEST/tern-backup-$STAMP.tar.gz (database + .env; Ollama models and Stalwart data are not included)"
+    echo "The mail in this dump is encrypted with ENCRYPTION_KEY, which is in the .env inside the tarball. Keep the tarball somewhere safe: without that key the mail cannot be read, and with it the tarball is as sensitive as the server." ;;
   restore)
     TARBALL="${1:?path to backup tarball}"; TMP="$(mktemp -d)"
     tar -C "$TMP" -xzf "$TARBALL"

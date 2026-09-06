@@ -29,11 +29,17 @@ browser ──HTTPS──▶ Caddy ──▶ app (Express + workers) ──▶ P
 ### The local mail cache
 
 `emails` holds a copy of every synced message: headers, parsed addresses,
-text and HTML bodies, attachment metadata, keywords and mailbox ids. Threads
-are a `GROUP BY (account_id, thread_id)`; the thread list query aggregates
-unread, starred, latest message and participants in one statement. Full-text
-search is a generated `tsvector` over subject and body; operators such as
-`from:` map to SQL predicates in `services/search.ts`.
+text and HTML bodies, attachment metadata, keywords and mailbox ids. The
+content is encrypted at rest under the owner's data key
+(`services/vault.ts`, `services/mailVault.ts`); mailbox ids, keywords, dates
+and the threading headers stay plain because the inbox is built from them.
+Threads are a `GROUP BY (account_id, thread_id)`; the thread list query
+aggregates unread, starred and mailbox membership in one statement, and the
+subjects, participants and attachment names it shows are decrypted after the
+query rather than assembled in SQL. Search is a blind index — HMAC terms in
+`search_terms` and `address_terms`, matched with `&&` — so whole words and
+prefixes match but nothing is ranked; operators such as `from:` map to SQL
+predicates in `services/search.ts`.
 
 The server is always right. Actions update the cache optimistically, push the
 change with Email/set, and ask the sync manager to reconcile.

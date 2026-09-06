@@ -8,6 +8,7 @@ import type { AccountRow } from './accounts.js';
 import * as actions from '../jmap/actions.js';
 import { autocryptHeadersOf, updatePeerFromMessage } from './autocrypt.js';
 import { maybeVacationReply, vacationActive } from './vacation.js';
+import { openEmails } from './mailVault.js';
 
 const log = logger('automation');
 
@@ -260,7 +261,7 @@ export async function runRuleOnExisting(acc: AccountRow, rule: any, limit = 500)
     [acc.id, inbox.jmap_id, limit],
   );
   const matched: string[] = [];
-  for (const r of rows) {
+  for (const r of await openEmails(acc.user_id, rows)) {
     const e = { id: r.jmap_id, from: r.from_addr, to: r.to_addr, cc: r.cc_addr, subject: r.subject, hasAttachment: r.has_attachment };
     if (ruleMatches(rule, e, r.body_text ?? r.preview ?? '')) matched.push(r.jmap_id);
   }

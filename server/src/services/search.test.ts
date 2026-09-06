@@ -19,3 +19,26 @@ test('parseSearch understands read/starred and sizes', () => {
   assert.equal(s.larger, 2 * 1024 * 1024);
   assert.equal(s.olderDays, 21);
 });
+
+test('a leading dash excludes a word', () => {
+  const s = parseSearch('invoice -draft -"internal only"');
+  assert.equal(s.text, 'invoice');
+  assert.equal(s.exclude, 'draft internal only');
+});
+
+test('a lone dash is a word, not an exclusion', () => {
+  const s = parseSearch('a - b');
+  assert.equal(s.exclude, undefined);
+});
+
+test('an operator is not mistaken for an exclusion', () => {
+  const s = parseSearch('-from:alice invoice');
+  // A negated operator is not supported; it must not silently become a
+  // required word or swallow the operator's value.
+  assert.equal(s.from, undefined);
+  assert.equal(s.text.includes('invoice'), true);
+});
+
+test('nothing to exclude leaves the field unset', () => {
+  assert.equal(parseSearch('plain words').exclude, undefined);
+});

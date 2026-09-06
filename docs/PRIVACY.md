@@ -28,10 +28,11 @@ JMAP host) keeps the mail itself under its own rules.
 | Users: username, display name, role, scrypt hash, TOTP secret, hashed recovery codes, appearance prefs, avatar | Sign-in | Until the user deletes the account |
 | Sessions: random id, created, last seen, user agent | Session list, "sign out everywhere" (other sessions are shown by a hash of the id, never the id) | Until expiry (30 days) or revocation; expired rows purged hourly |
 | Accounts: mailbox address, JMAP URLs, encrypted credential, sending policy, signature, voice | Sync and send | Until removed |
-| Mail cache (`emails`, `mailboxes`): headers, addresses, subject, body, attachment metadata, keywords | The inbox, search, threading, reply detection, rules, responders | Newest N messages per account (`sync_limit`); deleted with the account |
+| Mail cache (`emails`, `mailboxes`): headers, addresses, subject, body, attachment metadata, keywords. Content is encrypted at rest under your own data key; mailbox ids, keywords, dates and threading headers are not | The inbox, search, threading, reply detection, rules, responders | Newest N messages per account (`sync_limit`); anything left in Trash or Junk past the mailbox's window (30 days by default) is destroyed there and on the mail server; deleted with the account |
 | Contacts, suppressions, templates, sequences, enrollments, rules, responders | The outreach features | Until deleted by the user |
 | `send_log`: recipient, subject, Message-ID, outcome | Daily caps, reply and bounce matching, statistics | Until the account is removed |
-| `drafts`, `outbox` | Unsent mail | Drafts until discarded; sent or cancelled outbox rows purged after 7 days |
+| `drafts`, `outbox` | Unsent mail. Both are encrypted at rest like the cache | Drafts until discarded; sent or cancelled outbox rows purged after 7 days |
+| Passkeys (`webauthn_credentials`): public key, credential id, a name, when it was last used | Signing in | Until you remove the passkey, or the account is deleted |
 | `uploads` | Attachments staged for a message being written | Deleted on send; orphans purged after 24 hours |
 | `review_queue`, `ai_jobs` | AI review and responder runs | Decided or finished rows purged after 30 days |
 | `audit_log`: who did which admin or security action, when; successful and failed sign-ins with the method and the client name (never an address) | Accountability; spotting someone guessing at an account | 365 days; a deleted user's rows keep the action but lose details |
@@ -64,7 +65,15 @@ each time an admin views that login.
 
 ## Encrypted mail
 
-Mail encrypted with OpenPGP stays ciphertext in the cache and is decrypted
-only in your browser; the server never holds a usable private key. See
-[ENCRYPTION.md](ENCRYPTION.md) for what is built and what remains (at-rest
-encryption of the whole cache, sealed accounts).
+The whole mail cache is encrypted at rest: every subject, body, address list
+and attachment name is AES-256-GCM under a data key that belongs to you and
+is itself stored only wrapped under the server's `ENCRYPTION_KEY`, which
+lives in `.env` and never in the database. A stolen dump or backup is
+unreadable without that file. The server still decrypts to work — sync,
+search, rules and auto-replies run while you are signed out — so this
+protects the copy, not against the operator.
+
+Mail encrypted with OpenPGP additionally stays ciphertext the server cannot
+open at all, and is decrypted only in your browser; the server never holds a
+usable private key. See [ENCRYPTION.md](ENCRYPTION.md) for what is built and
+what remains (sealed accounts, where even sync cannot read a mailbox).

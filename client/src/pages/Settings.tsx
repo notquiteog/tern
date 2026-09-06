@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench } from 'lucide-react';
+import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
@@ -16,6 +16,7 @@ import { Avatar } from '../components/ui';
 import { useMailPrefs } from '../state/mailPrefs';
 import { fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
 import { DataTable } from '../components/DataTable';
+import { createPasskey, passkeysSupported } from '../lib/passkeys';
 import MailAppsSettings from './MailApps';
 import EncryptionSettings from './Encryption';
 
@@ -189,12 +190,56 @@ function AddAccount({ onClose }: { onClose: () => void }) {
 const TZS = ['UTC', 'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'Europe/Madrid', 'Europe/Amsterdam', 'Europe/Stockholm', 'Europe/Warsaw', 'Europe/Lisbon', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Toronto', 'America/Sao_Paulo', 'America/Mexico_City', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Australia/Sydney', 'Pacific/Auckland', 'Africa/Johannesburg', 'Africa/Lagos'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// Automatic emptying and draft mirroring, both per mailbox. Emptying
+// destroys mail on the mail server, so the panel says how much would go
+// before anyone saves.
+function StorageTab({ account, f, set }: { account: Account; f: any; set: (p: any) => void }) {
+  const { data: preview } = useQuery({
+    queryKey: ['retention-preview', account.id],
+    queryFn: () => api.get<{ trash: number; junk: number }>(`/api/accounts/${account.id}/retention-preview`),
+  });
+  const due = (preview?.trash ?? 0) + (preview?.junk ?? 0);
+  return (
+    <>
+      <Callout kind={f.retentionEnabled ? 'warning' : undefined}>
+        Messages left in Trash or Junk for longer than the window below are deleted for good, on the mail server as well as here. This is what Gmail and Proton do at thirty days. A message that is also filed somewhere else — labelled, or kept in Archive — is never touched.
+      </Callout>
+      <div className="row mt-16 mb-8">
+        <Toggle checked={f.retentionEnabled} onChange={(v) => set({ retentionEnabled: v })} />
+        <div>
+          <div className="strong small">Empty Trash and Junk automatically</div>
+          <div className="help-text">
+            {account.retention?.lastRunAt ? `Last run ${fmtRelative(account.retention.lastRunAt)}. ` : ''}
+            {preview ? (due ? `${due} message${due === 1 ? '' : 's'} (${preview.trash} in Trash, ${preview.junk} in Junk) ${f.retentionEnabled ? 'will be deleted on the next run' : 'would be deleted if you turn this on'}.` : 'Nothing is old enough to be deleted right now.') : 'Counting…'}
+          </div>
+        </div>
+      </div>
+      {f.retentionEnabled && (
+        <div className="form-row">
+          <Field label="Delete from Trash after (days)"><Input type="number" min={1} max={3650} value={f.trashRetentionDays} onChange={(e) => set({ trashRetentionDays: Number(e.target.value) })} /></Field>
+          <Field label="Delete from Junk after (days)"><Input type="number" min={1} max={3650} value={f.junkRetentionDays} onChange={(e) => set({ junkRetentionDays: Number(e.target.value) })} /></Field>
+        </div>
+      )}
+      <div className="divider" />
+      <div className="row mb-8">
+        <Toggle checked={f.syncDrafts} onChange={(v) => set({ syncDrafts: v })} />
+        <div>
+          <div className="strong small">Keep drafts in the mailbox's Drafts folder</div>
+          <div className="help-text">A draft written here appears in Thunderbird, Apple Mail or your provider's webmail a moment after you stop typing, and disappears from there when you send or delete it. Editing stays in Tern: drafts written in another client are shown but not editable here.</div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function EditAccount({ account, onClose }: { account: Account; onClose: () => void }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const [tab, setTab] = useState<'sending' | 'identity' | 'autoreply' | 'connection'>('sending');
+  const [tab, setTab] = useState<'sending' | 'identity' | 'autoreply' | 'storage' | 'connection'>('sending');
   const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin,
-    vacation: { ...{ enabled: false, subject: '', body: '', start: null as string | null, end: null as string | null, onlyContacts: false, intervalDays: 4 }, ...(account.vacation ?? {}) } });
+    vacation: { ...{ enabled: false, subject: '', body: '', start: null as string | null, end: null as string | null, onlyContacts: false, intervalDays: 4 }, ...(account.vacation ?? {}) },
+    retentionEnabled: account.retention?.enabled !== false, trashRetentionDays: account.retention?.trashDays ?? 30, junkRetentionDays: account.retention?.junkDays ?? 30,
+    syncDrafts: account.sync_drafts !== false });
   const sig = useRef(account.signature_html);
   const editor = useRef<EditorHandle>(null);
   const [busy, setBusy] = useState(false);
@@ -203,7 +248,8 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
     setBusy(true);
     try {
       const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null,
-        vacation: { ...f.vacation, start: f.vacation.start || null, end: f.vacation.end || null, intervalDays: Number(f.vacation.intervalDays) || 4 } };
+        vacation: { ...f.vacation, start: f.vacation.start || null, end: f.vacation.end || null, intervalDays: Number(f.vacation.intervalDays) || 4 },
+        retentionEnabled: f.retentionEnabled, trashRetentionDays: Number(f.trashRetentionDays) || 30, junkRetentionDays: Number(f.junkRetentionDays) || 30, syncDrafts: f.syncDrafts };
       if (body.vacation.enabled && !body.vacation.body.trim()) { toast.error('Write the auto-reply message before turning it on'); setTab('autoreply'); setBusy(false); return; }
       if (f.secret) body.secret = f.secret;
       if (f.authUser !== (account.auth_user ?? '')) body.authUser = f.authUser;
@@ -218,7 +264,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   const perDayEstimate = f.jitterEnabled ? Math.round(((f.sendWindow.end - f.sendWindow.start) * 3600) / Math.max(1, (f.jitterMinS + f.jitterMaxS) / 2)) : null;
   return (
     <Modal open onClose={onClose} title={`${account.email}`} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} onClick={save}>Save</Button></>}>
-      <div className="tabs"><button className={tab === 'sending' ? 'active' : ''} onClick={() => setTab('sending')}>Sending policy</button><button className={tab === 'identity' ? 'active' : ''} onClick={() => setTab('identity')}>Identity & signature</button><button className={tab === 'autoreply' ? 'active' : ''} onClick={() => setTab('autoreply')}>Auto-reply{f.vacation.enabled ? ' · on' : ''}</button><button className={tab === 'connection' ? 'active' : ''} onClick={() => setTab('connection')}>Connection</button></div>
+      <div className="tabs"><button className={tab === 'sending' ? 'active' : ''} onClick={() => setTab('sending')}>Sending policy</button><button className={tab === 'identity' ? 'active' : ''} onClick={() => setTab('identity')}>Identity & signature</button><button className={tab === 'autoreply' ? 'active' : ''} onClick={() => setTab('autoreply')}>Auto-reply{f.vacation.enabled ? ' · on' : ''}</button><button className={tab === 'storage' ? 'active' : ''} onClick={() => setTab('storage')}>Storage &amp; drafts</button><button className={tab === 'connection' ? 'active' : ''} onClick={() => setTab('connection')}>Connection</button></div>
       {tab === 'autoreply' && (
         <>
           <Callout>An out-of-office message sent once to each person who writes to this mailbox while it is on (again after the interval below). Never sent to mailing lists, notifications, no-reply senders, bounces or other auto-replies, and marked as automatic so their software ignores it too. Rules and AI responders run first; a message an AI responder answers gets no auto-reply.</Callout>
@@ -264,6 +310,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
           <Field label="Messages to keep locally" hint="Newest N messages are synced on the first run; more can be loaded later."><Input type="number" min={100} max={50000} value={f.syncLimit} onChange={(e) => set({ syncLimit: Number(e.target.value) })} /></Field>
         </>
       )}
+      {tab === 'storage' && <StorageTab account={account} f={f} set={set} />}
       {tab === 'connection' && (
         <>
           <div className="form-row">
@@ -355,6 +402,107 @@ function AiSettings() {
   );
 }
 
+
+// ---------------- Passkeys ----------------
+// A passkey is the same promise as the OpenPGP challenge (something you
+// have, bound to this site so a lookalike cannot borrow it) in the shape the
+// operating system already offers. One that verified the person can replace
+// the password; one that only proved presence stays a second step.
+
+function PasskeysCard() {
+  const { user, refresh } = useAuth();
+  const toast = useToast();
+  const supported = passkeysSupported();
+  const { data, refetch } = useQuery({ queryKey: ['passkeys'], queryFn: () => api.get<{ passkeys: any[]; mode: string; ok: boolean; reason: string }>('/api/passkeys'), enabled: supported });
+  const [addPw, setAddPw] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [delFor, setDelFor] = useState<any | null>(null);
+  const [delPw, setDelPw] = useState('');
+  const [modePw, setModePw] = useState<string | null>(null);
+  const list = data?.passkeys ?? [];
+  const verified = list.filter((p) => p.user_verified);
+
+  async function add() {
+    if (addPw === null) { setAddPw(''); return; }
+    setBusy(true);
+    try {
+      const p = await createPasskey(addPw, name.trim() || undefined);
+      toast.success(`Passkey "${p.name}" added`);
+      setAddPw(null); setName(''); refetch(); await refresh();
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function remove() {
+    try { await api.post(`/api/passkeys/${delFor.id}/delete`, { password: delPw }); toast.success('Passkey removed'); setDelFor(null); setDelPw(''); refetch(); await refresh(); }
+    catch (e) { toast.error(e); }
+  }
+  async function setMode(mode: string) {
+    if (modePw === null) { setModePw(''); return; }
+    try { await api.post('/api/passkeys/mode', { mode, password: modePw }); setModePw(null); refetch(); toast.success(mode === 'passwordless' ? 'A passkey can now sign you in on its own' : 'A passkey is now a second step after your password'); }
+    catch (e) { toast.error(e); }
+  }
+
+  return (
+    <div className="card mb-16">
+      <div className="card-title"><h2>Passkeys</h2>{list.length ? <Badge kind="success">{list.length} enrolled</Badge> : <Badge>none</Badge>}</div>
+      {!supported ? (
+        <p className="muted small">This browser does not offer passkeys. Chrome, Safari, Edge and Firefox on a recent phone or computer do, over HTTPS.</p>
+      ) : data && data.ok === false ? (
+        // A passkey is bound to a domain, so an install reached by IP or over
+        // plain http cannot carry one. Say why rather than offer a button
+        // that the browser will refuse.
+        <Callout kind="warning">{data.reason}</Callout>
+      ) : (
+        <>
+          <p className="muted small">Your fingerprint, face or device PIN instead of a code. A passkey is bound to this site by the browser, so it cannot be handed to a lookalike page the way a password or a one-time code can.</p>
+          {list.length > 0 && (
+            <DataTable rows={list} rowKey={(p) => p.id} cardSize="sm" columns={[
+              { key: 'name', header: 'Passkey', primary: true, cell: (p) => <span className="row gap-4 wrap"><Fingerprint size={14} /><span>{p.name}</span>{p.backed_up ? <Badge>synced</Badge> : null}{!p.user_verified ? <Badge kind="warning">second step only</Badge> : null}</span> },
+              { key: 'auth', secondary: true, className: 'small muted', cell: (p) => p.authenticator || (p.transports ?? []).join(', ') || 'security key' },
+              { key: 'used', header: 'Last used', className: 'small muted', nowrap: true, cell: (p) => p.last_used_at ? fmtRelative(p.last_used_at) : 'never' },
+              { key: 'made', header: 'Added', className: 'small muted', nowrap: true, cell: (p) => fmtDateTime(p.created_at) },
+              { key: 'act', actions: true, cell: (p) => <Button size="sm" variant="ghost" onClick={() => { setDelFor(p); setDelPw(''); }}>Remove</Button> },
+            ]} />
+          )}
+          {addPw === null ? (
+            <Button className="mt-8" icon={<Plus size={15} />} onClick={add}>Add a passkey</Button>
+          ) : (
+            <div className="row mt-8 wrap">
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (optional)" style={{ maxWidth: 200 }} />
+              <Input type="password" placeholder="Password to confirm" value={addPw} onChange={(e) => setAddPw(e.target.value)} style={{ maxWidth: 240 }} autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.key === 'Enter' && addPw) void add(); }} />
+              <Button variant="primary" loading={busy} disabled={!addPw} onClick={add}>Continue</Button>
+              <Button variant="ghost" onClick={() => { setAddPw(null); setName(''); }}>Cancel</Button>
+            </div>
+          )}
+          {verified.length > 0 && (
+            <div className="mt-16">
+              <div className="divider" />
+              <div className="row wrap" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                <div style={{ maxWidth: 420 }}>
+                  <div className="strong small">Sign in with a passkey alone</div>
+                  <p className="muted small" style={{ margin: '4px 0 0' }}>No password, no username typed: the browser offers the passkey and the account comes with it. Only passkeys that ask for your PIN, fingerprint or face qualify.</p>
+                </div>
+                <Toggle checked={data?.mode === 'passwordless'} onChange={(on) => setMode(on ? 'passwordless' : 'second_factor')} />
+              </div>
+              {modePw !== null && (
+                <div className="row mt-8">
+                  <Input type="password" placeholder="Password to confirm" value={modePw} onChange={(e) => setModePw(e.target.value)} style={{ maxWidth: 240 }} autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.key === 'Enter' && modePw) void setMode(data?.mode === 'passwordless' ? 'second_factor' : 'passwordless'); }} />
+                  <Button variant="primary" disabled={!modePw} onClick={() => setMode(data?.mode === 'passwordless' ? 'second_factor' : 'passwordless')}>Confirm</Button>
+                  <Button variant="ghost" onClick={() => setModePw(null)}>Cancel</Button>
+                </div>
+              )}
+            </div>
+          )}
+          <Modal open={Boolean(delFor)} onClose={() => setDelFor(null)} title={`Remove "${delFor?.name ?? ''}"`} footer={<><Button onClick={() => setDelFor(null)}>Cancel</Button><Button variant="danger" disabled={!delPw} onClick={remove}>Remove</Button></>}>
+            <p className="muted small">{list.length === 1 ? 'This is your only passkey. Removing it turns off signing in with one.' : 'This device will no longer sign you in. Your other passkeys are unaffected.'}</p>
+            <Field label="Password to confirm" className="mt-16"><Input type="password" value={delPw} onChange={(e) => setDelPw(e.target.value)} autoComplete="current-password" /></Field>
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------------- Security ----------------
 
 function SecuritySettings() {
@@ -414,6 +562,7 @@ function SecuritySettings() {
         {codes && <Callout kind="warning"><div className="strong mb-8">Recovery codes. Save them now; they are not shown again.</div><div className="mono small" style={{ columns: 2 }}>{codes.map((c) => <div key={c}>{c}</div>)}</div></Callout>}
         {user!.totp_enabled && !codes && <div className="row mt-8"><Input type="password" placeholder="Password to confirm" value={pw} onChange={(e) => setPw(e.target.value)} style={{ maxWidth: 260 }} /><Button variant="danger" disabled={!pw} onClick={disable}>Turn off</Button><Button disabled={!pw} onClick={() => api.post<any>('/api/auth/totp/recovery', { password: pw }).then((r) => { setCodes(r.recoveryCodes); setPw(''); }).catch((e) => toast.error(e))}>New recovery codes</Button></div>}
       </div>
+      <PasskeysCard />
       <div className="card">
         <div className="card-title"><h2>Sessions</h2><Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { all: true }).then(() => { refetch(); toast.success('Other sessions signed out'); })}>Sign out everywhere else</Button></div>
         <DataTable rows={sessions?.sessions ?? []} rowKey={(s) => s.id} cardSize="sm" columns={[

@@ -10,6 +10,7 @@ import { config } from '../config.js';
 import { getUserAccount } from '../services/accounts.js';
 import { htmlToText } from '../services/merge.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { openEmails } from '../services/mailVault.js';
 
 export const aiRouter = Router();
 aiRouter.use(requireAuth);
@@ -120,7 +121,7 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
     const [accId, threadId] = b.threadKey.split(':');
     const tacc = await getUserAccount(req.user!.id, Number(accId));
     if (!tacc) throw notFound('Thread not found');
-    const msgs = await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]);
+    const msgs = await openEmails(req.user!.id, await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
     input.thread = msgs.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() }));
     // A reply goes to whoever wrote to us; if we only have their address, the thread usually has their name.
     if (input.recipient?.email && !input.recipient.name) {

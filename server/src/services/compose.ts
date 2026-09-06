@@ -15,6 +15,7 @@ import { badRequest } from '../errors.js';
 import { scrubMedia } from './scrub.js';
 import { assertSendable } from '../ai/guard.js';
 import { buildAutocryptHeader, buildGossipHeader } from './autocrypt.js';
+import { openEmail } from './mailVault.js';
 
 export interface ComposeInput {
   to: Address[];
@@ -144,7 +145,7 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     for (const r of rows) attachments.push({ filename: r.filename, content: r.data, contentType: r.content_type });
   }
   if (input.forwardOfEmailId) {
-    const orig = await one<any>('SELECT attachments FROM emails WHERE id=$1 AND account_id=$2', [input.forwardOfEmailId, acc.id]);
+    const orig = await openEmail(acc.user_id, await one<any>('SELECT attachments FROM emails WHERE id=$1 AND account_id=$2', [input.forwardOfEmailId, acc.id]));
     const client = clientFor(acc);
     const wanted = Array.isArray(input.forwardBlobIds) ? new Set(input.forwardBlobIds) : null;
     for (const a of orig?.attachments ?? []) {
