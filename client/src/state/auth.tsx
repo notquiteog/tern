@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, setUnauthorizedHandler } from '../api';
+import { applyHouseAppearance } from './theme';
 
 export interface User { id: number; username: string; display_name: string; role: 'admin' | 'member'; totp_enabled: boolean; prefs: Record<string, any>; created_at: string; last_login_at: string | null; avatar_version: number | null; pgp_fingerprint?: string | null; pgp_auth?: 'off' | 'second_factor' | 'passwordless' }
 export interface Branding { name: string; logo: string | null; version: number }
@@ -24,11 +25,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const status = await api.get<{ needsSetup: boolean; version: string; registrationOpen?: boolean; passkeys?: boolean; branding?: Branding }>('/api/setup/status');
+      const status = await api.get<{ needsSetup: boolean; version: string; registrationOpen?: boolean; passkeys?: boolean; branding?: Branding; appearance?: { defaults: Record<string, unknown>; version: number } }>('/api/setup/status');
       setBranding(status.branding?.name ? status.branding : DEFAULT_BRANDING);
       setNeedsSetup(status.needsSetup);
       setRegistrationOpen(Boolean(status.registrationOpen));
       setPasskeysAvailable(Boolean(status.passkeys));
+      // The install's house style, before anyone signs in.
+      applyHouseAppearance(status.appearance as any);
       setVersion(status.version);
       if (status.needsSetup) { setUser(null); return; }
       const me = await api.get<{ user: User; accountCount: number; stalwartProvisioning?: boolean }>('/api/auth/me');

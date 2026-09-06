@@ -61,16 +61,28 @@ export async function sealEmail(userId: number, c: PlainContent): Promise<Sealed
   };
 }
 
+// The fields opening a row changes: ciphertext text becomes text, sealed
+// JSON becomes the list it encodes, from_email reappears (it used to be a
+// generated column), and the index terms are removed. Spelling it out means
+// a caller cannot treat a sealed column as if it were already open.
+export interface OpenedEmailFields {
+  subject: string; preview: string; body_text: string | null; body_html: string | null;
+  from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[];
+  attachments: any[];
+  from_email: string | null;
+}
+export type Opened<T> = Omit<T, keyof OpenedEmailFields | 'search_terms' | 'address_terms' | 'from_terms'> & Partial<OpenedEmailFields>;
+
 // Turns a row as it came out of Postgres back into the shape the rest of the
 // app has always seen. Rows the backfill has not reached are plaintext and
 // pass through unchanged, so a read never has to ask which it is holding.
-export async function openEmail<T extends Record<string, any>>(userId: number, row: T): Promise<T> {
-  if (!row) return row;
+export async function openEmail<T extends Record<string, any>>(userId: number, row: T): Promise<Opened<T>> {
+  if (!row) return row as Opened<T>;
   const dek = await dataKey(userId);
   return openEmailWith(dek, row);
 }
 
-export function openEmailWith<T extends Record<string, any>>(dek: Buffer, row: T): T {
+export function openEmailWith<T extends Record<string, any>>(dek: Buffer, row: T): Opened<T> {
   const out: Record<string, any> = { ...row };
   for (const k of ['subject', 'preview', 'body_text', 'body_html'] as const) {
     if (k in out) out[k] = openWith(dek, out[k]) ?? (k === 'subject' || k === 'preview' ? '' : null);
@@ -85,12 +97,12 @@ export function openEmailWith<T extends Record<string, any>>(dek: Buffer, row: T
   // browser has no use for them and they are the one part a reader should
   // not be handed.
   delete out.search_terms; delete out.address_terms; delete out.from_terms;
-  return out as T;
+  return out as Opened<T>;
 }
 
 // Opens many rows for one user with a single key lookup.
-export async function openEmails<T extends Record<string, any>>(userId: number, rows: T[]): Promise<T[]> {
-  if (!rows.length) return rows;
+export async function openEmails<T extends Record<string, any>>(userId: number, rows: T[]): Promise<Opened<T>[]> {
+  if (!rows.length) return rows as Opened<T>[];
   const dek = await dataKey(userId);
   return rows.map((r) => openEmailWith(dek, r));
 }
@@ -135,19 +147,22 @@ export async function sealDraft(userId: number, d: PlainDraft): Promise<{ subjec
   };
 }
 
-export function openDraftWith<T extends Record<string, any>>(dek: Buffer, row: T): T {
+export interface OpenedDraftFields { subject: string; body_html: string; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[] }
+export type OpenedDraft<T> = Omit<T, keyof OpenedDraftFields> & Partial<OpenedDraftFields>;
+
+export function openDraftWith<T extends Record<string, any>>(dek: Buffer, row: T): OpenedDraft<T> {
   const out: Record<string, any> = { ...row };
   for (const k of ['subject', 'body_html'] as const) if (k in out) out[k] = openWith(dek, out[k]) ?? '';
   for (const k of ['to_addr', 'cc_addr', 'bcc_addr'] as const) if (k in out) out[k] = parseList(openWith(dek, out[k]));
-  return out as T;
+  return out as OpenedDraft<T>;
 }
 
-export async function openDraft<T extends Record<string, any>>(userId: number, row: T): Promise<T> {
+export async function openDraft<T extends Record<string, any>>(userId: number, row: T): Promise<OpenedDraft<T>> {
   return openDraftWith(await dataKey(userId), row);
 }
 
-export async function openDrafts<T extends Record<string, any>>(userId: number, rows: T[]): Promise<T[]> {
-  if (!rows.length) return rows;
+export async function openDrafts<T extends Record<string, any>>(userId: number, rows: T[]): Promise<OpenedDraft<T>[]> {
+  if (!rows.length) return rows as OpenedDraft<T>[];
   const dek = await dataKey(userId);
   return rows.map((r) => openDraftWith(dek, r));
 }
@@ -166,21 +181,24 @@ export async function sealReview(userId: number, r: { subject: string; body_html
   };
 }
 
-export function openReviewWith<T extends Record<string, any>>(dek: Buffer, row: T): T {
+export interface OpenedReviewFields { subject: string; body_html: string; context: string | null; to_addr: Addr[] }
+export type OpenedReview<T> = Omit<T, keyof OpenedReviewFields> & Partial<OpenedReviewFields>;
+
+export function openReviewWith<T extends Record<string, any>>(dek: Buffer, row: T): OpenedReview<T> {
   const out: Record<string, any> = { ...row };
   for (const k of ['subject', 'body_html'] as const) if (k in out) out[k] = openWith(dek, out[k]) ?? '';
   if ('context' in out) out.context = openWith(dek, out.context);
   if ('to_addr' in out) out.to_addr = parseList(openWith(dek, out.to_addr));
-  return out as T;
+  return out as OpenedReview<T>;
 }
 
-export async function openReview<T extends Record<string, any>>(userId: number, row: T | null): Promise<T | null> {
-  if (!row) return row;
+export async function openReview<T extends Record<string, any>>(userId: number, row: T | null): Promise<OpenedReview<T> | null> {
+  if (!row) return null;
   return openReviewWith(await dataKey(userId), row);
 }
 
-export async function openReviews<T extends Record<string, any>>(userId: number, rows: T[]): Promise<T[]> {
-  if (!rows.length) return rows;
+export async function openReviews<T extends Record<string, any>>(userId: number, rows: T[]): Promise<OpenedReview<T>[]> {
+  if (!rows.length) return rows as OpenedReview<T>[];
   const dek = await dataKey(userId);
   return rows.map((r) => openReviewWith(dek, r));
 }

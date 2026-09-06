@@ -3,8 +3,16 @@
 // palette table is generated from src/lib/palettes.ts (npm run gen:theme).
 (function () {
   try {
-    var raw = localStorage.getItem('tern.appearance');
-    var a = raw ? JSON.parse(raw) : {};
+    // Three layers, same order as state/theme.ts: what Tern ships with, the
+    // install's default cached from /api/setup/status, then this person's own
+    // choices. Reading them here keeps the first paint from flashing.
+    var house = {};
+    try { house = (JSON.parse(localStorage.getItem('tern.appearance.house') || '{}').defaults) || {}; } catch (e) { house = {}; }
+    var mine = {};
+    try { mine = JSON.parse(localStorage.getItem('tern.appearance') || '{}') || {}; } catch (e) { mine = {}; }
+    var a = {};
+    for (var hk in house) a[hk] = house[hk];
+    for (var mk in mine) a[mk] = mine[mk];
     var theme = a.theme || localStorage.getItem('tern.theme') || 'system';
     var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     var root = document.documentElement;

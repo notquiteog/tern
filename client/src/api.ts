@@ -36,7 +36,10 @@ export const api = {
   post: <T,>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T,>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   del: <T,>(path: string) => request<T>('DELETE', path),
-  upload: <T,>(path: string, blob: Blob | ArrayBuffer | string, contentType: string) => request<T>('POST', path, blob, { raw: true, contentType }),
+  // Raw-body upload. The method is a parameter because the endpoints differ:
+  // most take POST, but one that replaces a single named thing (a domain's
+  // brand logo) is a PUT.
+  upload: <T,>(path: string, blob: Blob | ArrayBuffer | string, contentType: string, method: 'POST' | 'PUT' = 'POST') => request<T>(method, path, blob, { raw: true, contentType }),
 };
 
 // POST + server-sent events. EventSource cannot POST, so read the stream by hand.

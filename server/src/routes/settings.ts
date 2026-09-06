@@ -6,6 +6,7 @@ import { config } from '../config.js';
 import { appSettings } from '../services/compose.js';
 import { clearLogo, getBranding, getIcon, getLogo, ICON_NAMES, LOGO_MAX_BYTES, LOGO_TYPES, manifest, publicBranding, setAppName, setIcons, setLogo } from '../services/branding.js';
 import { badRequest, notFound } from '../errors.js';
+import { APPEARANCE_DEFAULTS, getAppearanceSettings, saveAppearanceSettings } from '../services/appearance.js';
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
@@ -27,6 +28,26 @@ settingsRouter.put('/', requireAdmin, async (req, res) => {
 function brandingView(b: Awaited<ReturnType<typeof getBranding>>) {
   return { ...publicBranding(b), logoType: b.logo?.type ?? null, logoBytes: b.logo?.bytes ?? null, maxBytes: LOGO_MAX_BYTES, iconBg: b.iconBg, hasIcons: Boolean(b.icons) };
 }
+// The house style: the appearance a person sees before choosing their own.
+settingsRouter.get('/appearance', requireAdmin, async (_req, res) => {
+  res.json({ appearance: await getAppearanceSettings(), builtIn: APPEARANCE_DEFAULTS });
+});
+
+settingsRouter.put('/appearance', requireAdmin, async (req, res) => {
+  const b = parse(z.object({
+    defaults: z.object({
+      theme: z.string().max(20), palette: z.string().max(32), background: z.string().max(32),
+      glass: z.string().max(20), motion: z.string().max(20), density: z.string().max(20),
+      split: z.boolean(),
+    }).partial(),
+    // Overruling a choice someone already made is a separate, explicit act.
+    applyToEveryone: z.boolean().default(false),
+  }), req.body);
+  const next = await saveAppearanceSettings(b.defaults, b.applyToEveryone);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'appearance.defaults',$2)`, [req.user!.id, JSON.stringify({ ...next.defaults, appliedToEveryone: b.applyToEveryone })]);
+  res.json({ appearance: next });
+});
+
 settingsRouter.get('/branding', requireAdmin, async (_req, res) => {
   res.json({ branding: brandingView(await getBranding()) });
 });

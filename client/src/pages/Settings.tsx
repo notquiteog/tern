@@ -10,7 +10,7 @@ import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
-import { getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
+import { getAppearance, setAppearance, onAppearance, myAppearanceChoices, resetAppearance, type Theme, type Appearance } from '../state/theme';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { Avatar } from '../components/ui';
 import { useMailPrefs } from '../state/mailPrefs';
@@ -595,8 +595,11 @@ function SecuritySettings() {
 
 function AppearanceSettings() {
   const [a, setA] = useState<Appearance>(getAppearance());
+  const toast = useToast();
   useEffect(() => onAppearance(setA), []);
   const set = (patch: Partial<Appearance>) => setA(setAppearance(patch));
+  // Only worth offering when there is something to clear.
+  const usingOwnStyle = Object.keys(myAppearanceChoices()).length > 0;
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="Appearance" sub="Theme, colour palette and the living background. Saved to this browser and to your profile, so it follows you." />
@@ -625,6 +628,13 @@ function AppearanceSettings() {
       </div>
       <div className="card mb-16"><h2 className="mb-8">Density</h2><div className="segmented"><button className={a.density === 'comfortable' ? 'active' : ''} onClick={() => set({ density: 'comfortable' })}>Comfortable</button><button className={a.density === 'compact' ? 'active' : ''} onClick={() => set({ density: 'compact' })}>Compact</button></div></div>
       <div className="card"><h2 className="mb-8">Reading pane</h2><ReadingPaneToggle /></div>
+      {usingOwnStyle && (
+        <div className="card mt-16">
+          <h2 className="mb-8">Back to the house style</h2>
+          <p className="muted small">Your choices sit on top of the default set for this install. Clearing them puts you back on whatever that default is, now and whenever it changes.</p>
+          <Button onClick={() => { resetAppearance(); toast.success('Back to the default style'); }}>Use the default style</Button>
+        </div>
+      )}
     </div>
   );
 }

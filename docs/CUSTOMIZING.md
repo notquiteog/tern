@@ -242,6 +242,17 @@ person wrote or approved is never touched.
 Settings → Appearance, or the theme button in the top bar for the quick
 version. Everything is saved in the browser and mirrored to your profile.
 
+**The house style.** Admin → Appearance sets what everyone starts with: the
+look on a new account, in a browser that has never been used here, and on the
+sign-in page, where there is no person yet. It is a *default*, so it reaches
+anyone who has not chosen for themselves, key by key — change the house
+palette and someone who once picked dark mode keeps dark and gets the new
+palette. **Apply to everyone** is the separate button that does overrule a
+personal choice: it clears what people picked, in the browser and in their
+profile, and puts everyone on the current default the next time their browser
+loads the app. They are free to change it again afterwards, and Settings →
+Appearance has a "Use the default style" button that goes back.
+
 - **Theme**: Auto (follows the system), Light or Dark.
 - **Colour palette**: eighteen palettes. Ink (black on white, the default),
   Graphite, Slate, Indigo, Arctic, Midnight, Ocean, Violet, Lavender, Rose,

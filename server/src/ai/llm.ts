@@ -19,6 +19,10 @@ export interface AiSettings {
   temperature: number;
   numCtx: number;
   keepAlive: string;
+  // Reasoning models (qwen3, deepseek-r1 and the like) answer in two parts:
+  // their working-out and the reply. Tern wants the reply, so thinking is
+  // off unless an admin turns it on.
+  allowThinking: boolean;
   systemPrompt: string;
   topP: number;
   topK: number;
@@ -35,6 +39,7 @@ const DEFAULTS: AiSettings = {
   temperature: 0.7,
   numCtx: 4096,
   keepAlive: '10m',
+  allowThinking: false,
   systemPrompt: '',
   topP: 0.9,
   topK: 40,
@@ -59,6 +64,37 @@ export async function saveAiSettings(patch: Partial<AiSettings>): Promise<AiSett
 }
 export function aiDefaults(): AiSettings { return { ...DEFAULTS }; }
 
+// Ollama's keep_alive is either a duration string ("10m", "1h") or a number
+// of seconds, where -1 means "keep it loaded" and 0 "unload at once". A bare
+// number sent as a string is refused with `missing unit in duration`, which
+// is what "-1" in the admin field used to produce, so numbers go out as
+// numbers.
+export function keepAliveValue(setting: string): string | number {
+  const v = String(setting ?? '').trim();
+  if (!v) return DEFAULTS.keepAlive;
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  return v;
+}
+
+// The message a person gets when a model returns nothing usable. A reasoning
+// model that spent its budget thinking is the common cause and is worth
+// naming, because the fix is a setting rather than a bigger machine.
+export function emptyAnswer(model: string, thoughtChars: number, budget: number): string {
+  if (thoughtChars > 0) {
+    return `"${model}" is a reasoning model and used its whole ${budget}-token budget working out an answer without writing one. Turn off "Let reasoning models think" in Admin → AI model, or raise the reply length.`;
+  }
+  return `"${model}" returned an empty reply. Try a different model, or raise the reply length in Admin → AI model.`;
+}
+
+// What the admin field accepts: a duration with a unit, or a plain number of
+// seconds (-1 for "never unload", 0 to unload at once).
+export function isValidKeepAlive(v: string): boolean {
+  const t = String(v ?? '').trim();
+  if (!t) return false;
+  if (/^-?\d+(\.\d+)?$/.test(t)) return true;
+  return /^\d+(\.\d+)?(ns|us|µs|ms|s|m|h)$/.test(t);
+}
+
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatOptions { messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number }
 
@@ -78,7 +114,12 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
       model,
       messages: opts.messages, // one system + one user message; never a `context` from a previous answer
       stream: true,
-      keep_alive: s.keepAlive,
+      // A reasoning model with thinking left on spends its whole token
+      // budget working out loud and returns an empty message, which looked
+      // to the user like the model simply not working. Ollama ignores this
+      // field for models that cannot think.
+      think: s.allowThinking,
+      keep_alive: keepAliveValue(s.keepAlive),
       options: { temperature: opts.temperature ?? s.temperature, num_ctx: s.numCtx, num_predict: opts.maxTokens ?? s.maxTokens, top_p: s.topP, top_k: s.topK, repeat_penalty: s.repeatPenalty },
     }),
     signal: opts.signal,
@@ -91,6 +132,8 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  let produced = false;
+  let thought = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -103,9 +146,16 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
       let j: any;
       try { j = JSON.parse(line); } catch { continue; }
       if (j.error) throw new Error(j.error);
+      // `thinking` is the model's working-out. It is never part of a draft,
+      // but it is counted so an answer that is all thinking and no reply can
+      // say so instead of arriving empty.
+      if (j.message?.thinking) thought += j.message.thinking.length;
       const piece = j.message?.content;
-      if (piece) yield piece;
-      if (j.done) return;
+      if (piece) { produced = true; yield piece; }
+      if (j.done) {
+        if (!produced) throw new Error(emptyAnswer(model, thought, opts.maxTokens ?? s.maxTokens));
+        return;
+      }
     }
   }
 }

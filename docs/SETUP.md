@@ -32,7 +32,18 @@ Every question shows its default in brackets; press Enter to accept. The install
    | 10 to 20 GB | `qwen2.5:7b` | strong writing, slow on CPU |
    | 20 GB and up | `qwen2.5:14b` | best quality, wants a GPU |
 
-   Any model from ollama.com/library works; type its name instead. If an NVIDIA GPU with the container toolkit is present, it offers to use it.
+   Any model from ollama.com/library works; type its name instead, either
+   short (`gemma3:4b`) or fully qualified (`ollama.com/library/gemma3:4b`) —
+   Ollama keeps the long form as its own entry, so set the model field to
+   whichever spelling you pulled. If an NVIDIA GPU with the container toolkit
+   is present, it offers to use it.
+
+   **Reasoning models** (qwen3, qwen3.5, deepseek-r1 and the like) work an
+   answer out before writing it. Tern turns that off, because a short reply
+   length can be used up entirely on the working-out and leave no message
+   behind. If you want it on, Admin → AI model has "Let reasoning models
+   think" — raise the reply length well above the default when you do, and
+   note that the reasoning is never put into a draft.
 5. **Mail server.** Whether to run Stalwart on this box. Say no if you use Fastmail or a mail server elsewhere. If yes, it asks for the mail domain, the mail hostname, and whether to create a first mailbox.
 6. **Configuration.** Writes `.env` (secrets are generated once and kept), `deploy/generated/Caddyfile`, and opens firewall ports if `ufw` is active.
 7. **Build and start.** Builds the app image, starts Postgres, the app, Ollama and Caddy, creates the admin user, downloads the model, and bootstraps Stalwart if enabled.
@@ -77,7 +88,7 @@ These apply to sequences and to "Send with a natural delay". Manual sends are ne
 
 ## 6. Turn on the assistant
 
-**Settings → AI** shows whether Ollama is reachable and the model is installed, and lets an admin pull other models. In the composer, **Draft with AI** opens the assistant; in a thread, **Summarize**.
+**Settings → AI** shows whether Ollama is reachable and the model is installed, and lets an admin pull other models. **Keep model loaded** takes a duration with a unit (`30s`, `10m`, `1h`) or a plain number of seconds, where `-1` never unloads it and `0` unloads it straight after each request. In the composer, **Draft with AI** opens the assistant; in a thread, **Summarize**.
 
 For sequences, a step's **AI personalise** switch has the model write each contact's message from the template brief and the contact's fields and notes. With the sequence's AI mode on **Review** (the default), those drafts wait in **AI review** for approval.
 

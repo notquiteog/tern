@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft, Monitor, Sun, Moon, Paintbrush } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
@@ -12,6 +12,8 @@ import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input,
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { AiPlayground, AiStatusLine } from './Settings';
+import { PALETTES, BACKGROUNDS } from '../lib/palettes';
+import { getAppearance, houseAppearance, applyHouseAppearance, type Appearance, type Theme } from '../state/theme';
 
 // Everything that changes the workspace for everyone: users and sign-up,
 // the bundled mail server, the AI model, the app's name and logo, the
@@ -24,7 +26,7 @@ export default function AdminSettingsPage() {
     ['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />],
   ];
   if (stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
-  tabs.push(['ai', 'AI model', <Bot size={15} />], ['branding', 'Branding', <Palette size={15} />], ['audit', 'Audit log', <ScrollText size={15} />]);
+  tabs.push(['ai', 'AI model', <Bot size={15} />], ['branding', 'Branding', <Palette size={15} />], ['appearance', 'Appearance', <Paintbrush size={15} />], ['audit', 'Audit log', <ScrollText size={15} />]);
   return (
     <div className="page">
       <div className="settings-head row wrap mb-8">
@@ -40,6 +42,7 @@ export default function AdminSettingsPage() {
         <Route path="mailserver" element={<MailServerSettings />} />
         <Route path="ai" element={<AiAdminSettings />} />
         <Route path="branding" element={<BrandingSettings />} />
+        <Route path="appearance" element={<AppearanceDefaults />} />
         <Route path="audit" element={<AuditSettings />} />
         <Route path="*" element={<Navigate to="/admin/general" replace />} />
       </Routes>
@@ -86,6 +89,97 @@ function BrandingSettings() {
     <div style={{ maxWidth: 760 }}>
       <PageHeader title="Branding" sub="The app's own name and logo, for everyone who signs in here." />
       <BrandingCard />
+    </div>
+  );
+}
+
+// ---------------- Appearance defaults ----------------
+// The look a person gets before they have chosen one: new accounts, new
+// browsers, and the sign-in page, where there is no person yet. Saving the
+// default leaves everyone's own choices alone; "apply to everyone" is the
+// separate, louder button that overrules them.
+
+function AppearanceDefaults() {
+  const toast = useToast();
+  const { data, refetch } = useQuery({ queryKey: ['appearance-defaults'], queryFn: () => api.get<{ appearance: { defaults: Appearance; version: number; updatedAt: string | null }; builtIn: Appearance }>('/api/settings/appearance') });
+  const [f, setF] = useState<Appearance | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
+  useEffect(() => { if (data && !f) setF(data.appearance.defaults); }, [data]);
+  if (!f || !data) return <Spinner />;
+  const set = (patch: Partial<Appearance>) => setF({ ...f, ...patch });
+  const dirty = JSON.stringify(f) !== JSON.stringify(data.appearance.defaults);
+
+  async function save(applyToEveryone: boolean) {
+    setBusy(true);
+    try {
+      const r = await api.put<{ appearance: { defaults: Appearance; version: number } }>('/api/settings/appearance', { defaults: f, applyToEveryone });
+      applyHouseAppearance(r.appearance);
+      await refetch();
+      setConfirmAll(false);
+      toast.success(applyToEveryone ? 'Everyone is now on this style' : 'Default saved for anyone who has not chosen');
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+
+  const mine = getAppearance();
+  const differsFromMine = JSON.stringify(mine) !== JSON.stringify(houseAppearance());
+
+  return (
+    <div style={{ maxWidth: 820 }}>
+      <PageHeader title="Appearance" sub="The look everyone starts with on this install." />
+      <Callout>
+        This is the style a person sees before they pick their own: a new account, a browser that has never been used here, and the sign-in page. Anyone who has already chosen a theme or palette keeps it — the button at the bottom is what overrules that.
+      </Callout>
+      {differsFromMine && <div className="help-text mt-8">Your own appearance differs from this; what you see in the app is your choice, not the default below. Settings → Appearance has a link back.</div>}
+
+      <div className="card mb-16 mt-16">
+        <h2 className="mb-8">Theme</h2>
+        <div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map((t) => <button key={t} className={f.theme === t ? 'active' : ''} onClick={() => set({ theme: t })}>{t === 'system' ? <Monitor size={14} /> : t === 'light' ? <Sun size={14} /> : <Moon size={14} />} {t === 'system' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}</button>)}</div>
+        <div className="help-text mt-8">Auto follows each person's operating system.</div>
+      </div>
+
+      <div className="card mb-16">
+        <h2 className="mb-8">Colour palette</h2>
+        <div className="swatches">{PALETTES.map((p) => <button key={p.key} type="button" className={cls('swatch-card', f.palette === p.key && 'active')} onClick={() => set({ palette: p.key })}><div className="bar" style={{ background: `linear-gradient(120deg, ${p.gradient.join(', ')})` }} /><div className="name">{p.name}</div><div className="hint">{f.palette === p.key ? 'the default' : p.hint}</div></button>)}</div>
+      </div>
+
+      <div className="card mb-16">
+        <h2 className="mb-8">Background</h2>
+        <div className="swatches">{(['calm', 'lively', 'none'] as const).map((mood) => <Fragment key={mood}><div className="swatch-group">{mood === 'calm' ? 'Calm' : mood === 'lively' ? 'Lively' : 'Off'}</div>{BACKGROUNDS.filter((b) => b.mood === mood).map((b) => <button key={b.key} type="button" className={cls('swatch-card', f.background === b.key && 'active')} onClick={() => set({ background: b.key })}><div className={`bar bg-preview-${b.key}`} /><div className="name">{b.name}</div><div className="hint">{b.hint}</div></button>)}</Fragment>)}</div>
+        <div className="help-text mt-8">Shaders run on the GPU. Choose Plain if the people here are on older machines.</div>
+      </div>
+
+      <div className="card mb-16">
+        <div className="form-row">
+          <Field label="Glass"><div className="segmented">{(['subtle', 'balanced', 'strong'] as const).map((g) => <button key={g} className={f.glass === g ? 'active' : ''} onClick={() => set({ glass: g })}>{g[0].toUpperCase() + g.slice(1)}</button>)}</div></Field>
+          <Field label="Motion"><div className="segmented">{(['full', 'reduced'] as const).map((m) => <button key={m} className={f.motion === m ? 'active' : ''} onClick={() => set({ motion: m })}>{m === 'full' ? 'Full' : 'Reduced'}</button>)}</div></Field>
+        </div>
+        <div className="form-row">
+          <Field label="Density"><div className="segmented">{(['comfortable', 'compact'] as const).map((d) => <button key={d} className={f.density === d ? 'active' : ''} onClick={() => set({ density: d })}>{d === 'comfortable' ? 'Comfortable' : 'Compact'}</button>)}</div></Field>
+          <Field label="Reading pane"><div className="segmented"><button className={f.split ? 'active' : ''} onClick={() => set({ split: true })}>On</button><button className={!f.split ? 'active' : ''} onClick={() => set({ split: false })}>Off</button></div></Field>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title"><h2>Save</h2>{data.appearance.updatedAt && <span className="small muted">last changed {fmtRelative(data.appearance.updatedAt)}</span>}</div>
+        <div className="row wrap gap-4">
+          <Button variant="primary" loading={busy} disabled={!dirty} onClick={() => save(false)}>Save default</Button>
+          <Button variant="ghost" disabled={!dirty} onClick={() => setF(data.appearance.defaults)}>Discard changes</Button>
+          <Button variant="ghost" onClick={() => setF(data.builtIn)}>Reset to Tern's own</Button>
+        </div>
+        <div className="help-text mt-8">Saving affects people who have never chosen an appearance. To change it for everyone, including people who have:</div>
+        <Button className="mt-8" variant="danger" loading={busy} onClick={() => setConfirmAll(true)}>Apply to everyone</Button>
+      </div>
+
+      <Confirm
+        open={confirmAll}
+        onClose={() => setConfirmAll(false)}
+        onConfirm={() => save(true)}
+        title="Apply this style to everyone"
+        confirmLabel="Apply to everyone"
+        danger
+        message="Every person on this install loses the theme, palette and background they picked and gets this one instead, the next time their browser loads the app. They can change it again afterwards."
+      />
     </div>
   );
 }
@@ -163,9 +257,16 @@ function AiAdminSettings() {
           <Field label={`Top-k: ${f.topK}`} hint="Candidates per token."><input className="range" type="range" min={1} max={100} step={1} value={f.topK} onChange={(e) => setF({ ...f, topK: Number(e.target.value) })} /></Field>
           <Field label={`Repeat penalty: ${f.repeatPenalty}`} hint="Above 1 discourages repetition."><input className="range" type="range" min={0.8} max={1.6} step={0.05} value={f.repeatPenalty} onChange={(e) => setF({ ...f, repeatPenalty: Number(e.target.value) })} /></Field>
           <Field label="Max tokens per reply" hint="Caps the length of a generation."><Input type="number" min={64} max={4096} value={f.maxTokens} onChange={(e) => setF({ ...f, maxTokens: Number(e.target.value) })} /></Field>
-          <Field label="Keep model loaded" hint="e.g. 10m, 1h, -1 for always"><Input value={f.keepAlive} onChange={(e) => setF({ ...f, keepAlive: e.target.value })} /></Field>
+          <Field label="Keep model loaded" hint="A duration with a unit (30s, 10m, 1h), or seconds as a number: -1 never unloads, 0 unloads at once."><Input value={f.keepAlive} onChange={(e) => setF({ ...f, keepAlive: e.target.value })} /></Field>
         </div>
-        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive })}>Save tuning</Button>
+        <div className="row mt-8 mb-8">
+          <Toggle checked={Boolean(f.allowThinking)} onChange={(v) => setF({ ...f, allowThinking: v })} />
+          <div>
+            <div className="strong small">Let reasoning models think</div>
+            <div className="help-text">Models like qwen3 and deepseek-r1 work an answer out before writing it. That reasoning is never put in a draft, and with a short reply length it can use the whole budget and leave nothing behind — which looks like the model not working. Off is the right setting for writing email; turn it on only if you have raised the reply length well above the default.</div>
+          </div>
+        </div>
+        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, repeatPenalty: f.repeatPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">
@@ -533,7 +634,7 @@ function BrandLogo({ domain }: { domain: string }) {
   async function saveSvg(svg: string, source: string) {
     setBusy(true);
     try {
-      const r = await api.upload<any>(`/api/brand/${domain}?source=${source}`, svg, 'image/svg+xml');
+      const r = await api.upload<any>(`/api/brand/${domain}?source=${source}`, svg, 'image/svg+xml', 'PUT');
       const rep = r.brand.report ?? {};
       const removed = Object.values(rep.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0);
       done(); setTrace(null);
@@ -560,7 +661,7 @@ function BrandLogo({ domain }: { domain: string }) {
       const text = await f.text();
       setBusy(true);
       try {
-        const r = await api.upload<any>(`/api/brand/${domain}?source=upload`, text, 'image/svg+xml');
+        const r = await api.upload<any>(`/api/brand/${domain}?source=upload`, text, 'image/svg+xml', 'PUT');
         const rep = r.brand.report ?? {};
         const removed = Object.values(rep.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0);
         done();

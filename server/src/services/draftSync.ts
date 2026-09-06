@@ -14,6 +14,7 @@ import { clientFor, type AccountRow, getAccount } from './accounts.js';
 import { mailboxByRole } from '../jmap/actions.js';
 import { buildMime, type Address, type OutgoingAttachment } from '../jmap/send.js';
 import { inlineUploadIds, rewriteInlineUploads } from './compose.js';
+import { openDraft, type OpenedDraft } from './mailVault.js';
 import { scrubMedia } from './scrub.js';
 
 const log = logger('draftsync');
@@ -45,7 +46,7 @@ export async function markDirty(draftId: number): Promise<void> {
 
 // The bytes for one draft: the same MIME builder the sender uses, so what
 // another client opens is what Tern would have sent, minus the send.
-async function buildDraftMime(acc: AccountRow, d: DraftRow): Promise<Buffer> {
+async function buildDraftMime(acc: AccountRow, d: OpenedDraft<DraftRow>): Promise<Buffer> {
   let html = d.body_html || '<p></p>';
   const attachments: OutgoingAttachment[] = [];
   const inlineIds = inlineUploadIds(html);
@@ -93,10 +94,13 @@ async function buildDraftMime(acc: AccountRow, d: DraftRow): Promise<Buffer> {
 // Imports the draft and drops the copy it replaces. The order matters: the
 // new one exists before the old one goes, so a crash in between leaves a
 // duplicate rather than nothing.
-export async function pushDraft(d: DraftRow): Promise<'pushed' | 'skipped'> {
-  if (!d.account_id) return 'skipped';
-  const acc = await getAccount(d.account_id);
-  if (!acc || acc.user_id !== d.user_id || !draftSyncEnabled(acc)) return 'skipped';
+export async function pushDraft(sealed: DraftRow): Promise<'pushed' | 'skipped'> {
+  if (!sealed.account_id) return 'skipped';
+  const acc = await getAccount(sealed.account_id);
+  if (!acc || acc.user_id !== sealed.user_id || !draftSyncEnabled(acc)) return 'skipped';
+  // The row arrives as it sits in the database: subject, body and recipients
+  // are ciphertext. Building a message needs the plaintext.
+  const d = await openDraft(sealed.user_id, sealed);
   // An entirely empty draft is not worth a message on the server; it is what
   // an abandoned "new mail" window leaves behind.
   if (!(d.subject ?? '').trim() && !stripHtml(d.body_html ?? '').trim() && !(d.to_addr ?? []).length) return 'skipped';

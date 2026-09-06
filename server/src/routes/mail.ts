@@ -213,7 +213,7 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   const brands = await brandDomains();
   for (const m of messages) {
     const d = String(m.from_email ?? '').split('@')[1] ?? '';
-    (m as any).avatar_url = photoMap.get(m.from_email) ?? (brands.has(d) ? `/bimi/${d}.svg?v=${brands.get(d)}` : null);
+    (m as any).avatar_url = photoMap.get(m.from_email ?? '') ?? (brands.has(d) ? `/bimi/${d}.svg?v=${brands.get(d)}` : null);
   }
   const mailboxes = await query<any>('SELECT jmap_id, name, role, color FROM mailboxes WHERE account_id=$1', [acc.id]);
   const contact = await one<any>(
@@ -638,7 +638,7 @@ mailRouter.get('/suggest', async (req, res) => {
   const recentSeen = new Set<string>();
   for (const row of recentRows) {
     const opened = openEmailWith(dek, row);
-    for (const a of [...opened.from_addr, ...opened.to_addr, ...opened.cc_addr] as any[]) {
+    for (const a of [...(opened.from_addr ?? []), ...(opened.to_addr ?? []), ...(opened.cc_addr ?? [])] as any[]) {
       const e = String(a?.email ?? '').toLowerCase();
       if (!e || recentSeen.has(e)) continue;
       if (!e.includes(q) && !String(a?.name ?? '').toLowerCase().includes(q)) continue;

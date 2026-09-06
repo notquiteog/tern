@@ -14,15 +14,55 @@ export interface Appearance { theme: Theme; palette: string; background: string;
 // chose something before keeps it; this only decides the first impression.
 const DEFAULTS: Appearance = { theme: 'system', palette: 'ink', background: 'mist', glass: 'balanced', motion: 'full', density: 'comfortable', split: true };
 const KEY = 'tern.appearance';
+// The install's own default, set by an admin. Cached here so the first paint
+// has it without waiting for a request; refreshed from /api/setup/status.
+const HOUSE_KEY = 'tern.appearance.house';
 const listeners = new Set<(a: Appearance) => void>();
 
+interface House { defaults: Partial<Appearance>; version: number }
+
+function readHouse(): House {
+  try {
+    const raw = localStorage.getItem(HOUSE_KEY);
+    const h = raw ? JSON.parse(raw) : {};
+    return { defaults: h.defaults ?? {}, version: Number(h.version ?? 0) };
+  } catch { return { defaults: {}, version: 0 }; }
+}
+
+// Three layers, narrowest last: what Tern ships with, what this install's
+// admin chose, and what this person changed by hand. Only the last is stored
+// in `tern.appearance`, and only the keys they actually touched, so an admin
+// changing the house palette still reaches someone who once picked dark mode.
 export function getAppearance(): Appearance {
   try {
     const raw = localStorage.getItem(KEY);
     const legacyTheme = localStorage.getItem('tern.theme') as Theme | null;
-    const parsed = raw ? JSON.parse(raw) : {};
-    return { ...DEFAULTS, ...(legacyTheme ? { theme: legacyTheme } : {}), ...parsed };
+    const mine = raw ? JSON.parse(raw) : {};
+    return { ...DEFAULTS, ...readHouse().defaults, ...(legacyTheme ? { theme: legacyTheme } : {}), ...mine };
   } catch { return { ...DEFAULTS }; }
+}
+
+// What this person has actually chosen, as opposed to inherited.
+export function myAppearanceChoices(): Partial<Appearance> {
+  try { return JSON.parse(localStorage.getItem(KEY) ?? '{}'); } catch { return {}; }
+}
+
+export function houseAppearance(): Appearance {
+  return { ...DEFAULTS, ...readHouse().defaults };
+}
+
+// Adopts the install's default. When the admin has bumped the version — the
+// "apply to everyone" button — the personal overrides go with it; otherwise
+// they are left alone and simply sit on top.
+export function applyHouseAppearance(house: { defaults: Partial<Appearance>; version: number } | undefined): void {
+  if (!house) return;
+  const seen = readHouse().version;
+  const reset = Number(house.version ?? 0) > seen;
+  try {
+    localStorage.setItem(HOUSE_KEY, JSON.stringify({ defaults: house.defaults ?? {}, version: Number(house.version ?? 0) }));
+    if (reset) { localStorage.removeItem(KEY); localStorage.removeItem('tern.theme'); }
+  } catch { /* ignore */ }
+  applyAppearance();
 }
 
 export function isDark(theme: Theme = getAppearance().theme): boolean {
@@ -56,22 +96,43 @@ export function applyAppearance(a: Appearance = getAppearance()): void {
 
 export function setAppearance(patch: Partial<Appearance>, sync = true): Appearance {
   const next = { ...getAppearance(), ...patch };
-  try { localStorage.setItem(KEY, JSON.stringify(next)); localStorage.setItem('tern.theme', next.theme); } catch { /* ignore */ }
+  // Only the keys this person set are stored, so everything they have not
+  // touched keeps following the install's default — here and on the server
+  // copy, which is the same set of choices carried to another device.
+  const choices = { ...myAppearanceChoices(), ...patch };
+  try {
+    localStorage.setItem(KEY, JSON.stringify(choices));
+    localStorage.setItem('tern.theme', next.theme);
+  } catch { /* ignore */ }
   applyAppearance(next);
   if (sync) {
     // Best effort; the server copy is only used to restore on a new device.
-    fetch('/api/auth/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tern' }, credentials: 'same-origin', body: JSON.stringify({ appearance: next }) }).catch(() => {});
+    fetch('/api/auth/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tern' }, credentials: 'same-origin', body: JSON.stringify({ appearance: choices }) }).catch(() => {});
   }
   return next;
 }
 
-// On sign-in, adopt the server copy if this browser has never chosen anything.
+// On sign-in, adopt this person's own choices from another device, but only
+// when this browser holds none of its own. What arrives is the set of keys
+// they changed, so anything they left alone still follows the install's
+// default rather than being pinned to whatever it was that day.
 export function adoptServerAppearance(serverPrefs: Record<string, unknown> | undefined): void {
   const server = serverPrefs?.appearance as Partial<Appearance> | undefined;
-  if (!server) return;
+  if (!server || !Object.keys(server).length) return;
   let local: string | null = null;
   try { local = localStorage.getItem(KEY); } catch { /* ignore */ }
   if (!local) setAppearance(server, false);
+}
+
+// Drops this person's overrides and goes back to the install's default.
+export function resetAppearance(sync = true): Appearance {
+  try { localStorage.removeItem(KEY); localStorage.removeItem('tern.theme'); } catch { /* ignore */ }
+  const next = getAppearance();
+  applyAppearance(next);
+  if (sync) {
+    fetch('/api/auth/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tern' }, credentials: 'same-origin', body: JSON.stringify({ appearance: {} }) }).catch(() => {});
+  }
+  return next;
 }
 
 export function onAppearance(fn: (a: Appearance) => void): () => void {

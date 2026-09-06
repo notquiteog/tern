@@ -39,7 +39,7 @@ reviewRouter.post('/:id', async (req, res) => {
   const item = (await openReview(req.user!.id, stored))!;
   if (b.action === 'approve') {
     // What the person edited comes back in the clear and is sealed again.
-    const edited = await sealReview(req.user!.id, { subject: b.subject ?? item.subject, body_html: b.body_html ?? item.body_html });
+    const edited = await sealReview(req.user!.id, { subject: b.subject ?? item.subject ?? '', body_html: b.body_html ?? item.body_html ?? '' });
     await query(`UPDATE review_queue SET status='approved', subject=$2, body_html=$3, decided_at=now() WHERE id=$1`, [id, edited.subject, edited.body_html]);
     if (item.kind === 'reply') {
       // An approved auto-reply goes out now, through the account's pacing if the responder asked for it.

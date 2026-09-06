@@ -273,7 +273,7 @@ async function runEnrollment(enr: any): Promise<void> {
   let subject: string, html: string;
   const rendered = await renderStep(acc, seq, step, contact, enr);
   if (approved) {
-    subject = approved.subject; html = approved.body_html;
+    subject = approved.subject ?? ''; html = approved.body_html ?? '';
   } else if (step.ai_personalize && seq.ai_mode !== 'off') {
     const gen = await personalize(acc, step, contact, rendered);
     subject = gen.subject; html = gen.html;
