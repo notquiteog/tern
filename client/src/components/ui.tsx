@@ -12,8 +12,10 @@ export function Button({ variant = 'default', size = 'md', icon, loading, iconOn
     </button>
   );
 }
+// type="button" by default: an icon button inside a form (the search box, a
+// composer row) must never submit it.
 export function IconButton({ label, className, size = 16, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; size?: number; children: ReactNode }) {
-  return <button className={cls('btn btn-icon', className)} title={label} aria-label={label} {...rest} />;
+  return <button type="button" className={cls('btn btn-icon', className)} title={label} aria-label={label} {...rest} />;
 }
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={cls('input', props.className)} />; }

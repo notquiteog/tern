@@ -13,16 +13,34 @@ Nothing leaves your server except the mail itself.
 
 **Mail**
 - Unified inbox across accounts, conversation threading, labels, stars, snooze,
-  archive, junk, search with operators (`from:`, `subject:`, `is:unread`,
-  `has:attachment`, `newer_than:7d`), list filters, right-click menu,
-  keyboard shortcuts (`j`/`k`, `e`, `#`, `r`, `c`, `/`, `?`), split or
-  full-width reading pane, profile pictures for people and contacts.
+  archive, junk, mute, search with operators (`from:`, `subject:`, `is:unread`,
+  `has:attachment`, `newer_than:7d`, `-word`) and a search-options panel,
+  list filters, date groups, select by read/unread/starred, right-click menu,
+  drag conversations onto labels and folders, keyboard shortcuts (`j`/`k`,
+  `e`, `#`, `r`, `a`, `f`, `c`, `/`, `?`, `]`/`[`), a reading pane beside or
+  below the list or off, profile pictures for people and contacts, and
+  **Undo** on every archive, delete, junk, snooze, label and move.
+- Gmail-style conversations: reply, reply all and forward open **inline** at
+  the bottom of the thread (pop out to a window any time), the quoted
+  original folds behind a "…" button in both received mail and your reply,
+  per-message star, expand and collapse all, newer/older conversation
+  arrows, block sender, find messages from this sender, one-click
+  **Unsubscribe** for list mail, attachment previews in a lightbox, print,
+  and drafts shown in the conversation they belong to.
 - Glassmorphism interface with light, dark and auto themes, eight colour
   palettes and six WebGL2 shader backgrounds; works on phones and desktops.
-- Compose with rich text, attachments, contact autocomplete, signatures,
-  drafts that autosave, **Schedule send**, and **Send with a natural delay**.
-- Remote images blocked by default; HTML mail renders in a sandboxed frame.
-- Live updates over JMAP push, so new mail appears without reloading.
+- Compose with rich text (sizes, colours, alignment, lists, indent, links,
+  emoji), inline images that go out as proper `cid:` parts, attachment cards
+  with thumbnails, forwarded attachments you can drop before sending, your
+  signature visible in the editor, contact autocomplete, templates, drafts
+  that autosave, `Ctrl+Enter` to send, a "did you forget the attachment?"
+  check, **Undo send** (0 to 30 seconds), **Send and archive**, **Schedule
+  send**, and **Send with a natural delay**.
+- Remote images blocked by default, with "always show from this sender" and
+  automatic display for people in your contacts; HTML mail renders in a
+  sandboxed frame.
+- Live updates over JMAP push, so new mail appears without reloading; the
+  tab title carries the unread count.
 
 **Outreach**
 - Contacts with CSV import (column mapping, dedupe, custom merge fields,
@@ -39,7 +57,9 @@ Nothing leaves your server except the mail itself.
 **AI, locally**
 - Bundled Ollama container; the installer picks a model that fits the RAM.
 - In the composer: draft, reply, rewrite, fix grammar, shorten, expand,
-  subject lines. In a thread: one-click AI reply and summarise.
+  subject lines. In a thread: one-click AI reply (written inline, addressed
+  to the right person), **Quick replies** (three one-line suggestions to pick
+  from) and summarise.
 - **AI responders**: answer incoming mail automatically as a suggested draft
   in the thread, through the review queue, or sent without a human in the
   loop, with list and auto-reply detection, per-thread cooldown, daily caps

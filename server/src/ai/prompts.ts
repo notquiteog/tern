@@ -141,6 +141,11 @@ export function cleanOutput(text: string, mode: DraftMode): string {
   t = t.replace(/^\*{0,2}[A-Z][A-Za-z .'-]{0,40}:\*{0,2}\s*(?=\S)/, (m) => (/^\*{0,2}(subject|re|dear|hi|hello|hey)\b/i.test(m) ? m : ''));
   t = t.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/(^|\s)\*([^*\n]+)\*(?=\s|$)/g, '$1$2');
   t = t.replace(/^Subject:.*\n+/i, (m) => (mode === 'subject' ? m : ''));
+  // A small model sometimes carries on past the reply and echoes the prompt:
+  // a "--- From" thread line, the facts block, an imagined next message.
+  // Everything from the first such line on is not the email.
+  const echo = t.search(/\n\s*(?:-{3,}(?:\s*From\b.*)?\s*$|Subject of this email:|Recipient facts|Conversation so far|Sender's voice|Write to |Draft:\s*$)/im);
+  if (echo > 0) t = t.slice(0, echo).trim();
   if (mode === 'subject') {
     t = t.split('\n')[0].replace(/^subject:\s*/i, '').replace(/^["'“”]+|["'“”]+$/g, '').replace(/[.!]+$/, '').trim();
   }
@@ -215,15 +220,20 @@ export function stripModelSignature(text: string, ctx: FinalizeContext): string 
 
 // Three one-line suggestions, whatever decoration the model added: numbers,
 // bullets, quotes, labels, or a greeting it was told not to write.
-export function parseQuickReplies(raw: string): string[] {
+export function parseQuickReplies(raw: string, names: string[] = []): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
+  const vocative = names.map((n) => n.trim().split(/\s+/)[0]).filter(Boolean).map(escapeRe);
   for (const line of raw.split('\n')) {
     let t = line.trim().replace(/^```[a-z]*$/i, '');
     t = t.replace(/^(?:[-*•>]+|\(?\d+[.)]|[a-c][.)]|(?:option|reply)\s*\d*\s*:)\s*/i, '').trim();
     t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
     t = t.replace(/^(?:hi|hello|hey|dear)\b[^,!.]*[,!.]\s*/i, '').trim();
+    // "Alice, sure thing" -> "Sure thing": the recipient's or sender's name used as a greeting.
+    if (vocative.length) t = t.replace(new RegExp(`^(?:${vocative.join('|')})[,!:]\\s*(?=\\S)`, 'i'), '').trim();
     if (!t || /^(here (are|is)|sure|okay|ok)\b/i.test(t) && t.endsWith(':')) continue;
+    // A lone name ("Bob") is not a reply; a lone word with punctuation ("Yes.") is.
+    if (t.split(/\s+/).length < 2 && !/[.!?…]$/.test(t)) continue;
     if (t.length > 140) t = t.slice(0, 137).replace(/\s+\S*$/, '') + '…';
     t = t[0].toUpperCase() + t.slice(1);
     const key = t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -236,7 +246,7 @@ export function parseQuickReplies(raw: string): string[] {
 }
 
 export function finalizeOutput(raw: string, mode: DraftMode, ctx: FinalizeContext = {}): string {
-  if (mode === 'quick_replies') return parseQuickReplies(raw).join('\n');
+  if (mode === 'quick_replies') return parseQuickReplies(raw, [ctx.recipient?.name ?? '', ctx.senderName ?? '']).join('\n');
   let t = cleanOutput(raw, mode);
   if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish'].includes(mode)) t = stripModelSignature(t, ctx);
   t = ensureGreeting(t, mode, ctx.recipient);

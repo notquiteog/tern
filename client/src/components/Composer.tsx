@@ -102,15 +102,20 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
     if (sigApplied.current && sigAccount.current === null) { sigAccount.current = account.id; return; }
     if (sigApplied.current && sigAccount.current === account.id) return;
     const parts = splitBody(editor.current?.getHtml() ?? html.current);
+    sigApplied.current = true;
+    sigAccount.current = account.id;
+    if ((parts.signature ?? null) === sig) return;
+    const wasDirty = dirty;
     const next = joinBody({ main: parts.main, signature: sig, quote: parts.quote });
     editor.current?.setHtml(next);
     html.current = next;
-    sigApplied.current = true;
-    sigAccount.current = account.id;
+    if (!wasDirty) setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
   const fullHtml = useCallback(() => (quote && !quoteShown ? html.current + quote : html.current), [quote, quoteShown]);
-  const isEmpty = () => isBlankHtml(splitBody(html.current).main) && !attachments.length && !subject.trim() && !to.length && !cc.length && !bcc.length;
+  // A reply with nothing typed is not worth keeping; a new message counts as started once it has a recipient or subject.
+  const isEmpty = () => isBlankHtml(splitBody(html.current).main) && !attachments.length && (kind !== 'new' || (!subject.trim() && !to.length && !cc.length && !bcc.length));
 
   // ---- OpenPGP: encrypt when every recipient has a key, sign on request ----
   const { requestKey } = usePgp();

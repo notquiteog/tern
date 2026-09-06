@@ -282,3 +282,39 @@ Set in `.env` (the installer writes it; edit and `./bin/tern up` to apply).
 Admins add people under Settings → Users. Each user connects their own
 mailboxes and keeps their own contacts, templates, sequences and rules. The
 AI settings and compliance footer are shared.
+
+## Mail preferences
+
+Under **Settings → Mail** every person chooses, for themselves:
+
+- **Undo send**: how long a message is held after Send (off, 5, 10, 20 or
+  30 seconds). During that window the toast in the corner has an Undo
+  button; undoing puts the message back in the composer as a draft. The
+  message is queued in the outbox and leaves at the exact moment the window
+  closes, so it is not delayed by the scheduler tick. Held messages are
+  logged as the reply or compose they are, not as "scheduled".
+- **Reading pane**: beside the list, below it, or off.
+- **Replies**: whether the reply shortcut and "AI reply" answer everyone on
+  the message by default, and whether "Send and archive" is offered.
+- **Images**: show remote images automatically in mail from contacts.
+  Individual senders can be allowed from the "Remote images are hidden"
+  bar; that list lives in the browser.
+- **Mark as read**: at once, or after a couple of seconds.
+
+The choices are stored in the browser and mirrored to the profile, so they
+follow the person to another device.
+
+## Muting and blocking
+
+**Mute** (the `m` key, or the conversation's More menu) archives a
+conversation and files every later reply straight into the archive; nothing
+about it reaches the inbox until it is unmuted. **Block sender** creates an
+inbox rule that sends future mail from that address to Junk and moves the
+current conversation there. Both are undoable from the toast.
+
+## List mail
+
+Messages with a `List-Unsubscribe` header show an Unsubscribe link in the
+message header. A `mailto:` target sends the unsubscribe request as an
+email from the account that received the message; an `https:` target opens
+the list's page. AI responders never answer list mail.

@@ -17,7 +17,7 @@ const BOUNCE_SUBJECT_RE = /undeliver|delivery (?:status|failure|has failed)|retu
 
 // Newsletters, notifications and other machine mail: never auto-answer these.
 export function isListMail(e: any): boolean {
-  if (e['header:List-Unsubscribe:asText'] || e['header:List-Id:asText']) return true;
+  if (e['header:List-Unsubscribe:asText'] || e['header:List-Id:asText'] || String(e['header:List-Id:asRaw'] ?? e['header:List-Id'] ?? '').trim()) return true;
   const prec = String(e['header:Precedence:asText'] ?? '').toLowerCase();
   if (/bulk|list|junk/.test(prec)) return true;
   const from = String(e.from?.[0]?.email ?? '').toLowerCase();

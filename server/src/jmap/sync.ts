@@ -18,7 +18,7 @@ const EMAIL_PROPS = [
   'id', 'blobId', 'threadId', 'mailboxIds', 'keywords', 'size', 'receivedAt', 'sentAt',
   'messageId', 'inReplyTo', 'references', 'sender', 'from', 'to', 'cc', 'bcc', 'replyTo',
   'subject', 'preview', 'hasAttachment', 'bodyValues', 'textBody', 'htmlBody', 'attachments',
-  'header:Auto-Submitted:asText', 'header:List-Unsubscribe:asText', 'header:List-Id:asText', 'header:Precedence:asText',
+  'header:Auto-Submitted:asText', 'header:List-Unsubscribe:asText', 'header:List-Id:asText', 'header:List-Id:asRaw', 'header:Precedence:asText',
 ];
 const MAILBOX_PROPS = ['id', 'name', 'parentId', 'role', 'sortOrder', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'];
 
@@ -167,6 +167,13 @@ async function deleteEmails(acc: AccountRow, jmapIds: string[]): Promise<number>
   return r[0]?.n ?? 0;
 }
 
+// Some servers (Stalwart among them) return List-Id only in its raw form.
+export function listIdOf(e: any): string | null {
+  const v = e['header:List-Id:asText'] ?? e['header:List-Id:asRaw'] ?? e['header:List-Id'] ?? null;
+  const t = v === null || v === undefined ? '' : String(v).trim();
+  return t ? t.slice(0, 500) : null;
+}
+
 interface BodyPart { partId?: string; blobId?: string; type?: string; charset?: string; name?: string; size?: number; cid?: string; disposition?: string }
 
 function extractBodies(e: any): { text: string | null; html: string | null } {
@@ -209,7 +216,7 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
           e.size ?? 0, e.receivedAt ?? new Date().toISOString(), e.sentAt ?? null, e.messageId ?? [], e.inReplyTo ?? [], e.references ?? [],
           JSON.stringify(e.from ?? []), JSON.stringify(e.to ?? []), JSON.stringify(e.cc ?? []), JSON.stringify(e.bcc ?? []), JSON.stringify(e.replyTo ?? []),
           e.subject ?? '', (e.preview ?? '').slice(0, 500), Boolean(e.hasAttachment), text, html, JSON.stringify(attachments), e['header:Auto-Submitted:asText'] ?? null,
-          (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), (e['header:List-Id:asText'] ?? null) && String(e['header:List-Id:asText']).slice(0, 500),
+          (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e),
         ],
       );
       if (row.rows[0].inserted) { created++; fresh.push({ ...e, _id: row.rows[0].id, _text: text }); } else updated++;

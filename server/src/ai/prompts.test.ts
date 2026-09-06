@@ -81,8 +81,9 @@ test('quick replies: three clean one-liners whatever the model decorated them wi
   assert.deepEqual(parseQuickReplies('"Sounds good!"\n\n"Sounds good!"\n"What time suits you?"\n"No thanks."\n"Extra line"'), ['Sounds good!', 'What time suits you?', 'No thanks.']);
   assert.deepEqual(parseQuickReplies('Here are three replies:\nHi Dana, yes please.\nOption 2: maybe next week?\n* not this time, sorry'), ['Yes please.', 'Maybe next week?', 'Not this time, sorry']);
   assert.deepEqual(parseQuickReplies(''), []);
+  assert.deepEqual(parseQuickReplies('Alice, the update sounds good to me.\nBob\nDana, could we talk Friday?\nYes, Tuesday works.', ['Dana Osei', 'Alice Probe']), ['The update sounds good to me.', 'Could we talk Friday?', 'Yes, Tuesday works.']);
   assert.deepEqual(parseQuickReplies('```\nSure thing.\n```'), ['Sure thing.']);
-  const long = parseQuickReplies('a'.repeat(200));
+  const long = parseQuickReplies('word '.repeat(60).trim());
   assert.ok(long[0].length <= 140 && long[0].endsWith('…'));
 });
 
@@ -96,4 +97,10 @@ test('the quick replies prompt asks for exactly three lines and carries the thre
   assert.ok(m[1].content.includes('exactly three lines'));
   assert.ok(m[1].content.includes('Can we meet Tuesday?'));
   assert.ok(!m[1].content.includes('Write to'));
+});
+
+test('cleanOutput cuts an echoed prompt off the end of a reply', () => {
+  assert.equal(cleanOutput('Hi Bob,\n\nThank you! I will get back to you shortly.\n\n---\n\nBob Probe: Got it.\n--- From Alice <a@x> on Sun\nHi Bob, pricing?\nSubject of this email: Pricing', 'reply'), 'Hi Bob,\n\nThank you! I will get back to you shortly.');
+  assert.equal(cleanOutput('Hi Bob,\n\nSee you Tuesday.\n\nSubject of this email: Meeting', 'reply'), 'Hi Bob,\n\nSee you Tuesday.');
+  assert.equal(cleanOutput('A dash --- in the middle of a line stays.', 'reply'), 'A dash --- in the middle of a line stays.');
 });

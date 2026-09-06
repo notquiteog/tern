@@ -388,11 +388,12 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .reply-bar { display: flex; gap: 8px; margin-top: 12px; }
 .context-card { position: sticky; top: 0; }
 .thread-side { display: grid; grid-template-columns: 1fr 260px; gap: 20px; }
-@media (max-width: 1300px) { .thread-side { grid-template-columns: 1fr; } .thread-side .context { order: -1; } }
+@media (max-width: 1300px) { .thread-side { grid-template-columns: 1fr; } .thread-side .context { order: 1; } .context-card { position: static; } }
 
 /* ---------- compose ---------- */
 .compose-dock { position: fixed; right: 24px; bottom: 0; display: flex; align-items: flex-end; gap: 12px; z-index: 60; }
-.compose-win { width: 580px; max-width: calc(100vw - 48px); height: 560px; max-height: calc(100vh - 80px); background: var(--glass-solid); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border: 1px solid var(--glass-border); border-bottom: 0; border-radius: 12px 12px 0 0; box-shadow: var(--shadow-3); display: flex; flex-direction: column; overflow: hidden; animation: rise .16s ease-out; }
+.compose-win { width: 580px; max-width: calc(100vw - 48px); height: 560px; max-height: calc(100vh - 80px); background: var(--glass-solid); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border: 1px solid var(--glass-border); border-bottom: 0; border-radius: 12px 12px 0 0; box-shadow: var(--shadow-3); display: flex; flex-direction: column; overflow: hidden; animation: slideup .16s ease-out; }
+@keyframes slideup { from { transform: translateY(12px); } }
 .compose-win.minimized { height: 42px; width: 300px; }
 .compose-win.maximized { position: fixed; inset: 40px; width: auto; height: auto; max-height: none; border-radius: 12px; border-bottom: 1px solid var(--border); }
 .compose-head { display: flex; align-items: center; gap: 6px; height: 42px; padding: 0 8px 0 14px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 85%, #000), color-mix(in srgb, var(--g2) 70%, #000)); color: #fff; font-weight: 600; font-size: 13.5px; flex: none; cursor: default; }
@@ -730,7 +731,9 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .link-btn { border: 0; background: transparent; color: var(--accent-text); padding: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .link-btn:hover { text-decoration: underline; }
 
-/* Advanced search panel under the search box */
+/* Advanced search panel under the search box. The top bar's backdrop filter
+   makes it a stacking context, so it needs a z-index above the panes. */
+.topbar { position: relative; z-index: 5; }
 .search { position: relative; }
 .adv-search { position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: var(--glass-solid); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border: 1px solid var(--glass-border); border-radius: 14px; box-shadow: var(--shadow-3); padding: 14px 16px; z-index: 72; animation: pop .12s ease-out; cursor: default; }
 .adv-grid { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; align-items: center; }

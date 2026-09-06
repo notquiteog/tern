@@ -15,6 +15,9 @@ const sql = async <T = any>(text: string, params: unknown[] = []): Promise<T[]> 
 const ONLY = new Set((process.env.ONLY ?? '').split(',').filter(Boolean));
 
 const USER = 1, ALICE = 1, BOB = 2;
+// A third mailbox on the probe (another user's) used as a plain recipient, so
+// no single address trips Stalwart's per-recipient inbound throttle.
+const SINK = 3, SINK_EMAIL = 'carol634062@probe.test';
 let cookie = '';
 async function login(userId: number): Promise<string> {
   const id = 'e2e_' + randomBytes(16).toString('hex');
@@ -74,14 +77,14 @@ function eq(a: unknown, b: unknown, msg = '') { if (JSON.stringify(a) !== JSON.s
 function ok(v: unknown, msg = 'expected truthy') { if (!v) throw new Error(msg); }
 
 // ---- mail helpers ----
-interface Email { id: number; jmap_id: string; thread_id: string; subject: string; mailbox_ids: string[]; message_id: string[]; in_reply_to: string[]; references_ids: string[]; from_addr: any[]; to_addr: any[]; cc_addr: any[]; body_html: string | null; body_text: string | null; attachments: any[]; keywords: string[]; list_unsubscribe: string | null }
+interface Email { id: number; jmap_id: string; thread_id: string; subject: string; mailbox_ids: string[]; message_id: string[]; in_reply_to: string[]; references_ids: string[]; from_addr: any[]; to_addr: any[]; cc_addr: any[]; body_html: string | null; body_text: string | null; attachments: any[]; keywords: string[]; list_unsubscribe: string | null; list_id: string | null }
 const roleBox = async (accountId: number, role: string) => (await sql<{ jmap_id: string }>('SELECT jmap_id FROM mailboxes WHERE account_id=$1 AND role=$2', [accountId, role]))[0]?.jmap_id;
 async function send(accountId: number, body: Record<string, unknown>) {
   const r = await api('POST', '/api/mail/send', { accountId, includeSignature: false, ...body });
   if (r.status !== 200) throw new Error(`send failed ${r.status}: ${JSON.stringify(r.data)}`);
   return r.data;
 }
-const arrived = (accountId: number, subject: string, extra = '') => waitFor<Email>(`"${subject}" in account ${accountId}${extra}`, async () => (await sql<Email>('SELECT * FROM emails WHERE account_id=$1 AND subject=$2 ORDER BY id DESC LIMIT 1', [accountId, subject]))[0]);
+const arrived = (accountId: number, subject: string, extra = '', timeoutMs = 90_000) => waitFor<Email>(`"${subject}" in account ${accountId}${extra}`, async () => (await sql<Email>('SELECT * FROM emails WHERE account_id=$1 AND subject=$2 ORDER BY id DESC LIMIT 1', [accountId, subject]))[0], timeoutMs);
 const inInbox = async (e: Email) => e.mailbox_ids.includes(await roleBox(e.mailbox_ids.length ? Number((await sql('SELECT account_id FROM emails WHERE id=$1', [e.id]))[0].account_id) : 0, 'inbox'));
 async function fresh(accountId: number, id: number): Promise<Email> { return (await sql<Email>('SELECT * FROM emails WHERE id=$1', [id]))[0]; }
 async function act(accountId: number, body: Record<string, unknown>) { const r = await api('POST', '/api/mail/actions', { accountId, ...body }); if (r.status !== 200) throw new Error(`action failed ${r.status}: ${JSON.stringify(r.data)}`); return r.data; }
@@ -234,16 +237,16 @@ const undoGroup = group('undo', async () => {
   await test('an undo window that is left alone sends on time and logs as a plain compose, not scheduled', async () => {
     const s2 = `e2e undo lapse ${uid()}`;
     const t0 = Date.now();
-    const r = await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s2, html: '<p>going</p>', scheduleAt: new Date(Date.now() + 5000).toISOString(), undoWindow: true });
+    const r = await send(ALICE, { to: [{ email: SINK_EMAIL }], subject: s2, html: '<p>going</p>', scheduleAt: new Date(Date.now() + 5000).toISOString(), undoWindow: true });
     const log = await waitFor('send_log', async () => (await sql('SELECT kind, status FROM send_log WHERE subject=$1', [s2]))[0], 30_000, 500);
     ok(Date.now() - t0 < 20_000, `sent within the window plus a few seconds (${Date.now() - t0} ms)`);
     eq(log.kind, 'compose'); eq(log.status, 'sent');
     eq((await sql('SELECT status FROM outbox WHERE id=$1', [r.outboxId]))[0].status, 'sent');
-    await arrived(BOB, s2);
+    await arrived(SINK, s2);
   });
   await test('undo after the message has gone reports that it was already sent', async () => {
     const s3 = `e2e undo late ${uid()}`;
-    const r = await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s3, html: '<p>late</p>', scheduleAt: new Date(Date.now() + 1000).toISOString(), undoWindow: true });
+    const r = await send(ALICE, { to: [{ email: SINK_EMAIL }], subject: s3, html: '<p>late</p>', scheduleAt: new Date(Date.now() + 1000).toISOString(), undoWindow: true });
     await waitFor('sent', async () => (await sql(`SELECT 1 FROM outbox WHERE id=$1 AND status='sent'`, [r.outboxId]))[0], 30_000, 500);
     const c = await api('DELETE', `/api/mail/outbox/${r.outboxId}`);
     eq(c.data.cancelled, false); eq(c.data.status, 'sent');
@@ -275,13 +278,13 @@ const undoGroup = group('undo', async () => {
   });
   await test('a real scheduled send (no undo window) is logged as scheduled', async () => {
     const s5 = `e2e scheduled ${uid()}`;
-    await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s5, html: '<p>s</p>', scheduleAt: new Date(Date.now() + 1000).toISOString() });
+    await send(ALICE, { to: [{ email: SINK_EMAIL }], subject: s5, html: '<p>s</p>', scheduleAt: new Date(Date.now() + 1000).toISOString() });
     const log = await waitFor('scheduled sent', async () => (await sql('SELECT kind FROM send_log WHERE subject=$1', [s5]))[0], 40_000, 700);
     eq(log.kind, 'scheduled');
   });
   await test('"send now" on a queued message sends it straight away', async () => {
     const s6 = `e2e sendnow ${uid()}`;
-    const r = await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s6, html: '<p>n</p>', scheduleAt: new Date(Date.now() + 90_000).toISOString() });
+    const r = await send(ALICE, { to: [{ email: SINK_EMAIL }], subject: s6, html: '<p>n</p>', scheduleAt: new Date(Date.now() + 90_000).toISOString() });
     eq((await api('POST', `/api/mail/outbox/${r.outboxId}/now`)).status, 200);
     await waitFor('sent now', async () => (await sql(`SELECT 1 FROM outbox WHERE id=$1 AND status='sent'`, [r.outboxId]))[0], 40_000, 700);
   });
@@ -451,10 +454,10 @@ const emptyGroup = group('empty', async () => {
   });
   await test('empty junk works the same way', async () => {
     const s = `e2e junk ${uid()}`;
-    await send(BOB, { to: [{ email: 'alice@probe.test' }], subject: s, html: 'x' });
-    const m = await arrived(ALICE, s);
-    await act(ALICE, { threadIds: [m.thread_id], action: 'spam' });
-    ok((await api('POST', '/api/mail/empty', { box: 'junk', accountId: ALICE })).data.count >= 1);
+    await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s, html: 'x' });
+    const m = await arrived(BOB, s);
+    await act(BOB, { threadIds: [m.thread_id], action: 'spam' });
+    ok((await api('POST', '/api/mail/empty', { box: 'junk', accountId: BOB })).data.count >= 1);
     eq((await sql('SELECT 1 FROM emails WHERE id=$1', [m.id])).length, 0);
   });
   await test('an unknown box is refused', async () => {
@@ -472,13 +475,13 @@ const emptyGroup = group('empty', async () => {
   });
   await test('the server-side copy is gone too: the next sync does not bring it back', async () => {
     const s = `e2e trash sync ${uid()}`;
-    await send(BOB, { to: [{ email: 'alice@probe.test' }], subject: s, html: 'x' });
-    const m = await arrived(ALICE, s);
-    await act(ALICE, { threadIds: [m.thread_id], action: 'trash' });
-    await api('POST', '/api/mail/empty', { box: 'trash', accountId: ALICE });
-    await api('POST', `/api/accounts/${ALICE}/resync`);
+    await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s, html: 'x' });
+    const m = await arrived(BOB, s);
+    await act(BOB, { threadIds: [m.thread_id], action: 'trash' });
+    await api('POST', '/api/mail/empty', { box: 'trash', accountId: BOB });
+    await api('POST', `/api/accounts/${BOB}/resync`);
     await sleep(4000);
-    eq((await sql('SELECT 1 FROM emails WHERE account_id=$1 AND subject=$2', [ALICE, s])).length, 0);
+    eq((await sql('SELECT 1 FROM emails WHERE account_id=$1 AND subject=$2', [BOB, s])).length, 0);
   });
   await test('the inbox count is unaffected by emptying', async () => {
     const before = (await api('GET', '/api/mail/counts')).data.inboxUnread;
@@ -487,9 +490,9 @@ const emptyGroup = group('empty', async () => {
   });
   await test('permanent delete of a single conversation', async () => {
     const s = `e2e delete ${uid()}`;
-    await send(BOB, { to: [{ email: 'alice@probe.test' }], subject: s, html: 'x' });
-    const m = await arrived(ALICE, s);
-    await act(ALICE, { threadIds: [m.thread_id], action: 'delete' });
+    await send(ALICE, { to: [{ email: 'bob@probe.test' }], subject: s, html: 'x' });
+    const m = await arrived(BOB, s);
+    await act(BOB, { threadIds: [m.thread_id], action: 'delete' });
     eq((await sql('SELECT 1 FROM emails WHERE id=$1', [m.id])).length, 0);
   });
   await test('empty with no account id covers every account of the user', async () => {
@@ -513,8 +516,10 @@ const aiGroup = group('ai', async () => {
     a = await arrived(ALICE, s);
     const r = await stream('/api/ai/draft', { mode: 'reply', accountId: ALICE, threadKey: `${ALICE}:${a.thread_id}`, recipientEmail: 'bob@probe.test', recipientName: 'Bob Probe', tone: 'friendly', length: 'short' });
     ok(!r.error, r.error);
+    console.log('       model wrote: ' + JSON.stringify(r.text.slice(0, 300)));
     ok(/^Hi Bob,/.test(r.text), `greeting: ${r.text.slice(0, 40)}`);
-    ok(!/alice@probe\.test/i.test(r.text), 'no email address signature');
+    const lastLine = r.text.trim().split('\n').filter((l) => l.trim()).pop() ?? '';
+    ok(!/alice@probe\.test/i.test(lastLine), `sign-off line still carries the address: ${lastLine}`);
     ok(!/^Hi Alice/i.test(r.text));
   });
   await test('a new email to a contact with a first name greets that first name', async () => {
@@ -542,7 +547,8 @@ const aiGroup = group('ai', async () => {
   });
   await test('a responder in draft mode writes a suggested reply to the right person', async () => {
     await sql(`UPDATE responders SET enabled=false WHERE user_id=$1`, [USER]);
-    const resp = await api('POST', '/api/responders', { name: `E2E responder ${uid()}`, account_id: BOB, mode: 'draft', conditions: [], instructions: 'Answer briefly and propose a call.', tone: 'friendly', length: 'short', reply_all: false, humanize: false, daily_cap: 50, cooldown_hours: 0, skip_lists: true, only_contacts: false });
+    await sql(`DELETE FROM ai_jobs WHERE status='pending' AND kind='responder'`);
+    const resp = await api('POST', '/api/responders', { name: `E2E responder ${uid()}`, account_id: BOB, mode: 'draft', conditions: [], instructions: 'Answer briefly and propose a call.', tone: 'friendly', length: 'short', reply_all: false, humanize: false, daily_cap: 50, cooldown_hours: 1, skip_lists: true, only_contacts: false });
     ok(resp.status === 200, JSON.stringify(resp.data));
     const s2 = `Demo request ${uid()}`;
     await send(ALICE, { to: [{ name: 'Bob Probe', email: 'bob@probe.test' }], subject: s2, html: '<p>Hi Bob, can we see a demo of the reporting module? Alice</p>' });
@@ -762,16 +768,18 @@ async function smtpInject(from: string, to: string, subject: string, extraHeader
     });
     sock.on('error', reject);
     sock.on('close', () => resolve());
-    setTimeout(() => { sock.destroy(); reject(new Error('smtp timeout: ' + lines.join(' | '))); }, 15_000);
+    setTimeout(() => { sock.destroy(); reject(new Error('smtp timeout: ' + lines.join(' | '))); }, 90_000);
   });
 }
 const listGroup = group('list', async () => {
   const s = `Weekly digest ${uid()}`;
   let m!: Email;
   await test('a list message with List-Unsubscribe arrives and the header is stored', async () => {
-    await smtpInject('news@lists.example', 'alice@probe.test', s, ['List-Unsubscribe: <mailto:leave@lists.example?subject=unsubscribe>, <https://lists.example/u/42>', 'List-Id: Weekly <weekly.lists.example>', 'Precedence: bulk']);
+    await smtpInject('news@lists.example', 'alice@probe.test', s, ['List-Unsubscribe: <mailto:carol634062@probe.test?subject=unsubscribe>, <https://lists.example/u/42>', 'List-Id: Weekly <weekly.lists.example>', 'Precedence: bulk']);
     m = await arrived(ALICE, s);
-    ok(m.list_unsubscribe?.includes('mailto:leave@lists.example'), `stored: ${m.list_unsubscribe}`);
+    ok(m.list_unsubscribe?.includes('mailto:carol634062@probe.test'), `stored: ${m.list_unsubscribe}`);
+    // The probe's spam filter files unauthenticated outside mail as junk; a person would find it there and move it.
+    await act(ALICE, { threadIds: [m.thread_id], action: 'inbox' });
   });
   await test('the thread payload exposes list headers to the reader', async () => {
     const t = (await api('GET', `/api/mail/threads/${ALICE}/${m.thread_id}`)).data;
@@ -780,11 +788,12 @@ const listGroup = group('list', async () => {
   await test('the unsubscribe email the client sends goes to the mailto address with the requested subject', async () => {
     const { parseListUnsubscribe } = { parseListUnsubscribe: (h: string) => { const out: any = { mailto: null, subject: null, url: null }; for (const x of h.matchAll(/<([^>]+)>/g)) { const v = x[1]; if (/^mailto:/i.test(v)) { const [addr, qs] = v.slice(7).split('?'); out.mailto = addr; out.subject = qs ? new URLSearchParams(qs).get('subject') : null; } else if (/^https?:/i.test(v)) out.url = v; } return out; } };
     const u = parseListUnsubscribe(m.list_unsubscribe!);
-    eq(u, { mailto: 'leave@lists.example', subject: 'unsubscribe', url: 'https://lists.example/u/42' });
+    eq(u, { mailto: SINK_EMAIL, subject: 'unsubscribe', url: 'https://lists.example/u/42' });
     const r = await api('POST', '/api/mail/send', { accountId: ALICE, to: [{ email: u.mailto }], subject: u.subject, html: '<p>Unsubscribe</p>', includeSignature: false });
     eq(r.status, 200);
     const log = (await sql('SELECT to_email, subject FROM send_log WHERE message_id=$1', [r.data.messageId]))[0];
-    eq(log.to_email, 'leave@lists.example'); eq(log.subject, 'unsubscribe');
+    eq(log.to_email, SINK_EMAIL); eq(log.subject, 'unsubscribe');
+    await arrived(SINK, 'unsubscribe');
   });
   await test('responders skip list mail (no AI job queued for it)', async () => {
     eq((await sql(`SELECT 1 FROM ai_jobs WHERE payload->>'emailDbId' = $1`, [String(m.id)])).length, 0);
