@@ -3,10 +3,10 @@ import { BrandLogo, useAppName } from './Brand';
 import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench } from 'lucide-react';
+import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { adoptServerMailPrefs } from '../state/mailPrefs';
-import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, type SearchFields } from '../lib/search';
+import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, searchChips, withoutChip, type SearchFields } from '../lib/search';
 import { useAuth } from '../state/auth';
 import { usePgp } from '../state/pgp';
 import { useCompose } from '../state/compose';
@@ -54,6 +54,21 @@ export function Shell({ children }: { children: ReactNode }) {
   const theme = appearance.theme;
   const searchRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState(new URLSearchParams(loc.search).get('q') ?? '');
+  // The omnibox: operators are shown as chips beside the input and the input
+  // itself holds only what is still being typed. Typing an operator by hand
+  // still works — it becomes a chip when the search is run.
+  const parsedQ = useMemo(() => parseSearchQuery(q), [q]);
+  const chips = searchChips(parsedQ);
+  const [text, setText] = useState(parsedQ.words);
+  useEffect(() => { setText(parsedQ.words); }, [q]);
+  function runSearch(query: string) {
+    const box = loc.pathname.startsWith('/mail/') ? loc.pathname.split('/')[2] : 'all';
+    setQ(query);
+    nav(query.trim() ? `/mail/${box === 'inbox' ? 'all' : box}?q=${encodeURIComponent(query.trim())}` : `/mail/${box}`);
+  }
+  function dropChip(chip: ReturnType<typeof searchChips>[number]) {
+    runSearch(buildSearchQuery({ ...withoutChip(parsedQ, chip), words: text }));
+  }
 
   useServerEvents(Boolean(user), (type, data) => {
     if (type === 'account' && data?.status === 'auth_error') toast.error(`Mailbox credentials rejected: ${data.error ?? ''}`);
@@ -79,7 +94,7 @@ export function Shell({ children }: { children: ReactNode }) {
   // The tab title carries the unread count, like every mail client.
   useEffect(() => {
     const seg = loc.pathname.split('/').filter(Boolean);
-    const boxTitles: Record<string, string> = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail' };
+    const boxTitles: Record<string, string> = { inbox: 'Inbox', burner: 'Burner', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail' };
     const sectionTitles: Record<string, string> = { home: 'Overview', contacts: 'Contacts', sequences: 'Sequences', templates: 'Templates', review: 'AI review', responders: 'AI responders', rules: 'Rules', settings: 'Settings', admin: 'Admin' };
     let where = '';
     if (seg[0] === 'mail') { const b = seg[1] ?? 'inbox'; where = b.startsWith('mailbox:') ? (mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === b)?.name ?? 'Label') : boxTitles[b] ?? 'Mail'; }
@@ -112,8 +127,16 @@ export function Shell({ children }: { children: ReactNode }) {
   function setTheme(next: Theme) { setAppearance({ theme: next }); }
   function submitSearch(e: React.FormEvent) {
     e.preventDefault();
-    const box = loc.pathname.startsWith('/mail/') ? loc.pathname.split('/')[2] : 'all';
-    nav(q.trim() ? `/mail/${box === 'inbox' ? 'all' : box}?q=${encodeURIComponent(q.trim())}` : `/mail/${box}`);
+    // Whatever is in the box is re-parsed, so an operator typed by hand joins
+    // the chips instead of being searched for as a literal word.
+    const typed = parseSearchQuery(text);
+    const merged: SearchFields = {
+      from: typed.from || parsedQ.from, to: typed.to || parsedQ.to, subject: typed.subject || parsedQ.subject,
+      box: typed.box || parsedQ.box, has: typed.has || parsedQ.has, within: typed.within || parsedQ.within,
+      unread: typed.unread || parsedQ.unread, starred: typed.starred || parsedQ.starred,
+      words: typed.words, not: [parsedQ.not, typed.not].filter(Boolean).join(' '),
+    };
+    runSearch(buildSearchQuery(merged));
   }
   async function refreshAll() {
     for (const a of visibleAccounts) await api.post(`/api/accounts/${a.id}/resync`).catch(() => {});
@@ -122,8 +145,8 @@ export function Shell({ children }: { children: ReactNode }) {
   }
 
   const box = (r: string) => `/mail/${r}`;
-  const navItem = (to: string, icon: ReactNode, label: string, count?: number, hot?: boolean, drop?: { action: 'inbox' | 'archive' | 'trash' | 'spam' }) => (
-    <NavLink to={to} className={({ isActive }) => cls('nav-item', isActive && 'active')} {...(drop ? dropProps(drop) : {})}>{icon}<span className="truncate">{label}</span>{count ? <span className={cls('count', hot && 'hot')}>{count}</span> : null}</NavLink>
+  const navItem = (to: string, icon: ReactNode, label: string, count?: number, hot?: boolean, drop?: { action: 'inbox' | 'archive' | 'trash' | 'spam' }, title?: string) => (
+    <NavLink to={to} title={title} className={({ isActive }) => cls('nav-item', isActive && 'active')} {...(drop ? dropProps(drop) : {})}>{icon}<span className="truncate">{label}</span>{count ? <span className={cls('count', hot && 'hot')}>{count}</span> : null}</NavLink>
   );
 
   const section = '/' + (loc.pathname.split('/')[1] || '');
@@ -133,10 +156,19 @@ export function Shell({ children }: { children: ReactNode }) {
       <header className="topbar">
         <IconButton label="Menu" className="mobile-only" onClick={() => setSidebarOpen((o) => !o)}>{sidebarOpen ? <X size={20} /> : <MenuIcon size={20} />}</IconButton>
         <NavLink to="/mail/inbox" className="brand"><BrandLogo /><span className="desktop-only">{appName}</span></NavLink>
-        <form className="search" onSubmit={submitSearch}>
+        <form className={cls('search', chips.length > 0 && 'has-chips')} onSubmit={submitSearch}>
           <Search size={16} className="faint" />
-          <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mail" title="Operators: from: to: subject: is:unread is:starred has:attachment label: newer_than:7d older_than:30d before:2026-01-01" />
-          {q ? <IconButton label="Clear" size={14} onClick={() => { setQ(''); nav(loc.pathname); }}><X size={14} /></IconButton> : <span className="kbd-hint desktop-only"><Kbd>/</Kbd></span>}
+          {chips.map((c) => (
+            <span key={`${c.key}:${c.value}`} className="search-chip" title={c.label}>
+              <span className="search-chip-label">{c.label}</span>
+              <button type="button" aria-label={`Remove ${c.label}`} onClick={() => dropChip(c)}><X size={11} /></button>
+            </span>
+          ))}
+          <input ref={searchRef} value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Backspace' && !text && chips.length) { e.preventDefault(); dropChip(chips[chips.length - 1]); } }}
+            placeholder={chips.length ? 'Search these' : 'Search mail'}
+            title="Operators: from: to: subject: is:unread is:starred has:attachment label: newer_than:7d older_than:30d before:2026-01-01" />
+          {q || text ? <IconButton label="Clear" size={14} onClick={() => { setQ(''); setText(''); nav(loc.pathname); }}><X size={14} /></IconButton> : <span className="kbd-hint desktop-only"><Kbd>/</Kbd></span>}
           <IconButton label="Search options" size={14} className={cls('btn-sm', advanced && 'active')} onClick={(e) => { e.preventDefault(); setAdvanced((a) => !a); }}><SlidersHorizontal size={14} /></IconButton>
           {advanced && <AdvancedSearch initial={q} onClose={() => setAdvanced(false)} onSearch={(query) => { setAdvanced(false); setQ(query); nav(query ? `/mail/all?q=${encodeURIComponent(query)}` : '/mail/inbox'); }} />}
         </form>
@@ -184,6 +216,9 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="sidebar-top"><button className="btn-compose w-full" onClick={() => compose.open({ accountId: filter === 'all' ? null : Number(filter) })}><Pencil size={17} />Compose</button></div>
         <div className="sidebar-scroll">
           {navItem(box('inbox'), <Inbox size={17} />, 'Inbox', inboxCount, true, { action: 'inbox' })}
+          {/* Only when a masked address exists: everything that arrived at it,
+              sitting directly under the inbox it is really part of. */}
+          {counts?.burner && navItem(box('burner'), <VenetianMask size={17} />, 'Burner', counts.burner.unread, false, undefined, counts.burner.address)}
           {navItem(box('starred'), <Star size={17} />, 'Starred')}
           {navItem(box('snoozed'), <AlarmClock size={17} />, 'Snoozed', counts?.snoozed)}
           {navItem(box('sent'), <Send size={17} />, 'Sent')}

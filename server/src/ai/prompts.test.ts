@@ -63,7 +63,9 @@ test('finalizeOutput removes the signature block the model added', () => {
 });
 
 test('every mode builds a fresh single-turn conversation', () => {
-  for (const mode of ['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish'] as const) {
+  // Every mode the /draft route accepts, so a new one cannot be added
+  // without this noticing.
+  for (const mode of ['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies'] as const) {
     const msgs = buildMessages({ mode, draft: 'x', instruction: 'y', thread: [{ from: 'A <a@x.test>', date: 'today', text: 'hi' }] });
     assert.deepEqual(msgs.map((m) => m.role), ['system', 'user'], mode);
     assert.doesNotThrow(() => assertFreshConversation(msgs));

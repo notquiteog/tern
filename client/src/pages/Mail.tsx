@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser } from 'lucide-react';
+import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose, seedFromDraft } from '../state/compose';
@@ -13,11 +13,22 @@ import { createPortal } from 'react-dom';
 import { ThreadView } from '../components/ThreadView';
 import { DataTable } from '../components/DataTable';
 import { addrName, cls, fmtDate, fmtDateTime, localDateTimeValue, type Addr } from '../lib/format';
+import { setMood } from '../lib/ambient';
 
-interface ThreadRow { key: string; account_id: number; thread_id: string; last_at: string; n: number; unread: boolean; starred: boolean; has_attachment: boolean; has_draft: boolean; muted?: boolean; attachments?: string[] | null; latest: { id: number; jmap_id: string; subject: string; preview: string; from: Addr[]; to: Addr[]; received_at: string }; participants: Addr[] | null; mailbox_ids: string[]; snoozed_until: string | null; contact_id: number | null; avatar_url?: string | null }
+interface ThreadRow { key: string; account_id: number; thread_id: string; last_at: string; n: number; unread: boolean; starred: boolean; has_attachment: boolean; has_draft: boolean; muted?: boolean; attachments?: string[] | null; category?: Category; verified?: boolean; bulk?: boolean; latest: { id: number; jmap_id: string; subject: string; preview: string; from: Addr[]; to: Addr[]; received_at: string }; participants: Addr[] | null; mailbox_ids: string[]; snoozed_until: string | null; contact_id: number | null; avatar_url?: string | null }
 interface Undo { accountId: number; items: { jmapId: string; mailboxIds: string[] }[] }
 
-const BOX_TITLES: Record<string, string> = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail', unread: 'Unread', attachments: 'Attachments' };
+const BOX_TITLES: Record<string, string> = { inbox: 'Inbox', burner: 'Burner address', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', archive: 'Archive', junk: 'Junk', trash: 'Trash', all: 'All mail', unread: 'Unread', attachments: 'Attachments' };
+
+// The four smart categories, in the order they are shown. `primary` is the
+// default view of the inbox; the other three are where automated mail goes.
+export type Category = 'primary' | 'transactions' | 'updates' | 'promotions';
+const CATEGORY_TABS: { key: Category; label: string; icon: ReactNode; hint: string }[] = [
+  { key: 'primary', label: 'Primary', icon: <InboxIcon size={14} />, hint: 'People writing to you' },
+  { key: 'transactions', label: 'Transactions', icon: <Receipt size={14} />, hint: 'Receipts, orders and invoices' },
+  { key: 'updates', label: 'Updates', icon: <BellRing size={14} />, hint: 'Notifications, alerts and lists' },
+  { key: 'promotions', label: 'Promotions', icon: <TagIcon size={14} />, hint: 'Offers and marketing' },
+];
 
 // "Today", "Yesterday", "This week", then months: the separators between rows.
 export function dateGroup(iso: string, now = new Date()): string {
@@ -34,11 +45,18 @@ export function dateGroup(iso: string, now = new Date()): string {
   return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' });
 }
 
+// Who a conversation is "from", for stacking. Threads with no sender never
+// stack: an empty key would fold unrelated rows together.
+function senderKey(t: ThreadRow): string {
+  return String(t.latest?.from?.[0]?.email ?? '').toLowerCase();
+}
+
 export default function MailPage() {
   const { box = 'inbox', threadKey } = useParams();
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const filter = params.get('f') ?? '';
+  const cat = (params.get('cat') ?? 'primary') as Category;
   const page = Math.max(1, Number(params.get('page') ?? 1));
   const [ctx, setCtx] = useState<{ x: number; y: number; row: ThreadRow } | null>(null);
   const nav = useNavigate();
@@ -59,22 +77,50 @@ export default function MailPage() {
   const [snoozeFor, setSnoozeFor] = useState<ThreadRow[] | null>(null);
   const [snoozeAt, setSnoozeAt] = useState('');
   const [emptyOpen, setEmptyOpen] = useState(false);
+  const [openStacks, setOpenStacks] = useState<Set<string>>(new Set());
 
   const accountsParam = acctFilter === 'all' ? 'all' : acctFilter;
   const enabled = box !== 'scheduled' && box !== 'drafts-local';
+  // Tabs only narrow the inbox, only when they have been turned on, and never
+  // during a search — which looks across every category rather than inside
+  // the tab you happen to be on. Off, this is one inbox and one list.
+  const tabbed = prefs.categories && box === 'inbox' && !q;
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['threads', box, accountsParam, q, page, filter],
-    queryFn: () => api.get<{ threads: ThreadRow[]; total: number; pageSize: number }>(`/api/mail/threads?box=${encodeURIComponent(box)}&accounts=${accountsParam}&q=${encodeURIComponent(q)}&page=${page}&f=${filter}`),
+    queryKey: ['threads', box, accountsParam, q, page, filter, tabbed ? cat : ''],
+    queryFn: () => api.get<{ threads: ThreadRow[]; total: number; pageSize: number; counts: Record<string, { n: number; unread: number }> | null }>(`/api/mail/threads?box=${encodeURIComponent(box)}&accounts=${accountsParam}&q=${encodeURIComponent(q)}&page=${page}&f=${filter}${tabbed ? `&cat=${cat}` : ''}`),
     enabled,
     placeholderData: (prev) => prev,
   });
   const threads = data?.threads ?? [];
+  const counts = data?.counts ?? null;
   const total = data?.total ?? 0;
   const pageSize = data?.pageSize ?? 50;
+  // One-line summaries for the conversations on this page. Cached ones come
+  // back at once; a few missing ones are written per request, so the list
+  // fills in over a few passes rather than queueing fifty generations.
+  const summaryKeys = prefs.summaries ? threads.map((t) => t.key) : [];
+  const { data: summaryData } = useQuery({
+    queryKey: ['summaries', summaryKeys.join(',')],
+    queryFn: () => api.post<{ summaries: Record<string, string>; enabled: boolean }>('/api/ai/summaries', { keys: summaryKeys, generate: true }),
+    enabled: summaryKeys.length > 0,
+    // Keep asking while there are still rows without a line, then stop.
+    refetchInterval: (q) => {
+      const got = q.state.data?.summaries ?? {};
+      if (q.state.data && !q.state.data.enabled) return false;
+      return summaryKeys.some((k) => !got[k]) ? 4000 : false;
+    },
+    staleTime: 60_000,
+  });
+  const summaries = summaryData?.summaries ?? {};
+
   const mailboxName = box.startsWith('mailbox:') ? mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === box)?.name ?? 'Label' : BOX_TITLES[box] ?? box;
   const roleOf = useMemo(() => new Map(mailboxes.map((m) => [`${m.account_id}:${m.jmap_id}`, m])), [mailboxes]);
 
-  useEffect(() => { setSelected(new Set()); setFocus(0); }, [box, q, page, accountsParam, filter]);
+  useEffect(() => { setSelected(new Set()); setFocus(0); setOpenStacks(new Set()); }, [box, q, page, accountsParam, filter, cat]);
+  // The background picks up the mood of whatever is being read. Only while
+  // the tabs are actually in use; otherwise the inbox is one thing and the
+  // colour behind it should not keep changing.
+  useEffect(() => { setMood(tabbed ? cat : 'neutral'); return () => setMood('neutral'); }, [tabbed, cat]);
   useEffect(() => { if (!ctx) return; const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); window.addEventListener('keydown', close); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); window.removeEventListener('keydown', close); }; }, [ctx]);
   useEffect(() => { if (threadKey) { const i = threads.findIndex((t) => t.key === threadKey); if (i >= 0) setFocus(i); } }, [threadKey, threads]);
 
@@ -82,6 +128,7 @@ export default function MailPage() {
   function openThread(t: ThreadRow) { nav(`/mail/${box}/t/${encodeURIComponent(t.key)}${qs()}`); }
   function back() { nav(`/mail/${box}${qs()}`); }
   function setFilter(f: string) { setParams((p) => { if (f) p.set('f', f); else p.delete('f'); p.delete('page'); return p; }); }
+  function setCat(c: Category) { setParams((p) => { if (c === 'primary') p.delete('cat'); else p.set('cat', c); p.delete('page'); return p; }); }
 
   async function act(action: string, rows: ThreadRow[], extra: Record<string, unknown> = {}, msg?: string) {
     if (!rows.length) return;
@@ -145,6 +192,20 @@ export default function MailPage() {
   const grouped: { sep?: string; row: ThreadRow; index: number }[] = [];
   let lastGroup = '';
   threads.forEach((t, i) => { const g = box === 'snoozed' ? '' : dateGroup(t.last_at); grouped.push({ sep: g && g !== lastGroup ? g : undefined, row: t, index: i }); if (g) lastGroup = g; });
+  // A run of messages from one sender reads as one thing — six receipts from
+  // the same shop, a week of alerts from one service — so consecutive rows
+  // from the same address fold into a stack that opens. Only ever within one
+  // date group, and never across the separator that starts a new one.
+  const stacks: { sep?: string; rows: ThreadRow[]; indices: number[] }[] = [];
+  for (const item of grouped) {
+    const head = stacks[stacks.length - 1];
+    const sender = senderKey(item.row);
+    if (prefs.digest && head && !item.sep && sender && senderKey(head.rows[0]) === sender && head.rows.length < 12) {
+      head.rows.push(item.row); head.indices.push(item.index);
+    } else {
+      stacks.push({ sep: item.sep, rows: [item.row], indices: [item.index] });
+    }
+  }
 
   return (
     <div className="mail">
@@ -187,14 +248,31 @@ export default function MailPage() {
             {total > 0 && <span className="desktop-only">{pageStart}–{Math.min(total, page * pageSize)} of {total}</span>}
             <IconButton label="Previous page" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton>
             <IconButton label="Next page" disabled={page * pageSize >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton>
-            {tall && <Menu align="right" width={220} trigger={(open) => <IconButton label="Reading pane" onClick={open}>{layout === 'right' ? <Columns2 size={16} /> : layout === 'bottom' ? <PanelBottom size={16} /> : <Rows3 size={16} />}</IconButton>}>
+            <Menu align="right" width={260} trigger={(open) => <IconButton label="View options" onClick={open}>{layout === 'right' ? <Columns2 size={16} /> : layout === 'bottom' ? <PanelBottom size={16} /> : <Rows3 size={16} />}</IconButton>}>
               {(c) => <>
-                <div className="menu-label">Reading pane</div>
-                <MenuItem active={prefs.layout === 'right'} icon={<Columns2 size={15} />} onClick={() => { setPrefs({ layout: 'right' }); c(); }}>Beside the list</MenuItem>
-                <MenuItem active={prefs.layout === 'bottom'} icon={<PanelBottom size={15} />} onClick={() => { setPrefs({ layout: 'bottom' }); c(); }}>Below the list</MenuItem>
-                <MenuItem active={prefs.layout === 'off'} icon={<Rows3 size={15} />} onClick={() => { setPrefs({ layout: 'off' }); c(); }}>Off (full width)</MenuItem>
+                {tall && <>
+                  <div className="menu-label">Reading pane</div>
+                  <MenuItem active={prefs.layout === 'right'} icon={<Columns2 size={15} />} onClick={() => { setPrefs({ layout: 'right' }); c(); }}>Beside the list</MenuItem>
+                  <MenuItem active={prefs.layout === 'bottom'} icon={<PanelBottom size={15} />} onClick={() => { setPrefs({ layout: 'bottom' }); c(); }}>Below the list</MenuItem>
+                  <MenuItem active={prefs.layout === 'off'} icon={<Rows3 size={15} />} onClick={() => { setPrefs({ layout: 'off' }); c(); }}>Off (full width)</MenuItem>
+                  <div className="menu-sep" />
+                </>}
+                <div className="menu-label">Conversations</div>
+                <MenuItem active={prefs.view === 'list'} icon={<ListIcon size={15} />} onClick={() => { setPrefs({ view: 'list' }); c(); }}>List</MenuItem>
+                <MenuItem active={prefs.view === 'card'} icon={<LayoutGrid size={15} />} onClick={() => { setPrefs({ view: 'card' }); c(); }}>Cards</MenuItem>
+                <div className="menu-sep" />
+                <div className="menu-label">Inbox</div>
+                <MenuItem active={prefs.categories} icon={<Layers size={15} />} onClick={() => { setPrefs({ categories: !prefs.categories }); c(); }}>
+                  Smart categories{prefs.categories ? '' : ' (off)'}
+                </MenuItem>
+                <MenuItem active={prefs.digest} icon={<Layers size={15} />} onClick={() => { setPrefs({ digest: !prefs.digest }); c(); }}>
+                  Stack by sender{prefs.digest ? '' : ' (off)'}
+                </MenuItem>
+                <MenuItem active={prefs.summaries} icon={<Sparkles size={15} />} onClick={() => { setPrefs({ summaries: !prefs.summaries }); c(); }}>
+                  AI summaries{prefs.summaries ? '' : ' (off)'}
+                </MenuItem>
               </>}
-            </Menu>}
+            </Menu>
           </div>
         </>}
         {!showList && showThread && <span className="small muted">{mailboxName}</span>}
@@ -202,10 +280,29 @@ export default function MailPage() {
       <div className={cls('mail-body', split && 'split', layout === 'bottom' && 'split-bottom')}>
         {showList && (
           <div className="thread-list" ref={listRef}>
+            {tabbed && accounts.length > 0 && (
+              <div className="cat-tabs" role="tablist" aria-label="Categories">
+                {CATEGORY_TABS.map((t) => {
+                  const c = counts?.[t.key];
+                  return (
+                    <button key={t.key} type="button" role="tab" aria-selected={cat === t.key} title={t.hint}
+                      className={cls('cat-tab', cat === t.key && 'on', Boolean(c?.unread) && 'has-unread')} onClick={() => setCat(t.key)}>
+                      <span className="cat-tab-icon">{t.icon}</span>
+                      <span className="cat-tab-label">{t.label}</span>
+                      {c && c.unread > 0 && <span className="cat-tab-count">{c.unread > 99 ? '99+' : c.unread}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {accounts.length > 0 && !box.startsWith('mailbox:') && (
               <div className="list-filters">
                 <Segmented value={filter || 'all'} onChange={(v) => setFilter(v === 'all' ? '' : v)} options={[{ value: 'all', label: 'All' }, { value: 'unread', label: 'Unread' }, { value: 'read', label: 'Read' }, { value: 'starred', label: 'Starred' }, { value: 'attachments', label: 'Files' }]} />
-                {total > 0 && <span className="small faint ml-auto">{total} conversation{total === 1 ? '' : 's'}</span>}
+                <span className="ml-auto row gap-4">
+                  {total > 0 && <span className="small faint">{total} conversation{total === 1 ? '' : 's'}</span>}
+                  <IconButton label={prefs.view === 'card' ? 'Switch to the list' : 'Switch to cards'} className="btn-sm"
+                    onClick={() => setPrefs({ view: prefs.view === 'card' ? 'list' : 'card' })}>{prefs.view === 'card' ? <ListIcon size={15} /> : <LayoutGrid size={15} />}</IconButton>
+                </span>
               </div>
             )}
             {isLoading && <div className="center" style={{ padding: 40 }}><Spinner size={22} /></div>}
@@ -214,17 +311,37 @@ export default function MailPage() {
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
                 : <Empty title={q ? 'No results' : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : 'Enjoy the quiet.'}</Empty>
             )}
-            {grouped.map(({ sep, row: t, index: i }) => (
-              <div key={t.key}>
-                {sep && <div className="date-sep">{sep}</div>}
-                <ThreadRowView t={t} index={i} focused={i === focus} selected={selected.has(t.key)} active={t.key === threadKey} showAccount={accountsParam === 'all' && accounts.length > 1} accountColor={accounts.find((a) => a.id === t.account_id)?.color} myEmail={accounts.find((a) => a.id === t.account_id)?.email ?? ''}
-                  onContext={(x, y) => setCtx({ x, y, row: t })}
-                  labels={(t.mailbox_ids ?? []).map((id) => roleOf.get(`${t.account_id}:${id}`)).filter((m) => m && !m.role && box !== `mailbox:${t.account_id}:${m.jmap_id}`).map((m) => ({ name: m!.name, color: m!.color }))}
-                  dragRows={() => (selected.has(t.key) ? selectedRows : [t])}
-                  onOpen={() => openThread(t)} onSelect={() => setSelected((s) => { const n = new Set(s); if (n.has(t.key)) n.delete(t.key); else n.add(t.key); return n; })}
-                  onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'archived')} onTrash={() => act('trash', [t], {}, 'moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box} />
-              </div>
-            ))}
+            {stacks.map(({ sep, rows, indices }) => {
+              const headKey = rows[0].key;
+              const stacked = rows.length > 1;
+              const open = openStacks.has(headKey);
+              const shown = stacked && !open ? rows.slice(0, 1) : rows;
+              const View = prefs.view === 'card' ? ThreadCardView : ThreadRowView;
+              return (
+                <div key={headKey} className={cls(stacked && 'digest', stacked && open && 'digest-open')}>
+                  {sep && <div className="date-sep">{sep}</div>}
+                  {shown.map((t, n) => {
+                    const i = indices[n];
+                    return (
+                      <View key={t.key} t={t} index={i} focused={i === focus} selected={selected.has(t.key)} active={t.key === threadKey} showAccount={accountsParam === 'all' && accounts.length > 1} accountColor={accounts.find((a) => a.id === t.account_id)?.color} myEmail={accounts.find((a) => a.id === t.account_id)?.email ?? ''}
+                        onContext={(x, y) => setCtx({ x, y, row: t })}
+                        labels={(t.mailbox_ids ?? []).map((id) => roleOf.get(`${t.account_id}:${id}`)).filter((m) => m && !m.role && box !== `mailbox:${t.account_id}:${m.jmap_id}`).map((m) => ({ name: m!.name, color: m!.color }))}
+                        dragRows={() => (selected.has(t.key) ? selectedRows : [t])}
+                        onOpen={() => openThread(t)} onSelect={() => setSelected((s) => { const n2 = new Set(s); if (n2.has(t.key)) n2.delete(t.key); else n2.add(t.key); return n2; })}
+                        onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'archived')} onTrash={() => act('trash', [t], {}, 'moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box}
+                        onSwipeArchive={() => act('archive', [t], {}, 'archived')} onSwipeTrash={() => act('trash', [t], {}, 'moved to trash')} summary={summaries[t.key]} />
+                    );
+                  })}
+                  {stacked && (
+                    <button type="button" className="digest-toggle" onClick={() => setOpenStacks((s) => { const n = new Set(s); if (n.has(headKey)) n.delete(headKey); else n.add(headKey); return n; })}>
+                      <Layers size={13} />
+                      {open ? 'Show less' : `${rows.length - 1} more from ${addrName(rows[0].latest?.from?.[0]) || 'this sender'}`}
+                      <ChevronDown size={13} className={cls('digest-caret', open && 'up')} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
         {showThread && <div className="thread-pane"><ThreadView key={threadKey} accountId={Number(accIdStr)} threadId={threadId} box={box} onBack={back} onPrev={goPrev} onNext={goNext} hasPrev={currentIndex > 0} hasNext={currentIndex >= 0 && currentIndex < threads.length - 1} /></div>}
@@ -257,7 +374,84 @@ export default function MailPage() {
   );
 }
 
-function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box }: { t: ThreadRow; index: number; focused: boolean; selected: boolean; active: boolean; showAccount: boolean; accountColor?: string; myEmail: string; labels: { name: string; color: string | null }[]; dragRows: () => ThreadRow[]; onOpen: () => void; onSelect: () => void; onStar: () => void; onArchive: () => void; onTrash: () => void; onRead: () => void; onSnooze: () => void; onContext: (x: number, y: number) => void; box: string }) {
+// Everything both views of a conversation need. They differ in how it is
+// drawn, not in what they can do.
+interface RowViewProps {
+  t: ThreadRow; index: number; focused: boolean; selected: boolean; active: boolean;
+  showAccount: boolean; accountColor?: string; myEmail: string;
+  labels: { name: string; color: string | null }[];
+  dragRows: () => ThreadRow[];
+  onOpen: () => void; onSelect: () => void; onStar: () => void; onArchive: () => void;
+  onTrash: () => void; onRead: () => void; onSnooze: () => void;
+  onContext: (x: number, y: number) => void; box: string;
+  onSwipeArchive: () => void; onSwipeTrash: () => void;
+  // The AI's one-line summary, when it has been written and the reader asked
+  // for summaries at all.
+  summary?: string;
+}
+
+// A conversation is encrypted when the newest message is a PGP envelope: the
+// preview is the armour header, because there is nothing else to show.
+function isEncrypted(t: ThreadRow): boolean {
+  return /-----BEGIN PGP MESSAGE-----/.test(t.latest?.preview ?? '');
+}
+
+// The names on a conversation, "me" for your own addresses, shortened the
+// way Gmail shortens a long list.
+function threadPeople(t: ThreadRow, myEmail: string): string {
+  const people = (t.participants ?? []).filter((p) => p && p.email);
+  const names = people.length ? people.map((p) => (p.email.toLowerCase() === myEmail.toLowerCase() ? 'me' : addrName(p))) : t.latest?.to?.length ? ['To: ' + t.latest.to.map(addrName).join(', ')] : ['(unknown)'];
+  const uniq = [...new Set(names)];
+  return uniq.length > 3 ? `${uniq[0]}, ${uniq[1]} … ${uniq[uniq.length - 1]}` : uniq.join(', ');
+}
+
+// Marks about where a message came from rather than what it says: a logo the
+// domain published and DMARC vouches for, mail that arrived sealed, and bulk
+// mail whose remote images are held back until you ask for them.
+function TrustMarks({ t }: { t: ThreadRow }) {
+  return (
+    <>
+      {t.verified && <span className="mark verified" title="Verified brand — this domain publishes a BIMI logo and passes DMARC"><BadgeCheck size={13} /></span>}
+      {isEncrypted(t) && <span className="mark encrypted" title="End-to-end encrypted — only your key opens this"><Lock size={11} /></span>}
+      {t.bulk && <span className="mark shielded" title="Bulk mail — remote images and tracking pixels are blocked until you allow them"><ShieldCheck size={12} /></span>}
+    </>
+  );
+}
+
+// Swiping a conversation sideways on a touch screen: right archives, left
+// deletes. Only touch — a mouse drag is the drag-onto-a-label gesture — and a
+// mostly vertical move is the list scrolling, so it is handed back at once.
+function useSwipe(onRight: () => void, onLeft: () => void) {
+  const [dx, setDx] = useState(0);
+  const from = useRef<{ x: number; y: number } | null>(null);
+  const fired = useRef(false);
+  const THRESHOLD = 76;
+  const end = () => {
+    const d = dx;
+    from.current = null;
+    setDx(0);
+    if (Math.abs(d) > THRESHOLD) { fired.current = true; if (d > 0) onRight(); else onLeft(); }
+  };
+  return {
+    dx,
+    // A completed swipe must not also count as a tap on the row.
+    swallowClick: (e: React.MouseEvent) => { if (fired.current) { fired.current = false; e.preventDefault(); e.stopPropagation(); return true; } return false; },
+    handlers: {
+      onPointerDown: (e: React.PointerEvent) => { if (e.pointerType === 'touch') from.current = { x: e.clientX, y: e.clientY }; },
+      onPointerMove: (e: React.PointerEvent) => {
+        const f = from.current; if (!f) return;
+        const mx = e.clientX - f.x, my = e.clientY - f.y;
+        if (Math.abs(my) > Math.abs(mx)) { from.current = null; setDx(0); return; }
+        setDx(Math.max(-170, Math.min(170, mx)));
+      },
+      onPointerUp: end,
+      onPointerCancel: () => { from.current = null; setDx(0); },
+    },
+  };
+}
+
+function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+  const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
   const people = (t.participants ?? []).filter((p) => p && p.email);
   const names = people.length ? people.map((p) => (p.email.toLowerCase() === myEmail.toLowerCase() ? 'me' : addrName(p))) : t.latest?.to?.length ? ['To: ' + t.latest.to.map(addrName).join(', ')] : ['(unknown)'];
   const uniq = [...new Set(names)];
@@ -265,18 +459,29 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
   const from = t.latest?.from?.[0];
   const atts = (t.attachments ?? []).filter(Boolean);
   return (
-    <div className={cls('thread-row', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')} style={{ '--i': index } as any} onClick={onOpen} onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
+    <div className={cls('swipe-wrap', swipe.dx > 0 && 'to-archive', swipe.dx < 0 && 'to-trash')} {...swipe.handlers}>
+      <div className="swipe-behind">
+        <span className="swipe-hint left"><Archive size={17} /> Archive</span>
+        <span className="swipe-hint right"><Trash2 size={17} /> Delete</span>
+      </div>
+    <div className={cls('thread-row', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')} style={{ '--i': index, '--swipe-x': `${swipe.dx}px` } as any} onClick={(e) => { if (!swipe.swallowClick(e)) onOpen(); }} onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
       draggable onDragStart={(e) => { const rows = dragRows(); e.dataTransfer.setData('application/x-tern-threads', JSON.stringify(rows.map((r) => ({ key: r.key, account_id: r.account_id, thread_id: r.thread_id })))); e.dataTransfer.effectAllowed = 'move'; }}>
       {showAccount && <span className="acct-stripe" style={{ background: accountColor }} />}
       <div className="t-check" onClick={(e) => { e.stopPropagation(); onSelect(); }}><input type="checkbox" className="checkbox" checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" /></div>
       <div className={cls('t-star', t.starred && 'on')} onClick={(e) => { e.stopPropagation(); onStar(); }} title={t.starred ? 'Unstar' : 'Star'}><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
-      <div className="t-avatar"><Avatar name={from?.name} email={from?.email} src={t.avatar_url} /></div>
+      <div className={cls('t-avatar', t.verified && 'is-verified')}>
+        <Avatar name={from?.name} email={from?.email} src={t.avatar_url} />
+        {t.verified && <span className="verified-tick" title="Verified brand — this domain publishes a BIMI logo and passes DMARC"><BadgeCheck size={12} /></span>}
+      </div>
       <div className="t-names" title={label}>{label}{t.n > 1 && <span className="t-count">{t.n}</span>}</div>
       <div className="t-main">
         {labels.length > 0 && <span className="t-labels">{labels.slice(0, 2).map((l) => <span key={l.name} className="t-label" style={l.color ? { background: l.color + '22', color: l.color } : {}}>{l.name}</span>)}</span>}
         {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
         <span className="t-subject">{t.latest?.subject || '(no subject)'}</span>
-        <span className="t-snippet">— {/-----BEGIN PGP MESSAGE-----/.test(t.latest?.preview ?? '') || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>
+        <span className="t-marks"><TrustMarks t={t} /></span>
+        {summary
+          ? <span className="t-snippet gist" title={t.latest?.preview}><Sparkles size={11} /> {summary}</span>
+          : <span className="t-snippet">— {isEncrypted(t) || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>}
         {atts.length > 0 && <span className="t-atts">{atts.slice(0, 2).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}{atts.length > 2 && <span className="t-att">+{atts.length - 2}</span>}</span>}
       </div>
       <div className="t-meta">
@@ -289,6 +494,70 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
         <IconButton label="Delete" className="btn-sm" onClick={onTrash}><Trash2 size={15} /></IconButton>
         <IconButton label={t.unread ? 'Mark read' : 'Mark unread'} className="btn-sm" onClick={onRead}>{t.unread ? <MailOpen size={15} /> : <Mail size={15} />}</IconButton>
         <IconButton label="Snooze" className="btn-sm" onClick={onSnooze}><AlarmClock size={15} /></IconButton>
+      </div>
+    </div>
+    </div>
+  );
+}
+
+// The card view: the same conversation with room to breathe. Where the list
+// is for scanning a hundred rows, this is for reading a dozen — the summary
+// line, the people, the labels and the attachments all get their own space.
+function ThreadCardView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+  const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
+  const label = threadPeople(t, myEmail);
+  const from = t.latest?.from?.[0];
+  const atts = (t.attachments ?? []).filter(Boolean);
+  const encrypted = isEncrypted(t);
+  return (
+    <div className={cls('swipe-wrap', swipe.dx > 0 && 'to-archive', swipe.dx < 0 && 'to-trash')} {...swipe.handlers}>
+      <div className="swipe-behind">
+        <span className="swipe-hint left"><Archive size={17} /> Archive</span>
+        <span className="swipe-hint right"><Trash2 size={17} /> Delete</span>
+      </div>
+      <div className={cls('thread-card', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')}
+        style={{ '--i': index, '--swipe-x': `${swipe.dx}px` } as any}
+        onClick={(e) => { if (!swipe.swallowClick(e)) onOpen(); }}
+        onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
+        draggable onDragStart={(e) => { const rows = dragRows(); e.dataTransfer.setData('application/x-tern-threads', JSON.stringify(rows.map((r) => ({ key: r.key, account_id: r.account_id, thread_id: r.thread_id })))); e.dataTransfer.effectAllowed = 'move'; }}>
+        {showAccount && <span className="acct-stripe" style={{ background: accountColor }} />}
+        <div className="tc-head">
+          <div className={cls('tc-avatar', t.verified && 'is-verified')}>
+            <Avatar name={from?.name} email={from?.email} src={t.avatar_url} size="lg" />
+            {t.verified && <span className="verified-tick" title="Verified brand — this domain publishes a BIMI logo and passes DMARC"><BadgeCheck size={13} /></span>}
+          </div>
+          <div className="tc-who">
+            <div className="tc-names" title={label}>{label}{t.n > 1 && <span className="t-count">{t.n}</span>}</div>
+            <div className="tc-when" title={fmtDateTime(t.last_at)}>{fmtDate(t.last_at)}</div>
+          </div>
+          <div className="tc-actions" onClick={(e) => e.stopPropagation()}>
+            <div className={cls('t-star', t.starred && 'on')} onClick={onStar} title={t.starred ? 'Unstar' : 'Star'}><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
+            <input type="checkbox" className="checkbox" checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" />
+          </div>
+        </div>
+        <div className="tc-subject">{t.latest?.subject || '(no subject)'}<span className="t-marks"><TrustMarks t={t} /></span></div>
+        {summary && <div className="tc-gist"><Sparkles size={12} /> {summary}</div>}
+        <div className="tc-preview">
+          {encrypted || (!t.latest?.preview && t.has_attachment)
+            ? <span className="row gap-4"><Lock size={12} /> Encrypted message</span>
+            : t.latest?.preview}
+        </div>
+        {(labels.length > 0 || atts.length > 0 || t.has_draft || t.muted || t.snoozed_until) && (
+          <div className="tc-foot">
+            {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
+            {labels.slice(0, 3).map((l) => <span key={l.name} className="t-label" style={l.color ? { background: l.color + '22', color: l.color } : {}}>{l.name}</span>)}
+            {atts.slice(0, 3).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}
+            {atts.length > 3 && <span className="t-att">+{atts.length - 3}</span>}
+            {t.muted && <span className="t-att"><BellOff size={11} /> Muted</span>}
+            {t.snoozed_until && box === 'snoozed' && <span className="t-att"><AlarmClock size={11} /> {fmtDate(t.snoozed_until)}</span>}
+          </div>
+        )}
+        <div className="tc-hover" onClick={(e) => e.stopPropagation()}>
+          {box !== 'archive' && box !== 'trash' && <IconButton label="Archive" className="btn-sm" onClick={onArchive}><Archive size={15} /></IconButton>}
+          <IconButton label="Delete" className="btn-sm" onClick={onTrash}><Trash2 size={15} /></IconButton>
+          <IconButton label={t.unread ? 'Mark read' : 'Mark unread'} className="btn-sm" onClick={onRead}>{t.unread ? <MailOpen size={15} /> : <Mail size={15} />}</IconButton>
+          <IconButton label="Snooze" className="btn-sm" onClick={onSnooze}><AlarmClock size={15} /></IconButton>
+        </div>
       </div>
     </div>
   );

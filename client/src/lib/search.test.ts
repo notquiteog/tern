@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery } from './search';
+import { EMPTY_SEARCH, buildSearchQuery, parseSearchQuery, searchChips, withoutChip } from './search';
 
 test('builds operators from fields', () => {
   assert.equal(buildSearchQuery({ from: 'bob', subject: 'quarterly plan', words: 'budget', has: 'attachment', within: '7d', unread: true }), 'from:bob subject:"quarterly plan" has:attachment is:unread newer_than:7d budget');
@@ -39,4 +39,25 @@ test('empty and whitespace queries', () => {
 });
 test('unsupported within values fall back to words', () => {
   assert.equal(parseSearchQuery('newer_than:2w').words, 'newer_than:2w');
+});
+
+test('operators become chips and free text does not', () => {
+  const f = parseSearchQuery('from:dana@x.test subject:"the plan" has:attachment is:unread newer_than:7d -spam quarterly');
+  const chips = searchChips(f);
+  assert.deepEqual(chips.map((c) => c.label), ['From: dana@x.test', 'Subject: the plan', 'Has attachment', 'Unread', 'past week', 'Not: spam']);
+  // "quarterly" is still being typed, so it stays in the box.
+  assert.equal(f.words, 'quarterly');
+});
+
+test('taking a chip off leaves every other operator alone', () => {
+  const f = parseSearchQuery('from:dana subject:plan has:attachment -spam -junk');
+  const chips = searchChips(f);
+  const without = withoutChip(f, chips.find((c) => c.key === 'subject')!);
+  assert.equal(buildSearchQuery(without), 'from:dana has:attachment -spam -junk');
+  // One excluded word goes without taking the other with it.
+  const noSpam = withoutChip(f, chips.find((c) => c.key === 'not' && c.value === 'spam')!);
+  assert.equal(noSpam.not, 'junk');
+  const noFlag = withoutChip(parseSearchQuery('is:starred is:unread'), { key: 'starred', label: '', value: 'true' });
+  assert.equal(noFlag.starred, false);
+  assert.equal(noFlag.unread, true);
 });

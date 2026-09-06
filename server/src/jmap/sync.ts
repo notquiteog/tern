@@ -13,6 +13,7 @@ import { onNewEmails } from '../services/automation.js';
 import { notifyNewMail } from '../services/push.js';
 import { autocryptHeadersOf } from '../services/autocrypt.js';
 import { sealEmail } from '../services/mailVault.js';
+import { categorize } from '../services/categorize.js';
 
 const log = logger('sync');
 
@@ -205,6 +206,13 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
   // Content is sealed with the account owner's data key before it is
   // written, and the blind index terms are computed from the plaintext here,
   // the one moment the server legitimately holds it.
+  // Which senders this person already knows, so a real correspondent is
+  // never filed into a category tab. One query for the whole batch.
+  const senders = [...new Set(list.map((e: any) => String(e.from?.[0]?.email ?? '').toLowerCase()).filter(Boolean))];
+  const known = new Set<string>();
+  if (senders.length) {
+    for (const r of await query<{ email: string }>('SELECT lower(email) AS email FROM contacts WHERE user_id=$1 AND lower(email) = ANY($2)', [acc.user_id, senders])) known.add(r.email);
+  }
   const prepared = await Promise.all(list.map(async (e) => {
     const { text, html } = extractBodies(e);
     const attachments = (e.attachments ?? []).map((p: BodyPart) => ({ blobId: p.blobId, name: p.name ?? null, type: p.type ?? 'application/octet-stream', size: p.size ?? 0, cid: p.cid ?? null, disposition: p.disposition ?? null }));
@@ -215,21 +223,33 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
       from_addr: e.from ?? [], to_addr: e.to ?? [], cc_addr: e.cc ?? [], bcc_addr: e.bcc ?? [], reply_to: e.replyTo ?? [],
       attachments,
     });
-    return { e, text, sealed };
+    // Worked out here, the one moment the subject and sender are readable;
+    // only the four-value answer is stored beside the ciphertext.
+    const category = categorize({
+      subject: e.subject ?? '',
+      fromEmail: e.from?.[0]?.email ?? null,
+      fromName: e.from?.[0]?.name ?? null,
+      listId: listIdOf(e),
+      listUnsubscribe: e['header:List-Unsubscribe:asText'] ?? null,
+      autoSubmitted: e['header:Auto-Submitted:asText'] ?? null,
+      precedence: e['header:Precedence:asText'] ?? null,
+      knownContact: known.has(String(e.from?.[0]?.email ?? '').toLowerCase()),
+    });
+    return { e, text, sealed, category };
   }));
   await withTx(async (c) => {
-    for (const { e, text, sealed } of prepared) {
+    for (const { e, text, sealed, category } of prepared) {
       const row = await c.query(
         `INSERT INTO emails (account_id, jmap_id, blob_id, thread_id, mailbox_ids, keywords, size, received_at, sent_at, message_id, in_reply_to, references_ids,
             from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, has_attachment, body_text, body_html, attachments, auto_submitted, list_unsubscribe, list_id, autocrypt_seen,
-            search_terms, address_terms, from_terms, sealed, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,true,now())
+            search_terms, address_terms, from_terms, category, sealed, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,true,now())
          ON CONFLICT (account_id, jmap_id) DO UPDATE SET blob_id=EXCLUDED.blob_id, thread_id=EXCLUDED.thread_id, mailbox_ids=EXCLUDED.mailbox_ids, keywords=EXCLUDED.keywords,
            size=EXCLUDED.size, received_at=EXCLUDED.received_at, sent_at=EXCLUDED.sent_at, message_id=EXCLUDED.message_id, in_reply_to=EXCLUDED.in_reply_to, references_ids=EXCLUDED.references_ids,
            from_addr=EXCLUDED.from_addr, to_addr=EXCLUDED.to_addr, cc_addr=EXCLUDED.cc_addr, bcc_addr=EXCLUDED.bcc_addr, reply_to=EXCLUDED.reply_to, subject=EXCLUDED.subject, preview=EXCLUDED.preview,
            has_attachment=EXCLUDED.has_attachment, body_text=COALESCE(EXCLUDED.body_text, emails.body_text), body_html=COALESCE(EXCLUDED.body_html, emails.body_html), attachments=EXCLUDED.attachments,
            auto_submitted=EXCLUDED.auto_submitted, list_unsubscribe=EXCLUDED.list_unsubscribe, list_id=EXCLUDED.list_id, autocrypt_seen=EXCLUDED.autocrypt_seen,
-           search_terms=EXCLUDED.search_terms, address_terms=EXCLUDED.address_terms, from_terms=EXCLUDED.from_terms, sealed=true, updated_at=now()
+           search_terms=EXCLUDED.search_terms, address_terms=EXCLUDED.address_terms, from_terms=EXCLUDED.from_terms, category=EXCLUDED.category, sealed=true, updated_at=now()
          RETURNING id, (xmax = 0) AS inserted`,
         [
           acc.id, e.id, e.blobId ?? null, e.threadId ?? e.id, Object.keys(e.mailboxIds ?? {}), Object.keys(e.keywords ?? {}).filter((k) => e.keywords[k]),
@@ -237,7 +257,7 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
           sealed.from_addr, sealed.to_addr, sealed.cc_addr, sealed.bcc_addr, sealed.reply_to,
           sealed.subject, sealed.preview, Boolean(e.hasAttachment), sealed.body_text, sealed.body_html, sealed.attachments, e['header:Auto-Submitted:asText'] ?? null,
           (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e), autocryptHeadersOf(e).length > 0,
-          sealed.search_terms, sealed.address_terms, sealed.from_terms,
+          sealed.search_terms, sealed.address_terms, sealed.from_terms, category,
         ],
       );
       if (row.rows[0].inserted) { created++; fresh.push({ ...e, _id: row.rows[0].id, _text: text }); } else updated++;

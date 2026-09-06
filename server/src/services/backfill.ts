@@ -5,7 +5,8 @@
 // hands it back unchanged — so there is no cutover moment.
 import { one, query, withTx } from '../db.js';
 import { logger } from '../log.js';
-import { sealEmail } from './mailVault.js';
+import { openEmailWith, sealEmail } from './mailVault.js';
+import { categorize } from './categorize.js';
 import { sealWith, dataKey } from './vault.js';
 
 const log = logger('backfill');
@@ -55,6 +56,58 @@ export async function backfillBatch(limit = BATCH): Promise<BackfillProgress> {
   }
   const left = await one<{ n: number }>('SELECT count(*)::int AS n FROM emails WHERE NOT sealed');
   return { done, remaining: left?.n ?? 0, finished: (left?.n ?? 0) === 0 };
+}
+
+// Smart categories for mail that was synced before they existed. The
+// subject and sender are sealed, so each row has to be opened to be filed;
+// that is why this walks in batches from the scheduler rather than running
+// as a migration. Rows keep NULL until they are reached, and the inbox reads
+// NULL as Primary, so nothing is hidden while it runs.
+export async function categorizeBatch(limit = BATCH): Promise<BackfillProgress> {
+  const rows = await query<any>(
+    `SELECT e.id, a.user_id, e.subject, e.from_addr, e.list_id, e.list_unsubscribe, e.auto_submitted
+       FROM emails e JOIN accounts a ON a.id = e.account_id
+      WHERE e.category IS NULL ORDER BY e.id DESC LIMIT $1`,
+    [limit],
+  );
+  if (!rows.length) return { done: 0, remaining: 0, finished: true };
+  // One contact lookup per user in the batch rather than one per message.
+  const contactsFor = new Map<number, Set<string>>();
+  for (const userId of new Set<number>(rows.map((r: any) => r.user_id))) {
+    const set = new Set<string>();
+    for (const c of await query<{ email: string }>('SELECT lower(email) AS email FROM contacts WHERE user_id=$1', [userId])) set.add(c.email);
+    contactsFor.set(userId, set);
+  }
+  let done = 0;
+  for (const r of rows) {
+    try {
+      const dek = await dataKey(r.user_id);
+      const opened = openEmailWith(dek, { subject: r.subject, from_addr: r.from_addr });
+      const from = (opened.from_addr as any[])?.[0] ?? null;
+      const email = String(from?.email ?? '').toLowerCase();
+      const category = categorize({
+        subject: opened.subject ?? '',
+        fromEmail: from?.email ?? null,
+        fromName: from?.name ?? null,
+        listId: r.list_id, listUnsubscribe: r.list_unsubscribe, autoSubmitted: r.auto_submitted,
+        knownContact: Boolean(email && contactsFor.get(r.user_id)?.has(email)),
+      });
+      await query('UPDATE emails SET category=$2 WHERE id=$1 AND category IS NULL', [r.id, category]);
+      done++;
+    } catch (e) {
+      // An unreadable row would stall the walk for ever if it were retried,
+      // and a wrong tab is not worth that, so it is filed as Primary.
+      log.warn(`could not categorise email ${r.id}`, { err: (e as Error).message });
+      await query(`UPDATE emails SET category='primary' WHERE id=$1 AND category IS NULL`, [r.id]).catch(() => {});
+    }
+  }
+  const left = await one<{ n: number }>('SELECT count(*)::int AS n FROM emails WHERE category IS NULL');
+  return { done, remaining: left?.n ?? 0, finished: (left?.n ?? 0) === 0 };
+}
+
+export async function categorizePending(): Promise<number> {
+  const r = await one<{ n: number }>('SELECT count(*)::int AS n FROM emails WHERE category IS NULL');
+  return r?.n ?? 0;
 }
 
 // Drafts and queued messages are few, so they convert in one go the first

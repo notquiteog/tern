@@ -744,4 +744,37 @@ ALTER TABLE review_queue ALTER COLUMN to_addr SET DEFAULT '[]';
 UPDATE accounts SET retention_enabled = true WHERE NOT retention_enabled;
 `,
   },
+  {
+    // Smart categories. The subject and sender are sealed, so this is worked
+    // out as a message is synced and only the answer is stored; NULL means a
+    // message from before this migration, which the inbox reads as Primary
+    // until a backfill or a resync gets to it.
+    id: '20260907_0017_smart_categories',
+    up: `
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS category TEXT
+  CHECK (category IS NULL OR category IN ('primary','transactions','updates','promotions'));
+-- The inbox counts every tab on each load, so the lookup is by account and
+-- category with the newest first.
+CREATE INDEX IF NOT EXISTS emails_category_idx ON emails (account_id, category, received_at DESC);
+`,
+  },
+  {
+    // One-line AI summaries shown above a conversation in the list. Derived
+    // from mail content, so sealed with the owner's key like everything else.
+    // `latest_at` is the timestamp of the newest message the summary was
+    // written from: when a reply arrives it no longer matches and the line is
+    // regenerated rather than describing a stale conversation.
+    id: '20260907_0018_thread_summaries',
+    up: `
+CREATE TABLE IF NOT EXISTS thread_summaries (
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  latest_at TIMESTAMPTZ NOT NULL,
+  model TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, thread_id)
+);
+`,
+  },
 ];

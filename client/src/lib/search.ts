@@ -46,3 +46,32 @@ export function parseSearchQuery(q: string): SearchFields {
   f.not = nots.join(' ');
   return f;
 }
+
+// The operators currently in the box, as chips that can be taken off one at
+// a time. Free text is not a chip — it stays in the input, which is what the
+// person is still typing into.
+export interface SearchChip { key: keyof SearchFields | 'not'; label: string; value: string }
+
+const WITHIN_LABEL: Record<string, string> = { '1d': 'past day', '3d': 'past 3 days', '7d': 'past week', '30d': 'past month', '90d': 'past 3 months', '1y': 'past year' };
+
+export function searchChips(f: SearchFields): SearchChip[] {
+  const chips: SearchChip[] = [];
+  if (f.from.trim()) chips.push({ key: 'from', label: `From: ${f.from}`, value: f.from });
+  if (f.to.trim()) chips.push({ key: 'to', label: `To: ${f.to}`, value: f.to });
+  if (f.subject.trim()) chips.push({ key: 'subject', label: `Subject: ${f.subject}`, value: f.subject });
+  if (f.box.trim()) chips.push({ key: 'box', label: `In: ${f.box}`, value: f.box });
+  if (f.has === 'attachment') chips.push({ key: 'has', label: 'Has attachment', value: 'attachment' });
+  if (f.unread) chips.push({ key: 'unread', label: 'Unread', value: 'true' });
+  if (f.starred) chips.push({ key: 'starred', label: 'Starred', value: 'true' });
+  if (f.within) chips.push({ key: 'within', label: WITHIN_LABEL[f.within] ?? f.within, value: f.within });
+  // Each excluded word is its own chip: dropping one should not drop the rest.
+  for (const w of f.not.split(/\s+/).filter(Boolean)) chips.push({ key: 'not', label: `Not: ${w}`, value: w });
+  return chips;
+}
+
+// The same fields with one chip taken off.
+export function withoutChip(f: SearchFields, chip: SearchChip): SearchFields {
+  if (chip.key === 'not') return { ...f, not: f.not.split(/\s+/).filter((w) => w && w !== chip.value).join(' ') };
+  if (chip.key === 'unread' || chip.key === 'starred') return { ...f, [chip.key]: false };
+  return { ...f, [chip.key]: '' } as SearchFields;
+}

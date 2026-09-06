@@ -7,10 +7,14 @@ import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isVali
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
-import { getUserAccount } from '../services/accounts.js';
+import { getUserAccount, listAccounts } from '../services/accounts.js';
 import { htmlToText } from '../services/merge.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { logger } from '../log.js';
 import { openEmails } from '../services/mailVault.js';
+import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
+
+const log = logger('ai');
 
 export const aiRouter = Router();
 aiRouter.use(requireAuth);
@@ -103,6 +107,48 @@ aiRouter.post('/models/unload', requireAdmin, async (req, res) => {
   if (s.provider !== 'ollama') throw badRequest('Only an Ollama model can be unloaded from here');
   const unloaded = await unloadModel(s.baseUrl, name);
   res.json({ unloaded });
+});
+
+// One-line summaries for the conversations the browser can currently see.
+// Anything already written comes back at once; a few of the missing ones are
+// generated per request so a page of fifty does not queue fifty generations
+// on someone's CPU.
+aiRouter.post('/summaries', rateLimit({ name: 'ai-summaries', perMinute: 30, message: 'Too many summary requests; wait a moment' }), async (req, res) => {
+  const b = parse(z.object({ keys: z.array(z.string().max(200)).max(60), generate: z.boolean().optional() }), req.body);
+  const s = await getAiSettings();
+  // Pairs of accountId:threadId, kept only where the account is this user's.
+  const wanted: { accountId: number; threadId: string }[] = [];
+  for (const k of b.keys) {
+    const i = k.indexOf(':');
+    if (i <= 0) continue;
+    const accountId = Number(k.slice(0, i));
+    const threadId = k.slice(i + 1);
+    if (Number.isFinite(accountId) && threadId) wanted.push({ accountId, threadId });
+  }
+  const mine = new Map((await listAccounts(req.user!.id)).map((a) => [a.id, a]));
+  const allowed = wanted.filter((w) => mine.has(w.accountId));
+  const cached = await cachedSummaries(req.user!.id, [...new Set(allowed.map((w) => w.accountId))], [...new Set(allowed.map((w) => w.threadId))]);
+  const out: Record<string, string> = {};
+  for (const [k, v] of cached) out[k] = v.text;
+
+  if (b.generate && s.enabled) {
+    // Stale lines first — they are describing a conversation that has moved
+    // on — then the ones with nothing at all.
+    const missing = allowed.filter((w) => !cached.has(`${w.accountId}:${w.threadId}`));
+    const stale = allowed.filter((w) => cached.get(`${w.accountId}:${w.threadId}`)?.stale);
+    for (const w of [...stale, ...missing].slice(0, MAX_PER_REQUEST)) {
+      try {
+        const made = await generateSummary(req.user!.id, mine.get(w.accountId)!, w.threadId);
+        if (made) out[`${w.accountId}:${w.threadId}`] = made.text;
+      } catch (e) {
+        // A model that is down must not fail the list, but it must not fail
+        // silently either: a summary that never appears is otherwise
+        // indistinguishable from one the model declined to write.
+        log.warn('summary generation failed', { account: w.accountId, thread: w.threadId, err: (e as Error).message });
+      }
+    }
+  }
+  res.json({ summaries: out, enabled: s.enabled });
 });
 
 const draftSchema = z.object({

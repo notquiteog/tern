@@ -14,7 +14,7 @@ export interface Account {
 export interface Retention { enabled: boolean; trashDays: number; junkDays: number; lastRunAt: string | null }
 export interface Vacation { enabled: boolean; subject: string; body: string; start: string | null; end: string | null; onlyContacts: boolean; intervalDays: number }
 export interface Mailbox { id: number; account_id: number; jmap_id: string; name: string; parent_id: string | null; role: string | null; sort_order: number; total_emails: number; unread_emails: number; total_threads: number; unread_threads: number; color: string | null }
-export interface Counts { inboxUnread: Record<string, number>; inboxUnreadTotal: number; drafts: number; snoozed: number; scheduled: number; review: number; labelUnread: Record<string, number> }
+export interface Counts { inboxUnread: Record<string, number>; inboxUnreadTotal: number; drafts: number; snoozed: number; scheduled: number; review: number; labelUnread: Record<string, number>; burner: { address: string; unread: number } | null }
 
 export const useAccounts = () => useQuery({ queryKey: ['accounts'], queryFn: () => api.get<{ accounts: Account[] }>('/api/accounts').then((r) => r.accounts) });
 export const useMailboxes = () => useQuery({ queryKey: ['mailboxes'], queryFn: () => api.get<{ mailboxes: Mailbox[] }>('/api/mail/mailboxes').then((r) => r.mailboxes) });

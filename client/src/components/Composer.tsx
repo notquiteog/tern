@@ -216,7 +216,7 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
       if (opts.archive && tid) api.post('/api/mail/actions', { accountId: Number(accStr), threadIds: [tid], action: 'archive' }).then(() => { qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['counts'] }); }).catch(() => {});
       const what = encrypt ? (sign ? 'Sent, signed and encrypted' : 'Sent encrypted') : sign && canSign ? 'Sent and signed' : 'Sent';
       if (useUndo) {
-        toast.toast(`${opts.archive ? 'Sending and archiving' : 'Sending'}…`, { ttl: undoSecs * 1000 + 500, action: { label: 'Undo', onClick: async () => {
+        toast.toast(`${opts.archive ? 'Sending and archiving' : 'Sending'}…`, { ttl: undoSecs * 1000 + 500, countdownMs: undoSecs * 1000, action: { label: 'Undo', onClick: async () => {
           try {
             const c = await api.del<{ cancelled: boolean; draft: any }>(`/api/mail/outbox/${r.outboxId}`);
             if (c.cancelled) { toast.toast('Sending undone; the message is back in drafts'); qc.invalidateQueries({ queryKey: ['drafts'] }); qc.invalidateQueries({ queryKey: ['counts'] }); if (c.draft) compose.open(seedFromDraft(c.draft)); }

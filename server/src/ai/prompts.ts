@@ -3,7 +3,7 @@
 // gives the model the facts it is allowed to use instead of letting it guess.
 import type { ChatMessage } from './llm.js';
 
-export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies';
+export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies' | 'gist';
 
 export interface DraftInput {
   mode: DraftMode;
@@ -59,6 +59,10 @@ export function modeTuning(mode: DraftMode): { temperature?: number; maxTokens?:
     case 'rewrite': case 'shorten': return { temperature: 0.4 };
     case 'expand': return { temperature: 0.5 };
     case 'summarize': return { temperature: 0.3, maxTokens: 400 };
+    // One line above a conversation in the list. It has to be cheap enough to
+    // run over a page of mail on a CPU-only box, so it gets a small budget and
+    // only the newest part of the thread.
+    case 'gist': return { temperature: 0.2, maxTokens: 60, threadChars: 4_000 };
     // Three one-liners answer the last thing that was said. Handed the whole
     // of a long thread the model starts summarising it instead, in one long
     // sentence, and there is nothing to pick from.
@@ -236,6 +240,12 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       break;
     case 'summarize':
       parts.push(`Summarize the conversation in 2-4 plain sentences: what was discussed, what was decided, what is still open. Keep any dates, amounts and names exactly as they appear. Then, on a new line starting with "Next:", state the single most useful next action for the sender.`);
+      break;
+    case 'gist':
+      // The subject is already on the row above this line, so repeating it
+      // wastes the only line there is. What the reader wants is the point:
+      // what is being asked of them, or what changed.
+      parts.push(`In one line of at most 14 words, say what this message is actually about — what it asks for, or what it says has happened. Do not repeat the subject line. Do not start with "This email" or the sender's name. No quotes, no full stop at the end. Output that one line and nothing else.`);
       break;
     case 'subject':
       parts.push(`Write one subject line for the email below. At most 7 words, no quotes, no trailing punctuation. Output the subject line only, nothing else.`);

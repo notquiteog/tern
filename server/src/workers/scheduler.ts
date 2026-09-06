@@ -19,7 +19,7 @@ import { runRetention } from '../services/retention.js';
 import { pushDirtyDrafts } from '../services/draftSync.js';
 import { openEmail, openEmails, openReview, sealReview } from '../services/mailVault.js';
 import { open, seal } from '../services/vault.js';
-import { backfillBatch, backfillDraftsAndOutbox, backfillPending } from '../services/backfill.js';
+import { backfillBatch, backfillDraftsAndOutbox, backfillPending, categorizeBatch, categorizePending } from '../services/backfill.js';
 
 const log = logger('scheduler');
 let timer: NodeJS.Timeout | null = null;
@@ -41,6 +41,7 @@ export async function tick(): Promise<void> {
   try {
     await housekeeping();
     await encryptCache();
+    await fileCategories();
     await retention();
     await processSnoozes();
     await syncDrafts();
@@ -116,6 +117,28 @@ async function encryptCache(): Promise<void> {
     if (p.finished) { backfillDone = true; log.info('the mail cache is fully encrypted'); }
   } catch (e) {
     log.error('cache encryption pass failed', { err: (e as Error).message });
+  }
+}
+
+// Smart categories for mail synced before they existed. Same shape as the
+// encryption walk: batches from the scheduler, stops asking when it is done.
+// It waits for encryption to finish so the two are not opening and sealing
+// the same rows at once.
+let categorizeDone = false;
+let categorizeStarted = false;
+async function fileCategories(): Promise<void> {
+  if (categorizeDone || !backfillDone) return;
+  try {
+    if (!categorizeStarted) {
+      categorizeStarted = true;
+      const pending = await categorizePending();
+      if (pending) log.info(`filing mail into categories: ${pending} to go`);
+    }
+    const p = await categorizeBatch();
+    if (p.done) log.info(`categorised ${p.done} messages, ${p.remaining} to go`);
+    if (p.finished) { categorizeDone = true; log.info('every message has a category'); }
+  } catch (e) {
+    log.error('categorisation pass failed', { err: (e as Error).message });
   }
 }
 

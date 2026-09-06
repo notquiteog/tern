@@ -854,3 +854,135 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .msg { break-inside: avoid; box-shadow: none; border: 1px solid #ddd; }
   .msg-frame { height: auto !important; }
 }
+
+/* ========================================================================
+   Smart categories, the card view, sender stacks and swipe-to-act.
+   Everything here sits on the same glass tokens as the rest of the shell.
+   ======================================================================== */
+
+/* Category tabs. Off by default; when on they sit above the list filters and
+   scroll sideways on a narrow screen rather than wrapping into two rows. */
+.cat-tabs { display: flex; gap: 4px; padding: 8px 12px 0; position: sticky; top: 0; z-index: 3; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); overflow-x: auto; scrollbar-width: none; }
+.cat-tabs::-webkit-scrollbar { display: none; }
+.cat-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px 9px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-3); font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; border-radius: 10px 10px 0 0; transition: color .14s, background .14s, border-color .14s; }
+.cat-tab:hover { color: var(--text); background: rgba(var(--accent-rgb), .06); }
+.cat-tab.on { color: var(--accent-text); border-bottom-color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.cat-tab.has-unread { color: var(--text); font-weight: 600; }
+.cat-tab-icon { display: inline-flex; opacity: .85; }
+.cat-tab-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+@media (max-width: 640px) { .cat-tab-label { display: none; } .cat-tab { padding: 8px 12px 10px; } .cat-tab.on .cat-tab-label { display: inline; } }
+
+/* Provenance marks: verified brand, end-to-end encrypted, bulk mail whose
+   remote content is held back. Small, quiet, and never coloured like an
+   error — they are statements of fact, not warnings. */
+.t-marks { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.mark { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 5px; }
+.mark.verified { color: #2f7de1; background: rgba(47, 125, 225, .12); }
+.mark.encrypted { color: var(--success); background: var(--success-soft); }
+.mark.shielded { color: var(--text-3); background: var(--bg-sunken); }
+[data-theme="dark"] .mark.verified { background: rgba(47, 125, 225, .2); }
+[data-theme="dark"] .mark.encrypted { background: rgba(31, 157, 100, .18); }
+
+/* The tick that sits on a verified sender's avatar. */
+.t-avatar, .tc-avatar { position: relative; }
+.verified-tick { position: absolute; right: -3px; bottom: -3px; display: inline-flex; align-items: center; justify-content: center; color: #2f7de1; background: var(--bg-elev); border-radius: 50%; box-shadow: 0 0 0 1.5px var(--bg-elev); }
+
+/* Card view. One conversation per card, three or four to a screen, with the
+   preview given real room. */
+.thread-list .thread-card { position: relative; margin: 8px 10px; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--glass-strong); box-shadow: var(--shadow-1); cursor: pointer; color: var(--text-2); transition: transform .14s, box-shadow .14s, border-color .14s, background .14s; animation: rowIn .25s ease-out both; animation-delay: calc(var(--i, 0) * 8ms); }
+.thread-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-2); border-color: rgba(var(--accent-rgb), .3); }
+.thread-card.unread { background: var(--glass-solid); border-color: rgba(var(--accent-rgb), .28); color: var(--text); }
+.thread-card.unread::after { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+.thread-card.selected, .thread-card.active { background: rgba(var(--accent-rgb), .14); border-color: rgba(var(--accent-rgb), .45); }
+.thread-card.focused { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.tc-who { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
+.tc-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); font-size: 13.5px; }
+.tc-when { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.tc-actions { display: flex; align-items: center; gap: 8px; }
+.tc-subject { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-card.unread .tc-subject { font-weight: 700; }
+.tc-preview { font-size: 12.5px; line-height: 1.5; color: var(--text-3); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tc-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 9px; }
+.tc-foot .t-label { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-sunken); color: var(--text-2); font-weight: 500; }
+.tc-foot .t-att, .thread-card .t-att { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-sunken); color: var(--text-3); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-hover { display: none; position: absolute; right: 10px; bottom: 10px; background: var(--glass-solid); border: 1px solid var(--glass-border); border-radius: 9px; padding: 0 2px; box-shadow: var(--shadow-1); }
+.thread-card:hover .tc-hover { display: flex; }
+.thread-card .acct-stripe { position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 2px 2px 0; }
+.thread-card .t-count { font-size: 11px; color: var(--text-3); font-weight: 500; }
+.thread-card .t-star { display: flex; color: var(--text-3); cursor: pointer; }
+.thread-card .t-star.on, .thread-card .t-star:hover { color: #f2b01e; }
+
+/* A run of messages from one sender, folded into one entry that opens. */
+.digest { position: relative; }
+.digest-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 14px 8px 52px; border: 0; background: transparent; color: var(--text-3); font: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; text-align: left; }
+.digest-toggle:hover { color: var(--accent-text); background: rgba(var(--accent-rgb), .05); }
+.digest-caret { transition: transform .16s; }
+.digest-caret.up { transform: rotate(180deg); }
+/* Closed, the head row sits on a stack of edges so it reads as several. */
+.digest:not(.digest-open) > .swipe-wrap:first-of-type { box-shadow: 0 3px 0 -1px var(--bg-elev), 0 4px 0 -1px var(--border), 0 7px 0 -2px var(--bg-elev), 0 8px 0 -2px var(--border); margin-bottom: 9px; }
+
+/* Swipe to archive or delete. The row moves, the action shows behind it, and
+   nothing happens until the finger has travelled far enough to mean it. */
+.swipe-wrap { position: relative; }
+.swipe-wrap.to-archive, .swipe-wrap.to-trash { overflow: hidden; }
+.swipe-behind { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; pointer-events: none; opacity: 0; transition: opacity .12s; }
+.swipe-wrap.to-archive .swipe-behind, .swipe-wrap.to-trash .swipe-behind { opacity: 1; }
+.swipe-wrap.to-archive .swipe-behind { background: var(--success-soft); color: var(--success); }
+.swipe-wrap.to-trash .swipe-behind { background: var(--danger-soft); color: var(--danger); }
+.swipe-hint { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+.swipe-wrap.to-archive .swipe-hint.right, .swipe-wrap.to-trash .swipe-hint.left { visibility: hidden; }
+.swipe-wrap .thread-row, .swipe-wrap .thread-card { position: relative; }
+.swipe-wrap.to-archive .thread-row, .swipe-wrap.to-trash .thread-row,
+.swipe-wrap.to-archive .thread-card, .swipe-wrap.to-trash .thread-card { background-color: var(--bg-elev); }
+@media (prefers-reduced-motion: reduce) { .thread-card { animation: none; } }
+
+/* On a narrow screen the filter row scrolls sideways rather than wrapping
+   into two lines under the count. */
+@media (max-width: 720px) {
+  .list-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .list-filters::-webkit-scrollbar { display: none; }
+  .list-filters .segmented { flex: none; }
+  .list-filters .ml-auto { flex: none; margin-left: auto; }
+  .list-filters .ml-auto .small { display: none; }
+}
+
+/* While a swipe is in progress the row follows the finger. The offset comes
+   through a custom property because the entry animation's `both` fill mode
+   sets `transform: none` for ever and would win against an inline style. */
+.swipe-wrap.to-archive .thread-row, .swipe-wrap.to-trash .thread-row,
+.swipe-wrap.to-archive .thread-card, .swipe-wrap.to-trash .thread-card {
+  animation: none;
+  transform: translateX(var(--swipe-x, 0));
+}
+
+/* Omnibox chips. Each operator in the search is a chip you can take off;
+   the input beside them holds only what is still being typed, and Backspace
+   in an empty input removes the last chip. */
+.search.has-chips { padding-left: 10px; gap: 5px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.search.has-chips::-webkit-scrollbar { display: none; }
+.search-chip { display: inline-flex; align-items: center; gap: 4px; flex: none; max-width: 200px; height: 24px; padding: 0 4px 0 9px; border-radius: 7px; background: rgba(var(--accent-rgb), .12); color: var(--accent-text); font-size: 12px; font-weight: 500; }
+.search-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-chip button { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; opacity: .6; }
+.search-chip button:hover { opacity: 1; background: rgba(var(--accent-rgb), .2); }
+.search.has-chips input { min-width: 90px; }
+
+/* The AI's one line above a conversation. It stands in for the raw snippet in
+   the list and sits above it on a card, and is marked so it is never mistaken
+   for something the sender wrote. */
+.t-snippet.gist { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-text); opacity: .95; }
+.t-snippet.gist svg { flex: none; opacity: .7; }
+.tc-gist { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 5px; padding: 5px 9px; border-radius: 8px; background: rgba(var(--accent-rgb), .07); border-left: 2px solid rgba(var(--accent-rgb), .35); color: var(--accent-text); font-size: 12.5px; line-height: 1.45; }
+.tc-gist svg { flex: none; margin-top: 2px; opacity: .7; }
+
+/* The undo window, drawn as a ring that empties with the seconds left inside.
+   The ring is a CSS animation so it stays smooth while React only redraws the
+   number. */
+.toast-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: none; }
+.toast-ring svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+.toast-ring circle { fill: none; stroke-width: 2.5; }
+.toast-ring .ring-track { stroke: currentColor; opacity: .2; }
+.toast-ring .ring-fill { stroke: currentColor; stroke-linecap: round; animation: ringDeplete var(--dur, 10s) linear forwards; }
+.toast-ring b { font-size: 9.5px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+@keyframes ringDeplete { from { stroke-dashoffset: 0; } to { stroke-dashoffset: var(--circ, 56.5); } }
+@media (prefers-reduced-motion: reduce) { .toast-ring .ring-fill { animation: none; opacity: .45; } }

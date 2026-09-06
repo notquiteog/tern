@@ -22,6 +22,9 @@ import { composeAndSend, inlineUploadIds } from '../services/compose.js';
 import { jitterMs } from '../services/sending.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
 import { brandDomains } from '../services/brand.js';
+import { isCategory } from '../services/categorize.js';
+import { getBurner } from '../services/burner.js';
+import { addressQuery } from '../services/vault.js';
 import { describeScrub, scrubMedia } from '../services/scrub.js';
 import { rateLimit } from '../util/rateLimit.js';
 
@@ -106,6 +109,17 @@ mailRouter.get('/threads', async (req, res) => {
       case 'snoozed': where.push(`EXISTS (SELECT 1 FROM snoozes s WHERE s.account_id=e.account_id AND s.thread_id=e.thread_id AND NOT s.restored)`); break;
       case 'all': if (trashJunk.length) where.push(`NOT (e.mailbox_ids && ${p(trashJunk)}::text[])`); break;
       case 'attachments': where.push('e.has_attachment'); if (trashJunk.length) where.push(`NOT (e.mailbox_ids && ${p(trashJunk)}::text[])`); break;
+      // Everything that arrived at the masked address. Recipients are sealed,
+      // so this matches on the blind index — and on the exact-address term
+      // only, because the index also holds the domain and everyone on the
+      // install shares that.
+      case 'burner': {
+        const b = await getBurner(req.user!.id);
+        const terms = b ? await addressQuery(req.user!.id, b.address) : [];
+        where.push(terms.length ? `e.address_terms && ${p(terms)}::bytea[]` : 'false');
+        if (trashJunk.length) where.push(`NOT (e.mailbox_ids && ${p(trashJunk)}::text[])`);
+        break;
+      }
       default: throw badRequest('Unknown mailbox');
     }
     if (box !== 'snoozed') where.push(`NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.account_id=e.account_id AND s.thread_id=e.thread_id AND NOT s.restored)`);
@@ -124,9 +138,25 @@ mailRouter.get('/threads', async (req, res) => {
   // Membership in the box decides which threads appear; the count, the
   // latest message and the ordering come from the whole conversation, the
   // way Gmail does it, so a reply you sent still bumps the thread.
-  const agg = `SELECT e.account_id, e.thread_id, bool_or(e.is_unread) AS unread, bool_or(e.is_flagged) AS starred, bool_or(e.has_attachment) AS has_attachment, bool_or(e.is_draft) AS has_draft
+  // A conversation takes the category of its newest message, so a thread
+  // that turns into a real exchange follows the reply into Primary.
+  const agg = `SELECT e.account_id, e.thread_id, bool_or(e.is_unread) AS unread, bool_or(e.is_flagged) AS starred, bool_or(e.has_attachment) AS has_attachment, bool_or(e.is_draft) AS has_draft,
+                 bool_or(e.list_unsubscribe IS NOT NULL) AS bulk,
+                 COALESCE((array_agg(e.category ORDER BY e.received_at DESC))[1], 'primary') AS category
                FROM emails e WHERE ${whereSql} GROUP BY e.account_id, e.thread_id`;
-  const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM (${agg}) t`, params);
+  // Tabs are an inbox idea; Sent, Trash and a label are shown whole.
+  const tabbed = box === 'inbox';
+  // What each tab would hold, and how much of it is unread, so the inbox can
+  // label them without four more round trips. Counted across every category,
+  // so it runs before the chosen tab narrows `params`.
+  const counts = tabbed
+    ? Object.fromEntries((await query<{ category: string; n: number; unread: number }>(
+        `SELECT t.category, count(*)::int AS n, count(*) FILTER (WHERE t.unread)::int AS unread FROM (${agg}) t GROUP BY t.category`, params,
+      )).map((r) => [r.category, { n: r.n, unread: r.unread }]))
+    : null;
+  const cat = String(req.query.cat ?? '');
+  const catSql = tabbed && isCategory(cat) ? ` WHERE t.category = ${p(cat)}` : '';
+  const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM (${agg}) t${catSql}`, params);
   // Subjects, previews, addresses and attachment names are ciphertext, so
   // the database can no longer assemble them. It returns the sealed blobs of
   // the thread and they are opened here, once per page.
@@ -142,7 +172,7 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
        EXISTS (SELECT 1 FROM muted_threads mt WHERE mt.account_id=t.account_id AND mt.thread_id=t.thread_id) AS muted,
        (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id
-     FROM (${agg}) t ORDER BY last_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+     FROM (${agg}) t${catSql} ORDER BY last_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
     params,
   );
   const dek = await dataKey(req.user!.id);
@@ -183,9 +213,13 @@ mailRouter.get('/threads', async (req, res) => {
       const fromDomain = fromEmail.split('@')[1] ?? '';
       const contactAvatar = avatarByEmail.get(fromEmail);
       const avatarUrl = contactAvatar ? `/api/avatars/contact/${contactAvatar.id}?v=${contactAvatar.v}` : myEmails.has(fromEmail) && me.avatar_updated_at ? `/api/avatars/user/${me.id}?v=${new Date(me.avatar_updated_at).getTime()}` : brands.has(fromDomain) ? `/bimi/${fromDomain}.svg?v=${brands.get(fromDomain)}` : null;
-      return { ...r, key: `${r.account_id}:${r.thread_id}`, avatar_url: avatarUrl };
+      // A BIMI record is a logo the domain published and DMARC vouches for,
+      // which is the closest thing mail has to a verified identity. It is
+      // only claimed for the domain the message actually came from.
+      const verified = Boolean(fromDomain && brands.has(fromDomain));
+      return { ...r, key: `${r.account_id}:${r.thread_id}`, avatar_url: avatarUrl, verified };
     }),
-    total: total?.n ?? 0, page, pageSize,
+    total: total?.n ?? 0, page, pageSize, counts,
   });
 });
 
@@ -393,6 +427,23 @@ mailRouter.get('/counts', async (req, res) => {
   const snoozed = await one<{ n: number }>(`SELECT count(*)::int AS n FROM snoozes WHERE user_id=$1 AND NOT restored`, [req.user!.id]);
   const scheduled = await one<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE user_id=$1 AND status='scheduled'`, [req.user!.id]);
   const review = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [req.user!.id]);
+  // Unread at the masked address, so the sidebar entry can carry a count the
+  // same way the inbox does. Absent entirely when there is no burner.
+  const burner = await getBurner(req.user!.id);
+  const burnerTerms = burner ? await addressQuery(req.user!.id, burner.address) : [];
+  // The same exclusions the burner box itself applies, or the badge counts
+  // junk the list will not show and never goes down.
+  const burnerTrashJunk = [...(await roleIds(ids, 'trash')), ...(await roleIds(ids, 'junk')), ...(await roleIds(ids, 'spam'))];
+  const burnerUnread = burnerTerms.length
+    ? await one<{ n: number }>(
+        `SELECT count(DISTINCT e.thread_id)::int AS n FROM emails e
+          WHERE e.account_id = ANY($1) AND e.is_unread AND e.address_terms && $2::bytea[]
+            AND NOT (e.mailbox_ids && $3::text[])
+            AND NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.account_id=e.account_id AND s.thread_id=e.thread_id AND NOT s.restored)
+            AND ${notDraftMirror('e')}`,
+        [ids, burnerTerms, burnerTrashJunk],
+      )
+    : null;
   const labels = await query<{ account_id: number; jmap_id: string; n: number }>(`SELECT m.account_id, m.jmap_id, count(DISTINCT e.thread_id)::int AS n FROM mailboxes m JOIN emails e ON e.account_id=m.account_id AND m.jmap_id = ANY(e.mailbox_ids) AND e.is_unread WHERE m.account_id = ANY($1) AND m.role IS NULL GROUP BY m.account_id, m.jmap_id`, [ids]);
   res.json({
     inboxUnread: Object.fromEntries(unread.map((u) => [u.account_id, u.n])),
@@ -402,6 +453,7 @@ mailRouter.get('/counts', async (req, res) => {
     scheduled: scheduled?.n ?? 0,
     review: review?.n ?? 0,
     labelUnread: Object.fromEntries(labels.map((l) => [`${l.account_id}:${l.jmap_id}`, l.n])),
+    burner: burner ? { address: burner.address, unread: burnerUnread?.n ?? 0 } : null,
   });
 });
 

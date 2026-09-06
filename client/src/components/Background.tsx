@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { getAppearance, isDark, onAppearance, type Appearance } from '../state/theme';
 import { paletteByKey } from '../lib/palettes';
 import { SHADERS } from '../lib/shaders';
+import { dayFraction, getMood, onMood, tintPalette, warmthAt, type Mood, type RGB } from '../lib/ambient';
 
 // Full-screen WebGL2 background. Renders at reduced resolution, caps at
 // 30 fps, pauses when the tab is hidden, and draws a single still frame when
@@ -49,7 +50,7 @@ export function Background() {
       const loc = gl!.getAttribLocation(prog, 'p');
       gl!.enableVertexAttribArray(loc);
       gl!.vertexAttribPointer(loc, 2, gl!.FLOAT, false, 0, 0);
-      uniforms = { res: gl!.getUniformLocation(prog, 'u_res'), time: gl!.getUniformLocation(prog, 'u_time'), c: gl!.getUniformLocation(prog, 'u_c'), dark: gl!.getUniformLocation(prog, 'u_dark'), mouse: gl!.getUniformLocation(prog, 'u_mouse'), seed: gl!.getUniformLocation(prog, 'u_seed') };
+      uniforms = { res: gl!.getUniformLocation(prog, 'u_res'), time: gl!.getUniformLocation(prog, 'u_time'), c: gl!.getUniformLocation(prog, 'u_c'), dark: gl!.getUniformLocation(prog, 'u_dark'), mouse: gl!.getUniformLocation(prog, 'u_mouse'), seed: gl!.getUniformLocation(prog, 'u_seed'), tod: gl!.getUniformLocation(prog, 'u_tod'), mood: gl!.getUniformLocation(prog, 'u_mood') };
       current = key;
     }
     function resize() {
@@ -58,14 +59,22 @@ export function Background() {
       const h = Math.max(1, Math.floor(window.innerHeight * scale));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl!.viewport(0, 0, w, h); }
     }
-    function colors(a: Appearance): Float32Array {
+    // The four palette stops, warmed or cooled for the hour and pulled a
+    // little towards the mood of whatever is being read. Doing it here means
+    // all fifteen shaders follow without any of them knowing about it.
+    function colors(a: Appearance, m: Mood): Float32Array {
       const p = paletteByKey(a.palette);
+      const stops: RGB[] = p.gradient.map((hex) => {
+        const h = hex.replace('#', '');
+        return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
+      });
       const out = new Float32Array(12);
-      p.gradient.forEach((hex, i) => { const h = hex.replace('#', ''); out[i * 3] = parseInt(h.slice(0, 2), 16) / 255; out[i * 3 + 1] = parseInt(h.slice(2, 4), 16) / 255; out[i * 3 + 2] = parseInt(h.slice(4, 6), 16) / 255; });
+      tintPalette(stops, { hour: new Date().getHours(), mood: m }).forEach((c, i) => { out[i * 3] = c[0]; out[i * 3 + 1] = c[1]; out[i * 3 + 2] = c[2]; });
       return out;
     }
     let appearance = getAppearance();
-    let palette = colors(appearance);
+    let mood = getMood();
+    let palette = colors(appearance, mood);
     const reduced = () => appearance.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     function frame(now: number) {
@@ -83,18 +92,25 @@ export function Background() {
       gl!.uniform1f(uniforms.dark, isDark(appearance.theme) ? 1 : 0);
       gl!.uniform2f(uniforms.mouse, mouse.x, mouse.y);
       gl!.uniform1f(uniforms.seed, seed);
+      gl!.uniform1f(uniforms.tod, dayFraction());
+      gl!.uniform1f(uniforms.mood, warmthAt(new Date().getHours()));
       gl!.drawArrays(gl!.TRIANGLE_STRIP, 0, 4);
       if (!reduced()) schedule();
     }
     function schedule() { if (!raf && running) raf = requestAnimationFrame(frame); }
     function apply(a: Appearance) {
-      appearance = a; palette = colors(a);
+      appearance = a; palette = colors(a, mood);
       if (a.background !== current) build(a.background);
       canvas.style.display = a.background === 'none' || !program ? 'none' : '';
       last = 0; schedule();
     }
     apply(appearance);
     const off = onAppearance(apply);
+    // The mood changes when the reader moves between category tabs.
+    const offMood = onMood((m) => { mood = m; palette = colors(appearance, m); last = 0; schedule(); });
+    // The hour moves too, just slowly. Re-mixing every ten minutes is enough
+    // to follow the light without doing any work worth measuring.
+    const clock = window.setInterval(() => { palette = colors(appearance, mood); last = 0; schedule(); }, 600_000);
     const onVis = () => { running = document.visibilityState === 'visible'; if (running) { last = 0; schedule(); } };
     const onResize = () => { last = 0; schedule(); };
     const onMove = (e: PointerEvent) => { mouse.x = e.clientX / window.innerWidth; mouse.y = 1 - e.clientY / window.innerHeight; };
@@ -103,7 +119,7 @@ export function Background() {
     window.addEventListener('pointermove', onMove, { passive: true });
     canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); running = false; });
     canvas.addEventListener('webglcontextrestored', () => { running = true; build(appearance.background); schedule(); });
-    return () => { running = false; if (raf) cancelAnimationFrame(raf); off(); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('resize', onResize); window.removeEventListener('pointermove', onMove); };
+    return () => { running = false; if (raf) cancelAnimationFrame(raf); off(); offMood(); window.clearInterval(clock); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('resize', onResize); window.removeEventListener('pointermove', onMove); };
   }, []);
   return <canvas ref={ref} className="bg-canvas" aria-hidden="true" />;
 }

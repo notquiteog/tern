@@ -110,6 +110,11 @@ export function isValidKeepAlive(v: string): boolean {
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatOptions {
   messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number;
+  // Forces reasoning off for this call whatever the install has turned on.
+  // Some tasks are not worth thinking about: a one-line summary of an email
+  // costs a whole reasoning budget and a minute of CPU to answer a question
+  // the first sentence already answers.
+  noThink?: boolean;
   // A reasoning model's working-out, as it arrives. It is never part of a
   // draft; the composer shows it so a two-minute generation looks like
   // something happening rather than a stalled spinner.
@@ -162,7 +167,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
     yield* openaiStream(s, model, opts);
     return;
   }
-  const think = s.allowThinking && (await modelCanThink(s.baseUrl, model));
+  const think = !opts.noThink && s.allowThinking && (await modelCanThink(s.baseUrl, model));
   // How much working-out the model did, so the log and the error message can
   // say how big the budget wanted to be. Per call, not shared.
   const stats = { thoughtChars: 0 };
@@ -248,12 +253,12 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       temperature: opts.temperature ?? s.temperature,
       // As with Ollama, reasoning is spent out of the same ceiling as the
       // answer, so it gets its own allowance rather than eating the email.
-      max_tokens: s.allowThinking ? reply + Math.max(0, s.thinkingBudget) : reply,
+      max_tokens: !opts.noThink && s.allowThinking ? reply + Math.max(0, s.thinkingBudget) : reply,
       top_p: s.topP,
       // Not an OpenAI parameter, but vLLM, llama.cpp and LM Studio all take
       // it; sent only when set so a stricter endpoint never sees it.
       ...(s.minP > 0 ? { min_p: s.minP } : {}),
-      ...(s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
+      ...(!opts.noThink && s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
     }),
     signal: opts.signal,
   });
@@ -272,7 +277,7 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       buf = buf.slice(i + 1);
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (data === '[DONE]') { if (!produced) throw new Error(emptyAnswer(model, s.allowThinking ? 1 : 0, reply)); return; }
+      if (data === '[DONE]') { if (!produced) throw new Error(emptyAnswer(model, !opts.noThink && s.allowThinking ? 1 : 0, reply)); return; }
       try {
         const j = JSON.parse(data);
         if (j.error) throw new Error(String(j.error?.message ?? j.error));
@@ -287,7 +292,7 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       } catch (e) { if (e instanceof Error && !(e instanceof SyntaxError)) throw e; }
     }
   }
-  if (!produced) throw new Error(emptyAnswer(model, s.allowThinking ? 1 : 0, reply));
+  if (!produced) throw new Error(emptyAnswer(model, !opts.noThink && s.allowThinking ? 1 : 0, reply));
 }
 
 export async function chat(opts: ChatOptions): Promise<string> {
