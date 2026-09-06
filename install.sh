@@ -424,7 +424,7 @@ if [ "$STALWART_ENABLED" = 1 ]; then
     fi
   fi
   ./bin/tern cert-sync || warn "TLS for SMTP/IMAP not installed yet (Caddy may still be fetching the certificate). It retries daily; run ./bin/tern cert-sync after DNS points here."
-  STALWART_DNS="$(sw_api "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" '[["x:Domain/get",{"ids":null,"properties":["dnsZoneFile"]},"c1"]]' | sed -n 's/.*"dnsZoneFile":"\(.*\)"}\],"notFound.*/\1/p' | sed 's/\\n/\n/g; s/\\"/"/g')"
+  STALWART_DNS="$(sw_api "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" '[["x:Domain/get",{"ids":null,"properties":["dnsZoneFile"]},"c1"]]' | sed -n 's/.*"dnsZoneFile":"\(\([^"\\]\|\\.\)*\)".*/\1/p' | sed 's/\\n/\n/g; s/\\"/"/g')"
 fi
 
 # ---------- 8. systemd ----------

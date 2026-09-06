@@ -14,10 +14,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 [ -f .env ] || { echo "No .env yet; run ./install.sh first." >&2; exit 1; }
+# .env is root-only (mode 600), so become root before reading it.
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null; then exec sudo -E "$0" "$@"; fi
 # shellcheck disable=SC1091
 set -a; . ./.env; set +a
 export COMPOSE_FILE="${COMPOSE_FILE:-compose.yml}"
-if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null; then exec sudo -E "$0" "$@"; fi
 compose() { podman-compose --env-file "$ROOT/.env" "$@"; }
 
 cmd="${1:-help}"; shift || true
@@ -48,7 +49,24 @@ case "$cmd" in
     CERT_DIR="/data/caddy/certificates"
     CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
     KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
-    if [ -z "$CRT" ] || [ -z "$KEY" ]; then echo "No certificate for $STALWART_HOST in Caddy yet (DNS must point here and port 80/443 must be reachable)." >&2; exit 2; fi
+    if [ -z "$CRT" ] || [ -z "$KEY" ]; then
+      # Caddy asks for the certificate when it starts and then retries with a
+      # growing backoff; if DNS was pointed here after that, a restart makes it
+      # try again now. Only worth it when the name already resolves to this box.
+      RESOLVED="$(getent ahostsv4 "$STALWART_HOST" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+      CADDY="$(podman ps -q --filter label=com.docker.compose.service=caddy --filter "label=com.docker.compose.project.working_dir=$ROOT" | head -1)"
+      if [ -n "$CADDY" ] && [ -n "${SERVER_IP:-}" ] && printf '%s' "$RESOLVED" | grep -qw "$SERVER_IP"; then
+        echo "No certificate for $STALWART_HOST in Caddy yet; DNS points here, so restarting Caddy to fetch one…"
+        podman restart "$CADDY" >/dev/null
+        for i in $(seq 1 45); do
+          sleep 2
+          CRT="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.crt' | head -1) 2>/dev/null" || true)"
+          [ -n "$CRT" ] && break
+        done
+        KEY="$(podman run --rm -v tern_tern-caddy-data:/data:ro docker.io/library/alpine:3 sh -c "cat \$(find $CERT_DIR -path '*/$STALWART_HOST/$STALWART_HOST.key' | head -1) 2>/dev/null" || true)"
+      fi
+      if [ -z "$CRT" ] || [ -z "$KEY" ]; then echo "No certificate for $STALWART_HOST in Caddy yet (DNS must point here and port 80/443 must be reachable; see ./bin/tern logs caddy)." >&2; exit 2; fi
+    fi
     esc() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || { printf '"%s"' "$(sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')"; }; }
     CRT_J="$(printf '%s\n' "$CRT" | esc)"; KEY_J="$(printf '%s\n' "$KEY" | esc)"
     EXISTING="$(api '[["x:Certificate/get",{"ids":null,"properties":["id","subjectAlternativeNames"]},"c1"]]' | sed -n "s/.*{\"id\":\"\([^\"]*\)\",\"subjectAlternativeNames\":{[^}]*\"$STALWART_HOST\".*/\1/p" | head -1)"
