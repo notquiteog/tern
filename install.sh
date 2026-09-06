@@ -340,28 +340,40 @@ if [ "$SKIP_BUILD" = 0 ]; then
   compose build app 2>&1 | grep -Ev '^(STEP|--> )' | tail -3 || true
   ok "image built"
 fi
-say "  Starting containers…"
 # podman-compose 1.0.x tries to create every container even when it already
 # exists, prints "name ... is already in use" and then simply starts it. Hide
 # that one line so real errors stand out; the checks below catch anything
 # that did not come up (older podman-compose does not fail on its own).
-compose up -d --remove-orphans 2>&1 >/dev/null | grep -v 'container name .* is already in use' || true
-for i in $(seq 1 30); do
-  if compose exec -T db pg_isready -U tern -d tern >/dev/null 2>&1; then break; fi
-  sleep 2
-  [ "$i" = 30 ] && die "Postgres did not become ready. See: ./bin/tern logs db"
-done
-ok "database ready"
-for i in $(seq 1 60); do
-  if compose exec -T app wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1; then break; fi
-  sleep 2
-  [ "$i" = 60 ] && die "The app did not come up. See: ./bin/tern logs app"
-done
-ok "app is healthy"
-for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
-  compose exec -T "$svc" true >/dev/null 2>&1 || die "The $svc container is not running. See: ./bin/tern logs $svc"
-done
-ok "all containers running"
+start_stack() {
+  compose up -d --remove-orphans 2>&1 >/dev/null | grep -v 'container name .* is already in use' || true
+  for i in $(seq 1 30); do
+    if compose exec -T db pg_isready -U tern -d tern >/dev/null 2>&1; then break; fi
+    sleep 2
+    [ "$i" = 30 ] && die "Postgres did not become ready. See: ./bin/tern logs db"
+  done
+  ok "database ready"
+  for i in $(seq 1 60); do
+    if compose exec -T app wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1; then break; fi
+    sleep 2
+    [ "$i" = 60 ] && die "The app did not come up. See: ./bin/tern logs app"
+  done
+  ok "app is healthy"
+  for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
+    compose exec -T "$svc" true >/dev/null 2>&1 || die "The $svc container is not running. See: ./bin/tern logs $svc"
+  done
+  ok "all containers running"
+}
+# Recreate one service's container (and the containers that depend on it).
+# `compose up --force-recreate <svc>` cannot do this on podman-compose 1.0.x:
+# its partial `down` fails because dependents hold the container.
+recreate_service() {
+  local cid
+  cid="$(podman ps -aq --filter "label=com.docker.compose.service=$1" --filter "label=com.docker.compose.project.working_dir=$INSTALL_DIR" | head -1)"
+  [ -n "$cid" ] && podman rm -f --depend "$cid" >/dev/null
+  start_stack
+}
+say "  Starting containers…"
+start_stack
 
 compose exec -T app tern-cli create-user --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" --name "$ADMIN_USER" --role admin >/dev/null
 ok "admin user ensured"
@@ -391,8 +403,9 @@ if [ "$STALWART_ENABLED" = 1 ]; then
     [ -n "$STALWART_ADMIN_USER" ] && [ -n "$STALWART_ADMIN_PASSWORD" ] || die "Bootstrap failed: $RESP"
     sed -i "s|^STALWART_ADMIN_USER=.*|STALWART_ADMIN_USER=$STALWART_ADMIN_USER|; s|^STALWART_ADMIN_PASSWORD=.*|STALWART_ADMIN_PASSWORD=$STALWART_ADMIN_PASSWORD|; s|^STALWART_RECOVERY_ADMIN=.*|STALWART_RECOVERY_ADMIN=|" "$ENV_FILE"
     STALWART_RECOVERY_ADMIN=""
-    compose up -d --force-recreate stalwart >/dev/null
     ok "Stalwart bootstrapped; admin is $STALWART_ADMIN_USER"
+    say "  Restarting Stalwart without the bootstrap credentials…"
+    recreate_service stalwart
   fi
   for i in $(seq 1 30); do curl -sf -u "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" "$SW/api/account" >/dev/null 2>&1 && break; sleep 2; [ "$i" = 30 ] && warn "Stalwart is not answering with the stored admin credentials; check ./bin/tern logs stalwart"; done
   DOMAIN_ID="$(sw_api "$STALWART_ADMIN_USER:$STALWART_ADMIN_PASSWORD" '[["x:Domain/get",{"ids":null,"properties":["id","name"]},"c1"]]' | sed -n 's/.*"list":\[{[^}]*"id":"\([^"]*\)".*/\1/p')"
