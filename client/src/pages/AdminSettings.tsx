@@ -215,6 +215,8 @@ function AiAdminSettings() {
   const [f, setF] = useState<any>(null);
   const [pull, setPull] = useState<{ name: string; status: string; pct: number } | null>(null);
   const [customModel, setCustomModel] = useState('');
+  const [del, setDel] = useState<{ name: string; inUse: boolean; loaded: boolean } | null>(null);
+  const [busy, setBusy] = useState('');
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   async function save(patch: any) {
     try { await api.put('/api/ai/settings', patch); qc.invalidateQueries({ queryKey: ['ai-status'] }); toast.success('Saved'); } catch (e) { toast.error(e); }
@@ -226,12 +228,35 @@ function AiAdminSettings() {
       toast.success(`${name} is ready`); refetch();
     } catch (e) { toast.error(e); } finally { setPull(null); }
   }
+  // Deleting a model removes gigabytes that can only come back over the
+  // network, so it is confirmed, and — unlike before — a refusal is reported
+  // rather than swallowed by a promise nobody was watching.
+  async function doDelete(name: string) {
+    setBusy(name);
+    try {
+      await api.del(`/api/ai/models/${encodeURIComponent(name)}`);
+      toast.success(`${name} deleted`);
+      qc.invalidateQueries({ queryKey: ['ai-status'] });
+    } catch (e) { toast.error(e); } finally { setBusy(''); }
+  }
+  async function doUnload(name: string) {
+    setBusy(name);
+    try {
+      const r = await api.post<{ unloaded: boolean }>('/api/ai/models/unload', { name });
+      toast.success(r.unloaded ? `${name} unloaded` : `${name} was not in memory`);
+      qc.invalidateQueries({ queryKey: ['ai-status'] });
+    } catch (e) { toast.error(e); } finally { setBusy(''); }
+  }
   if (isLoading || !data || !f) return <Spinner />;
   const findInstalled = (n: string) => data.models.find((x: any) => x.name === n || x.name === `${n}:latest`);
-  const modelRows: { name: string; inst: any; active: boolean; note: string; sizeGB?: number }[] = [
-    ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
-    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => ({ name: x.name, inst: x, active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+  // What Ollama is holding in memory, matched the same way: the settings say
+  // "qwen2.5", /api/ps says "qwen2.5:latest".
+  const findLoaded = (n: string) => (data.loaded ?? []).find((x: any) => x.name === n || x.name === `${n}:latest`);
+  const modelRows: { name: string; inst: any; loaded: any; active: boolean; note: string; sizeGB?: number }[] = [
+    ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
+    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
+  const residentGB = (data.loaded ?? []).reduce((n: number, m: any) => n + (m.size ?? m.sizeVram ?? 0), 0) / 1024 ** 3;
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI model" sub="The provider and model behind everyone's assistant, its standing instructions and its tuning." />
@@ -282,16 +307,27 @@ function AiAdminSettings() {
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">
-          <div className="card-title"><h2>Models</h2><span className="small muted">Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b></span></div>
+          <div className="card-title"><h2>Models</h2><span className="small muted">Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b>{(data.loaded ?? []).length > 0 && <> · {(data.loaded ?? []).length} in memory, {residentGB.toFixed(1)} GB</>}</span></div>
           <Callout>{data.recommended.note} Pulling downloads from the Ollama registry once; models live in the <code>ollama</code> volume.</Callout>
           {pull && <div className="mt-16"><div className="row small mb-8"><Loader2 size={14} className="spin" /> Pulling {pull.name}: {pull.status} {pull.pct ? `${pull.pct}%` : ''}</div><Progress value={pull.pct} max={100} /></div>}
           <div className="mt-16"><DataTable rows={modelRows} rowKey={(m) => m.name} columns={[
-            { key: 'model', header: 'Model', primary: true, cell: (m) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</span> },
+            { key: 'model', header: 'Model', primary: true, cell: (m) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.loaded && <Badge kind="warning" dot>loaded</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</span> },
             { key: 'size', header: 'Size', className: 'muted', nowrap: true, cell: (m) => m.inst ? fmtBytes(m.inst.size) : `~${m.sizeGB} GB` },
+            // Only meaningful for a model that is resident: what it is holding
+            // now, and when Ollama will let it go. A keep-alive of -1 puts that
+            // date centuries out, which is worth being able to see.
+            { key: 'mem', header: 'In memory', className: 'muted small', nowrap: true, cell: (m) => m.loaded ? <span title={`Expires ${fmtDateTime(m.loaded.expiresAt)}`}>{fmtBytes(m.loaded.size || m.loaded.sizeVram)}{m.loaded.sizeVram > 0 && ' on GPU'} · {new Date(m.loaded.expiresAt).getFullYear() > 2100 ? 'never unloads' : `until ${fmtRelative(m.loaded.expiresAt)}`}</span> : <span className="faint">—</span> },
             { key: 'note', header: 'Note', secondary: true, className: 'muted small', cell: (m) => m.note },
-            { key: 'act', actions: true, cell: (m) => m.inst ? <><Button size="sm" disabled={m.active} onClick={() => save({ model: m.name })}>{m.active ? 'Selected' : 'Use'}</Button><IconButton label="Delete" className="btn-sm" onClick={() => api.del(`/api/ai/models/${encodeURIComponent(m.name)}`).then(() => refetch())}><Trash2 size={14} /></IconButton></> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
+            { key: 'act', actions: true, cell: (m) => m.inst ? <>
+              <Button size="sm" disabled={m.active} onClick={() => save({ model: m.name })}>{m.active ? 'Selected' : 'Use'}</Button>
+              {m.loaded && <Button size="sm" variant="ghost" loading={busy === m.name} onClick={() => doUnload(m.name)}>Unload</Button>}
+              <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded) })}><Trash2 size={14} /></IconButton>
+            </> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
           ]} /></div>
           <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || Boolean(pull)} onClick={() => { doPull(customModel); setCustomModel(''); }}>Pull</Button></div>
+          <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.name}?`} confirmLabel="Delete model"
+            message={<>The files are removed from the <code>ollama</code> volume and can only come back by downloading them again.{del?.loaded && ' It is in memory now and will be unloaded first.'}{del?.inUse && <><br /><br /><b>This is the model the assistant is set to use.</b> Drafting will fail until you pick another one.</>}</>}
+            onConfirm={() => { const n = del!.name; setDel(null); return doDelete(n); }} />
         </div>
       )}
       <AiPlayground enabled={Boolean(data.settings.enabled)} />

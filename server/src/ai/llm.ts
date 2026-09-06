@@ -318,12 +318,16 @@ export async function listModels(): Promise<{ name: string; size: number; modifi
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at, family: m.details?.family, parameterSize: m.details?.parameter_size, quantization: m.details?.quantization_level }));
 }
 
-export async function loadedModels(): Promise<{ name: string; sizeVram: number; expiresAt: string }[]> {
+// What Ollama currently holds in memory. `size` is the total the model is
+// taking; `sizeVram` is how much of that is on a GPU and is 0 on the
+// CPU-only boxes Tern is usually installed on — reporting only the VRAM
+// figure there makes a resident 3 GB model look free.
+export async function loadedModels(): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
   const s = await getAiSettings();
   const res = await fetch(`${s.baseUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
   if (!res.ok) return [];
   const j: any = await res.json();
-  return (j.models ?? []).map((m: any) => ({ name: m.name, sizeVram: m.size_vram, expiresAt: m.expires_at }));
+  return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
 }
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {
@@ -350,6 +354,80 @@ export async function* pullModel(name: string, signal?: AbortSignal): AsyncGener
 
 export async function deleteModel(name: string): Promise<void> {
   const s = await getAiSettings();
+  // Dropped from memory first. Ollama removes the files either way, but a
+  // copy that is already resident stays in RAM holding exactly the memory
+  // the deletion was meant to give back.
+  await unloadModel(s.baseUrl, name).catch(() => {});
   const res = await fetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: name }) });
-  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`);
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).slice(0, 200);
+    if (res.status === 404) throw new Error(`Ollama has no model called "${name}"`);
+    throw new Error(`Ollama refused to delete "${name}": HTTP ${res.status}${body ? ` ${body}` : ''}`);
+  }
+  log.info('model deleted', { name });
+}
+
+// ---------- Residency ----------
+
+// Ollama tags an untagged name with `:latest` when it loads it, so the model
+// in the settings and the one in `/api/ps` often differ by that suffix alone.
+export function sameModel(a: string, b: string): boolean {
+  const norm = (s: string) => { const t = String(s ?? '').trim(); return t.includes(':') ? t : `${t}:latest`; };
+  return norm(a) === norm(b) && Boolean(String(a ?? '').trim());
+}
+
+// A load request with no prompt sets how long a model stays in memory:
+// `keep_alive: 0` drops it at once, anything else resets its timer. Ollama
+// will not load a model for this call, so re-timing one that is not resident
+// is a no-op rather than a surprise 4 GB read.
+async function setResidency(baseUrl: string, model: string, keepAlive: string | number): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, keep_alive: keepAlive }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return false;
+    await res.text().catch(() => '');
+    return true;
+  } catch { return false; }
+}
+
+// Which of the models Ollama is holding right now matches `model`.
+async function residentAt(baseUrl: string, model: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return false;
+    const j: any = await res.json();
+    return (j.models ?? []).some((m: any) => sameModel(String(m.name ?? ''), model));
+  } catch { return false; }
+}
+
+export async function unloadModel(baseUrl: string, model: string): Promise<boolean> {
+  if (!model) return false;
+  if (!(await residentAt(baseUrl, model))) return false;
+  const ok = await setResidency(baseUrl, model, 0);
+  log.info(ok ? 'model unloaded' : 'model unload refused', { model, baseUrl });
+  return ok;
+}
+
+// Called after the AI settings are saved. Picking a different model — or
+// moving to a different server, or off Ollama altogether — leaves the old one
+// resident until its keep-alive runs out, which on a 4.5 GB box means two
+// models in memory and an out-of-memory kill on the next generation. The
+// model Tern was using is dropped; anything else on a shared Ollama is left
+// alone, because it is not ours to evict.
+export async function releaseReplacedModel(before: AiSettings, after: AiSettings): Promise<void> {
+  if (before.provider !== 'ollama' || !before.model) return;
+  const movedOff = after.provider !== 'ollama' || after.baseUrl !== before.baseUrl;
+  const swapped = !sameModel(before.model, after.model);
+  if (movedOff || swapped) { await unloadModel(before.baseUrl, before.model); return; }
+  // Same model, same server: only the keep-alive can have changed, and a
+  // model already in memory keeps the expiry it was given when it was loaded.
+  // "Never unload" (-1) sets that expiry centuries out, so without this a
+  // change to the setting would not take effect until the process restarted.
+  if (after.keepAlive !== before.keepAlive && (await residentAt(after.baseUrl, after.model))) {
+    const ok = await setResidency(after.baseUrl, after.model, keepAliveValue(after.keepAlive));
+    log.info(ok ? 'model residency updated' : 'model residency update refused', { model: after.model, keepAlive: after.keepAlive });
+  }
 }

@@ -3,7 +3,7 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, ollamaHealth, pullModel, saveAiSettings, aiDefaults } from '../ai/llm.js';
+import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults } from '../ai/llm.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { config } from '../config.js';
@@ -64,7 +64,12 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
     throw badRequest('Keep model loaded needs a duration with a unit (30s, 10m, 1h), or a number of seconds (-1 to never unload, 0 to unload at once)');
   }
   if (b.model !== undefined || b.baseUrl !== undefined || b.provider !== undefined) forgetModelCapabilities();
+  const before = await getAiSettings();
   const next = await saveAiSettings(b);
+  // Picking a different model drops the previous one from memory rather than
+  // leaving it to time out beside its replacement. Best effort: a mail server
+  // that cannot reach Ollama should still be able to save its settings.
+  try { await releaseReplacedModel(before, next); } catch { /* reported by /status */ }
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
   res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) } });
@@ -87,6 +92,17 @@ aiRouter.post('/models/pull', requireAdmin, async (req, res) => {
 aiRouter.delete('/models/:name', requireAdmin, async (req, res) => {
   await deleteModel(String(req.params.name));
   res.json({ ok: true });
+});
+
+// Frees the memory a resident model is holding without deleting it from disk.
+// Ollama loads it again on the next request, so this costs a slow first
+// generation and nothing else.
+aiRouter.post('/models/unload', requireAdmin, async (req, res) => {
+  const { name } = parse(z.object({ name: z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/) }), req.body);
+  const s = await getAiSettings();
+  if (s.provider !== 'ollama') throw badRequest('Only an Ollama model can be unloaded from here');
+  const unloaded = await unloadModel(s.baseUrl, name);
+  res.json({ unloaded });
 });
 
 const draftSchema = z.object({

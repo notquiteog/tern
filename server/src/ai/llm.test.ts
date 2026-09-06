@@ -3,7 +3,7 @@
 // answers with nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, samplingOptions } from './llm.js';
+import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions } from './llm.js';
 
 test('a duration keeps its unit and travels as a string', () => {
   for (const v of ['10m', '1h', '30s', '500ms']) assert.equal(keepAliveValue(v), v);
@@ -62,4 +62,23 @@ test('min-p is only sent when it is actually turned on', () => {
   // A per-call temperature wins over the stored one; everything else stands.
   assert.equal(samplingOptions(aiDefaults(), 0.2).temperature, 0.2);
   assert.equal(samplingOptions(aiDefaults()).temperature, 0.7);
+});
+
+test('an untagged model name is the same model as its :latest tag', () => {
+  // The settings hold "qwen2.5"; /api/ps reports "qwen2.5:latest". Reading
+  // those as two different models is what left both of them in memory.
+  assert.equal(sameModel('qwen2.5', 'qwen2.5:latest'), true);
+  assert.equal(sameModel('qwen2.5:latest', 'qwen2.5'), true);
+  assert.equal(sameModel('qwen2.5:3b', 'qwen2.5:3b'), true);
+  assert.equal(sameModel(' qwen2.5:3b ', 'qwen2.5:3b'), true);
+});
+
+test('different models, and empty names, are not the same model', () => {
+  assert.equal(sameModel('qwen2.5:3b', 'qwen2.5:0.5b'), false);
+  assert.equal(sameModel('qwen2.5', 'qwen3.5'), false);
+  assert.equal(sameModel('llama3.2:latest', 'qwen2.5:latest'), false);
+  // An unset model must never look equal to another unset one, or a switch
+  // away from "nothing configured" would try to unload "".
+  assert.equal(sameModel('', ''), false);
+  assert.equal(sameModel('', 'qwen2.5'), false);
 });
