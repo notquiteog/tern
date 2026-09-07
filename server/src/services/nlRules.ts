@@ -103,23 +103,29 @@ export function parseRule(raw: string, labels: { id: string; name: string }[]): 
   return { name, match: j.match === 'any' ? 'any' : 'all', conditions, actions };
 }
 
+// Both prompts, exported so an evaluation grades the shipped wording rather
+// than a copy of it.
+export function buildRuleMessages(labels: { id: string; name: string }[], sentence: string): { role: 'system' | 'user'; content: string }[] {
+  return [
+    { role: 'system', content: SYSTEM },
+    { role: 'user', content: [`Labels that exist: ${labels.map((l) => l.name).join(', ') || '(none)'}`, '', `Rule to write: ${String(sentence).slice(0, 500)}`].join('\n') },
+  ];
+}
+
+export function buildSearchMessages(sentence: string, today = new Date()): { role: 'system' | 'user'; content: string }[] {
+  return [
+    { role: 'system', content: SEARCH_SYSTEM },
+    { role: 'user', content: `Today is ${today.toISOString().slice(0, 10)}.\n\nSearch for: ${String(sentence).slice(0, 300)}` },
+  ];
+}
+
 export async function draftRule(userId: number, sentence: string): Promise<DraftRule> {
   const labels = await query<{ id: string; name: string }>(
     `SELECT m.jmap_id AS id, m.name FROM mailboxes m JOIN accounts a ON a.id=m.account_id
       WHERE a.user_id=$1 ORDER BY m.name LIMIT 200`,
     [userId],
   );
-  const messages = [
-    { role: 'system' as const, content: SYSTEM },
-    {
-      role: 'user' as const,
-      content: [
-        `Labels that exist: ${labels.map((l) => l.name).join(', ') || '(none)'}`,
-        '',
-        `Rule to write: ${String(sentence).slice(0, 500)}`,
-      ].join('\n'),
-    },
-  ];
+  const messages = buildRuleMessages(labels, sentence);
   assertFreshConversation(messages);
   const raw = await chat({
     messages, maxTokens: 400, temperature: 0.1, noThink: true,
@@ -166,10 +172,7 @@ function unwrap(line: string): string {
 }
 
 export async function draftSearch(userId: number, sentence: string): Promise<string> {
-  const messages = [
-    { role: 'system' as const, content: SEARCH_SYSTEM },
-    { role: 'user' as const, content: `Today is ${new Date().toISOString().slice(0, 10)}.\n\nSearch for: ${String(sentence).slice(0, 300)}` },
-  ];
+  const messages = buildSearchMessages(sentence);
   assertFreshConversation(messages);
   const raw = await chat({
     messages, maxTokens: 120, temperature: 0.1, noThink: true,

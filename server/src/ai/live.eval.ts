@@ -5,21 +5,26 @@ import { evalConsent } from './evalConsent.js';
 // whether the mail a person would send is right.
 //
 //   npx tsx --env-file=../.env.dev src/ai/live.eval.ts
-//   MODEL=qwen3.5:4b RUNS=3 npx tsx --env-file=../.env.dev src/ai/live.eval.ts
+//   MODEL=qwen3.5:4b RUNS=20 npx tsx --env-file=../.env.dev src/ai/live.eval.ts
 //   ONLY=thread,name npx tsx --env-file=../.env.dev src/ai/live.eval.ts
 //
 // Every case is graded by a deterministic check, never by another model, so
 // the pass rate means the same thing on every run.
 import { chat, getAiSettings, saveAiSettings } from './llm.js';
-import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, type DraftInput } from './prompts.js';
+import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars, type DraftInput } from './prompts.js';
 import { findTemplateArtifacts, describeHits, findInventedSpecifics, findGreetingProblems, extractSpecifics } from './guard.js';
 import { resolveRecipient, candidatesFromContact } from './names.js';
 import { threadForPrompt, ALEX as F_ALEX, DANA as F_DANA, PRIYA as F_PRIYA, TOMASZ as F_TOMASZ } from './fixtures.js';
 import { countTokens } from './tokens.js';
+import { tidyGist } from '../services/summaries.js';
 import { pool } from '../db.js';
 
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
-const RUNS = Number(process.env.RUNS || 3);
+// Ten runs, not three. Every case here is flaky at some rate and three runs
+// cannot tell 2/3 from 7/10; the model is local and the electricity is the
+// only cost, so the sample size is set by what makes the number mean
+// something rather than by what is quick.
+const RUNS = Number(process.env.RUNS || 10);
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const THINK = process.env.THINK; // 'on' | 'off' | unset (leave the stored setting alone)
 const NUM_CTX = process.env.NUM_CTX ? Number(process.env.NUM_CTX) : undefined;
@@ -68,7 +73,15 @@ const clean: Check = (out) => {
 
 const nonEmpty: Check = (out) => (out.trim().length > 20 ? null : `output too short (${out.trim().length} chars)`);
 
-const noThinkTags: Check = (out) => (/<\/?think(ing)?>|^\s*(okay|alright),? (so|let)\b|thinking process/i.test(out) ? `reasoning leaked into the draft: "${out.slice(0, 80)}"` : null);
+// Reasoning that reached the draft. Tags are the easy half; the hard half is
+// a model narrating the task in prose, which is what actually turned up in a
+// campaign preview. The prose half lives in guard.ts so the eval and the send
+// path cannot disagree about what counts.
+const noThinkTags: Check = (out) => {
+  if (/<\/?think(ing)?>|^\s*(okay|alright),? (so|let)\b|thinking process/i.test(out)) return `reasoning leaked into the draft: "${out.slice(0, 80)}"`;
+  const leak = findTemplateArtifacts({ text: out }).find((h) => h.kind === 'prompt_leak');
+  return leak ? `reasoning leaked into the draft: "${leak.sample}"` : null;
+};
 
 const mentions = (words: string[], label = ''): Check => (out) => {
   const hay = out.toLowerCase();
@@ -143,8 +156,12 @@ const matches = (re: RegExp, why: string): Check => (out) => (re.test(out) ? nul
 // Nothing specific in the answer that was not in what it was shown. Uses the
 // same code the send guard uses, so the eval measures the shipped behaviour
 // rather than a second opinion about it.
-const inventsNothing = (facts: () => string): Check => (out) => {
-  const hits = findInventedSpecifics(out, { facts: facts(), hasAttachment: false });
+// `describing: true` for the modes whose output is *about* a conversation
+// rather than an email in one. A summary that says "Priya is attaching the
+// CSV" is reporting what somebody else did; only a message we are about to
+// send can promise an attachment it does not have.
+const inventsNothing = (facts: () => string, opts: { describing?: boolean } = {}): Check => (out) => {
+  const hits = findInventedSpecifics(out, { facts: facts(), hasAttachment: Boolean(opts.describing) });
   return hits.length ? `invented: ${describeHits(hits)}` : null;
 };
 
@@ -211,9 +228,13 @@ function deepThread(n = 24): { from: string; date: string; text: string }[] {
 }
 
 const CAMPAIGN_BRIEF = 'We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they would like a 15 minute walkthrough next week.';
-// A brief that a careless model will copy verbatim, placeholders and all —
-// or, worse, quietly fill in.
-const HOSTILE_BRIEF = 'Tell them about our new service. Mention [product name] and say it costs [price]. Sign off as [Your Name].';
+// A brief with no holes in it, but vague enough to invite invention: it
+// mentions pricing and a discount without giving either. The holed version —
+// "say it costs [price]" — is no longer a live case because the product now
+// refuses to generate from it at all (see `findBriefProblems`); what is left
+// to measure is whether a *complete* brief that gestures at a number gets one
+// invented anyway.
+const HOSTILE_BRIEF = 'Tell them about our new bookkeeping service and that there is an introductory discount for wholesale customers. Ask them to reply if they would like the details.';
 
 const SHORT_THREAD = [
   { from: `Dana Osei <${DANA.email}>`, date: 'Mon Jun 01 2026', text: 'Hi Alex,\n\nCould we do a 20 minute call on Thursday about the Q3 report? Morning works best for me.' },
@@ -358,7 +379,7 @@ const CASES: Case[] = [
       senderName: ALEX.name, senderEmail: ALEX.email,
       thread: deepThread(24),
     },
-    checks: [nonEmpty, noThinkTags, matches(/\bnext\s*:/i, 'no "Next:" line'), statedAt(12, mentionsAny(['4,800', '4800', '950'], 'either money figure')), inventsNothing(threadFacts())],
+    checks: [nonEmpty, noThinkTags, matches(/\bnext\s*:/i, 'no "Next:" line'), statedAt(12, mentionsAny(['4,800', '4800', '950'], 'either money figure')), inventsNothing(threadFacts(), { describing: true })],
   },
   {
     id: 'subject/from-draft',
@@ -440,7 +461,7 @@ const CASES: Case[] = [
     checks: [nonEmpty, noThinkTags, clean, greetsNoName],
   },
   {
-    id: 'personalize/hostile-brief',
+    id: 'personalize/vague-brief',
     tags: ['campaign', 'guard'],
     input: {
       mode: 'personalize',
@@ -454,12 +475,106 @@ const CASES: Case[] = [
     // Whatever the model does, the guard must catch anything left over: this
     // case passes when the output is clean, and its failure is the point of
     // the review queue.
-    // The old version of this case asserted only that something came back.
-    // The model duly invented a product and a price — "$150 per month" — and
-    // it passed, which is a worse outcome than leaving [price] in, because a
-    // placeholder is held for review and a price is sent.
-    checks: [nonEmpty, noThinkTags, greets('Dana'), inventsNothing(() => HOSTILE_BRIEF)],
+    // The old version asserted only that something came back. The model duly
+    // invented a product and a price and it passed, which is a worse outcome
+    // than leaving the placeholder in — a placeholder is held for review, a
+    // price is sent.
+    checks: [nonEmpty, noThinkTags, greets('Dana'), clean, inventsNothing(() => HOSTILE_BRIEF)],
   },
+  // ---------- the modes nothing was grading ----------
+  //
+  // `gist`, `reschedule` and `nudge` all ship, all reach a person, and none
+  // of them had a single live case. The gist goes above every row of the
+  // mail list; the other two write an email about a promise, from the ledger,
+  // where getting the date wrong is worse than getting the greeting wrong
+  // because nobody notices until it is missed.
+  {
+    id: 'gist/deep-thread',
+    tags: ['thread', 'gist'],
+    input: { mode: 'gist', thread: deepThread(24), subject: 'Northwind Supply — coming off Sage' },
+    checks: [
+      exactlyLines(1), wordsUnder(15), noGreetingLine,
+      matches(/^[^"']/, 'the line is quoted'),
+      matches(/[^.]$/, 'the line ends with a full stop'),
+      // The subject is on the row above; a gist that restates it costs the
+      // only line there is.
+      (out) => (/coming off sage/i.test(out) ? 'just restates the subject' : null),
+      (out) => (/^this (?:e-?mail|message|thread)/i.test(out) ? 'opens with "This email"' : null),
+    ],
+  },
+  {
+    id: 'gist/short-thread',
+    tags: ['gist'],
+    input: { mode: 'gist', thread: SHORT_THREAD, subject: 'Q3 report call' },
+    checks: [exactlyLines(1), wordsUnder(15), noGreetingLine, matches(/[^.]$/, 'the line ends with a full stop')],
+  },
+  {
+    id: 'reschedule/with-new-date',
+    tags: ['commitment'],
+    input: {
+      mode: 'reschedule',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: DANA,
+      commitment: {
+        kind: 'owed',
+        what: 'the VAT remap on the 1,900 rows',
+        reason: 'the CSV export came through with the codes in a different order',
+        was: 'Thursday 10 September',
+        now: 'Tuesday 15 September',
+      },
+      tone: 'friendly',
+    },
+    maxTokens: 400,
+    checks: [
+      nonEmpty, noThinkTags, clean, greets('Dana'), addressed('Dana', [ALEX.name]),
+      // The whole point of the email: the new date, stated.
+      mentionsAny(['15 september', 'september 15', '15th september', 'tuesday 15'], 'the new date'),
+      // The thing being apologised for has to be named.
+      mentionsAny(['vat', 'remap'], 'what was promised'),
+      // Not a wall of contrition, and no invented compensation.
+      wordsUnder(130),
+      (out) => ((out.match(/\b(?:sorry|apolog\w+)\b/gi) ?? []).length > 2 ? 'apologises more than twice' : null),
+      (out) => (/\b(?:discount|refund|free of charge|no charge|on us|compensat\w+)\b/i.test(out) ? 'offered compensation nobody authorised' : null),
+      inventsNothing(() => 'the VAT remap on the 1,900 rows. the CSV export came through with the codes in a different order. Thursday 10 September. Tuesday 15 September.'),
+    ],
+  },
+  {
+    id: 'reschedule/no-new-date',
+    tags: ['commitment'],
+    input: {
+      mode: 'reschedule',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: DANA,
+      commitment: { kind: 'owed', what: 'the reconciliation report', reason: 'I am still waiting on the bank export', was: 'Friday 12 September' },
+    },
+    maxTokens: 400,
+    // There is no new date. Inventing one is the failure being tested.
+    checks: [
+      nonEmpty, noThinkTags, clean, greets('Dana'),
+      inventsNothing(() => 'the reconciliation report. I am still waiting on the bank export. Friday 12 September.'),
+      wordsUnder(130),
+    ],
+  },
+  {
+    id: 'nudge/awaiting',
+    tags: ['commitment'],
+    input: {
+      mode: 'nudge',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: { name: 'Priya Raman', email: PRIYA.email },
+      commitment: { kind: 'awaiting', what: 'the CSV export of the March to June entries', was: 'last Friday' },
+    },
+    maxTokens: 400,
+    checks: [
+      nonEmpty, noThinkTags, clean, greets('Priya'),
+      mentionsAny(['csv', 'export'], 'what is being chased'),
+      wordsUnder(110),
+      // A nudge that opens by counting how late somebody is has already lost.
+      (out) => (/\b(?:as per my (?:last|previous)|chasing again|still waiting|have not heard|haven'?t heard|following up again|third time|second time)\b/i.test(out) ? 'reproachful: reads as chasing rather than checking' : null),
+      inventsNothing(() => 'the CSV export of the March to June entries. last Friday.'),
+    ],
+  },
+
   // ---------- Requirement A: the name, in every shape it really arrives in ----------
   //
   // Three people and one "Osei, Dana" was not coverage. Every case below is a
@@ -594,7 +709,13 @@ async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: num
     // it in run 2 yesterday. Nothing a person triggers sets a seed — their
     // "try again" has to be able to come back different.
     const raw = await chat({ messages: buildMessages(input), maxTokens, temperature, stop: tuning.stop, seed: 1000 + run, consent: evalConsent() });
-    const out = finalizeOutput(raw, c.input.mode, { recipient: c.input.recipient, senderName: c.input.senderName, senderEmail: c.input.senderEmail });
+    // Exactly the shipped clean-up for this mode. `gist` does not go through
+    // finalizeOutput in the product — services/summaries.ts applies
+    // `tidyGist` on top of `cleanOutput` — and an eval that skipped it was
+    // failing the product for a trailing full stop the product removes.
+    const out = c.input.mode === 'gist'
+      ? tidyGist(cleanOutput(raw, 'gist'), c.input.subject)
+      : finalizeOutput(raw, c.input.mode, { recipient: c.input.recipient, senderName: c.input.senderName, senderEmail: c.input.senderEmail });
     const failures = c.checks.map((k) => k(out)).filter((x): x is string => Boolean(x));
     return { id: c.id, run, ms: Date.now() - t0, failures, output: out, raw: failures.length ? raw : undefined };
   } catch (e) {
@@ -613,6 +734,15 @@ async function main(): Promise<void> {
   console.log(`model=${s.model} think=${s.allowThinking} num_ctx=${s.numCtx} max_tokens=${s.maxTokens} temp=${s.temperature} top_p=${s.topP} top_k=${s.topK} runs=${RUNS}\n`);
 
   const cases = ONLY.length ? CASES.filter((c) => ONLY.some((o) => c.id.includes(o) || c.tags.includes(o))) : CASES;
+
+  // Every mode the composer can ask for has to have a case here. This is the
+  // check that would have caught `gist`, `reschedule` and `nudge` shipping
+  // with no live coverage at all: all three reach a person, and none of them
+  // had ever been run against a model in this harness.
+  const ALL_MODES: DraftInput['mode'][] = ['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies', 'gist', 'reschedule', 'nudge'];
+  const covered = new Set(CASES.map((c) => c.input.mode));
+  const uncovered = ALL_MODES.filter((m) => !covered.has(m));
+  if (uncovered.length) console.log(`!! ${uncovered.length} mode(s) with no case at all: ${uncovered.join(', ')}\n`);
 
   // How big the conversation actually is, in the units the model counts in.
   // Printed because the fixture this replaced was 596 tokens and every "deep

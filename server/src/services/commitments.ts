@@ -55,6 +55,13 @@ const SYSTEM = [
   '{"kind":"owed"|"awaiting","what":"<short phrase>","who":"<name or address>","due":"<YYYY-MM-DD or null>"}',
   '"owed" means THE USER promised it. "awaiting" means the user is waiting for someone else.',
   'Only list things that are specific and actionable. Pleasantries, greetings and vague intentions are not commitments.',
+  // A line asking the model to drop settled commitments was tried here and
+  // reverted: qwen3.5:4b read "leave out anything already delivered" and
+  // answered [] for every thread, three runs out of three. It cannot make
+  // that judgement, and asking it to costs the whole feature. Superseding is
+  // handled after the fact instead — an owed commitment settles itself when
+  // something of the user's lands in the thread (see `settle_after`), which
+  // is a rule rather than an opinion.
   'If there are none, answer exactly [].',
 ].join('\n');
 
@@ -130,6 +137,20 @@ export function cleanDue(v: unknown, today = new Date()): string | null {
 
 // One conversation. Returns what was written; the caller decides how many
 // conversations a tick is worth.
+// The prompt the scanner sends, built where an evaluation can reach it. The
+// alternative is an eval that reimplements the prompt and then measures its
+// own copy, which is how a harness comes to pass while the product fails.
+export function buildCommitmentMessages(ownEmail: string, subject: string, lines: string[], today = new Date()): { role: 'system' | 'user'; content: string }[] {
+  const user = [
+    `Today is ${today.toISOString().slice(0, 10)}.`,
+    `The user's own address is ${ownEmail}. Messages from them are marked THE USER.`,
+    `Subject: ${subject}`,
+    '',
+    lines.join('\n\n').slice(0, 12_000),
+  ].join('\n');
+  return [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }];
+}
+
 export async function scanThread(userId: number, acc: AccountRow, threadId: string): Promise<number> {
   if (!(await allowed(userId, 'commitments'))) return 0;
   const s = await getAiSettings();
@@ -152,15 +173,7 @@ export async function scanThread(userId: number, acc: AccountRow, threadId: stri
   }).filter((l: string) => l.trim());
   if (!lines.length) return await markScanned(acc.id, threadId, newest.received_at);
 
-  const user = [
-    `Today is ${new Date().toISOString().slice(0, 10)}.`,
-    `The user's own address is ${acc.email}. Messages from them are marked THE USER.`,
-    `Subject: ${newest.subject ?? ''}`,
-    '',
-    lines.join('\n\n').slice(0, 12_000),
-  ].join('\n');
-
-  const messages = [{ role: 'system' as const, content: SYSTEM }, { role: 'user' as const, content: user }];
+  const messages = buildCommitmentMessages(acc.email, newest.subject ?? '', lines);
   assertFreshConversation(messages);
   const raw = await chat({
     messages,

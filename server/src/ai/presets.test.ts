@@ -1,7 +1,7 @@
 // The shipped presets, and the rules a saved one has to follow.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILT_IN_PRESETS, PRESET_FIELDS, presetId, presetValues } from './presets.js';
+import { BUILT_IN_PRESETS, PRESET_FIELDS, presetId, presetValues, defaultTuningFor, matchesPreset } from './presets.js';
 
 test('a preset carries how the model writes and nothing about the machine', () => {
   // The context window and the keep-alive are memory decisions — a preset
@@ -64,4 +64,33 @@ test('every shipped preset is applicable and inside the bounds the API enforces'
     assert.ok((v.presencePenalty ?? 0) >= -2 && (v.presencePenalty ?? 0) <= 2);
     assert.ok((v.maxTokens ?? 64) >= 64 && (v.maxTokens ?? 64) <= 4096);
   }
+});
+
+test('the shipped tuning follows the model rather than a constant', () => {
+  // The audit finding: Tern's defaults were qwen2.5's numbers and were being
+  // applied to whatever model an install ran.
+  const q35 = defaultTuningFor('qwen3.5:4b');
+  assert.equal(q35.topP, 0.8);
+  assert.equal(q35.topK, 20);
+  assert.equal(q35.presencePenalty, 1.5);
+  // Thinking stays off even on a model that can do it: measured at 11x-50x
+  // the latency for a difference inside the noise.
+  assert.equal(q35.allowThinking, false);
+  // The whole family, however it is tagged.
+  for (const tag of ['qwen3.5:9b', 'qwen3.5:4b-instruct-q4_K_M', 'QWEN3.5:4B']) {
+    assert.equal(defaultTuningFor(tag).topK, 20, tag);
+  }
+  // Anything else gets the general-purpose set.
+  for (const tag of ['qwen2.5:1.5b', 'llama3.2:3b', 'phi4:14b', 'mistral-small:24b', '']) {
+    assert.equal(defaultTuningFor(tag).topK, 40, tag);
+  }
+});
+
+test('"untouched" is exact equality, so a hand-tuned install keeps its numbers', () => {
+  const q35 = defaultTuningFor('qwen3.5:4b');
+  assert.equal(matchesPreset(q35, q35), true);
+  assert.equal(matchesPreset({ ...q35, temperature: 0.9 }, q35), false);
+  // A different model's numbers are not a match, which is what makes the
+  // migration on a model change safe.
+  assert.equal(matchesPreset(defaultTuningFor('qwen2.5:1.5b'), q35), false);
 });

@@ -6,7 +6,7 @@ import { config } from '../config.js';
 import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
 import { recommendModel, recommendNumCtx } from './models.js';
-import { defaultTuningFor } from './presets.js';
+import { defaultTuningFor, matchesPreset, PRESET_FIELDS } from './presets.js';
 import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
@@ -115,7 +115,22 @@ export async function getAiSettings(): Promise<AiSettings> {
 }
 export async function saveAiSettings(patch: Partial<AiSettings>): Promise<AiSettings> {
   const current = await getAiSettings();
-  const next = { ...current, ...patch };
+  let next = { ...current, ...patch };
+  // Changing the model moves the sampling with it — but only when nobody has
+  // touched the sampling by hand.
+  //
+  // `saveAiSettings` writes every field, so once an install has saved AI
+  // settings even once, the model-aware defaults in `DEFAULTS` never apply
+  // again: switching from qwen2.5 to qwen3.5 left the old model's numbers in
+  // place with nothing to indicate it. The test for "untouched" is exact
+  // equality with the previous model's preset, so an admin who has tuned
+  // anything at all keeps every number they chose.
+  const changingModel = patch.model && patch.model !== current.model;
+  const tuningInPatch = PRESET_FIELDS.some((k) => patch[k] !== undefined);
+  if (changingModel && !tuningInPatch && matchesPreset(current, defaultTuningFor(current.model))) {
+    next = { ...next, ...defaultTuningFor(patch.model!) };
+    log.info('model changed and the tuning was untouched; moved it to the new model\'s preset', { from: current.model, to: patch.model });
+  }
   await query(`INSERT INTO settings (key, value, updated_at) VALUES ('ai', $1, now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [JSON.stringify(next)]);
   cache = null;
   return next;

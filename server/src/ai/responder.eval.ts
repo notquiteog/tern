@@ -18,7 +18,7 @@ import { threadForCache, DANA, PRIYA, TOMASZ, maxDepth } from './fixtures.js';
 import { countTokens } from './tokens.js';
 import { assertUndeliverable } from './sendGuard.js';
 
-const RUNS = Number(process.env.RUNS || 3);
+const RUNS = Number(process.env.RUNS || 10);
 const DEPTH = Number(process.env.DEPTH || 22);
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
 

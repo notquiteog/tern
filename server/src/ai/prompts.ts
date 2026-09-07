@@ -43,12 +43,28 @@ export interface DraftInput {
   threadChars?: number;
 }
 
+// The default system prompt. Every line of it exists because of a failure
+// that was measured rather than imagined, and the list is kept short because
+// a 4B model drops instructions once there are too many of them to hold.
+//
+//   "write around it"          — the strongest result in the evaluation was
+//                                that models do not leave a gap alone. Told
+//                                only "never invent", they invent anyway;
+//                                given something to do instead, they do it.
+//   "cannot attach"            — "I have attached the plan" was the single
+//                                most frequent hold reason in the guard.
+//   "no notes about these"     — a campaign preview came back with the model
+//                                arguing with its own instructions inside the
+//                                email, at length.
+//   "greeting on its own line" — several runs collapsed greeting, body and
+//                                sign-off onto one line, which nobody sends.
 export const DEFAULT_SYSTEM_PROMPT = `You are an email writing assistant inside a mail client. You write in the sender's voice: clear, warm, specific and brief. Rules:
-- Output only what was asked for. No preamble, no "Here is", no markdown, no bullet symbols unless asked, no quoted email.
-- Never invent facts, offers, prices, dates or names that were not provided.
+- Output only the email itself. No preamble, no "Here is", no markdown, no bullet symbols unless asked, no quoted email, and no notes about these instructions.
+- Use only the facts you have been given. If something you need is missing, write around it or say you will confirm it — never supply a figure, price, date, time or name yourself.
+- You cannot attach or enclose anything. Never write that a document is attached.
 - Do not add a subject line unless asked for one.
 - Do not add a signature block; the client appends one.
-- Use plain paragraphs separated by blank lines.`;
+- Plain paragraphs with a blank line between them. The greeting is a line of its own.`;
 
 const LENGTH: Record<string, string> = {
   short: 'Keep it to 2-4 sentences.',
@@ -284,7 +300,7 @@ function saidAloud(text: string): string {
 // Money first, then a calendar date, then a contractual term, then a clock
 // time. When there are more facts than room, the ones that cost money or
 // commit to a day are the ones worth the space.
-const FACT_RANK: Record<string, number> = { money: 0, pct: 1, day: 2, when: 3, term: 4, time: 5 };
+const FACT_RANK: Record<string, number> = { money: 0, pct: 1, recur: 2, day: 3, when: 4, term: 5, time: 6 };
 const rankOf = (token: string) => FACT_RANK[token.split(':')[0]] ?? 9;
 
 export function agreedFactsBlock(thread: DraftInput['thread']): string {
@@ -555,7 +571,14 @@ export function writeDate(iso: string, tz?: string): string {
 // comma, colon or exclamation mark — not to the first full stop, because a
 // display name that is really an address ("Hi dana@northwind.example,") has
 // full stops inside it and cutting there leaves half of it behind as text.
-const GREETING_RE = /^\s*(hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[\s,]*([^\n,:!]*)[,:!]?/i;
+// The punctuation that ends a salutation. Written out rather than assumed to
+// be ASCII, because it is not: a model writing to 田中優希 ends the greeting
+// with a fullwidth comma (U+FF0C), and with only `[,:!]` in the terminator
+// class the capture below ran to the end of the line and the rewrite then
+// deleted the whole first paragraph. The model had written a perfectly good
+// email; 185 characters of it were thrown away in the clean-up pass.
+const SALUTATION_END = ',\uFF0C\u3001;\uFF1B:\uFF1A!\uFF01?\uFF1F\u2014';
+const GREETING_RE = new RegExp(`^\\s*(hi|hello|hey|dear|good (?:morning|afternoon|evening))\\b[\\s,\uFF0C]*([^\\n${SALUTATION_END}]*)[${SALUTATION_END}]?`, 'i');
 const NEUTRAL = new Set(['there', 'all', 'team', 'everyone', 'both', 'folks', 'friend', 'sir', 'madam', 'sir or madam', '']);
 
 export interface FinalizeContext { recipient?: DraftInput['recipient']; senderName?: string; senderEmail?: string; commitment?: DraftInput['commitment'] }
@@ -580,7 +603,7 @@ export function ensureGreeting(text: string, mode: DraftMode, recipient?: DraftI
       // Already right: the exact first name, or the full name after it.
       // "Hi DANA," is the right person spelled wrong, and is corrected.
       if (named === first || named.toLowerCase().startsWith(first.toLowerCase() + ' ')) return text;
-      const rest = line.slice(m[0].length).replace(/^[\s,!.:]+/, '');
+      const rest = line.slice(m[0].length).replace(/^[\s,!.:\uFF0C\u3001\uFF01\uFF1A\uFF1F]+/, '');
       lines[i] = `Hi ${first},${rest ? ' ' + rest : ''}`;
       return lines.join('\n');
     }
@@ -588,7 +611,7 @@ export function ensureGreeting(text: string, mode: DraftMode, recipient?: DraftI
   }
   // Unknown recipient: never a guessed name.
   if (m && !NEUTRAL.has(m[2].trim().toLowerCase())) {
-    const rest = line.slice(m[0].length).replace(/^[\s,!.:]+/, '');
+    const rest = line.slice(m[0].length).replace(/^[\s,!.:\uFF0C\u3001\uFF01\uFF1A\uFF1F]+/, '');
     lines[i] = `Hi there,${rest ? ' ' + rest : ''}`;
     return lines.join('\n');
   }

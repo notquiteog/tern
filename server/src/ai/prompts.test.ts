@@ -421,3 +421,26 @@ test('finalizeOutput removes a recipient sign-off along with its other guarantee
   assert.ok(!/Best regards,\s*\nBob/.test(out), 'the sign-off in their name is gone');
   assert.ok(out.includes('Thursday 10 September at 12:00'));
 });
+
+test('a greeting punctuated the way CJK is punctuated keeps the email', () => {
+  // Found by the live evaluation: the model wrote 176 usable characters to
+  // 田中優希 and the clean-up pass returned 28 of them, because it ended the
+  // salutation with a fullwidth comma (U+FF0C) and the terminator class only
+  // knew about ASCII. Everything after the name was treated as part of the
+  // name and deleted.
+  const raw = 'Hi 田中優希，I am reaching out to confirm you are the right contact.\n\nBest regards,\nAlex';
+  const out = finalizeOutput(raw, 'compose', { recipient: { name: '田中優希', email: 'c@x.test' }, senderName: 'Alex Rivera' });
+  assert.ok(out.includes('right contact'), `the body was eaten: ${JSON.stringify(out)}`);
+  assert.ok(out.startsWith('Hi 田中優希'), out);
+  // The same for the ideographic comma and a fullwidth colon.
+  assert.ok(ensureGreeting('Hi 田中優希、よろしくお願いします。', 'compose', { name: '田中優希' }).includes('よろしく'));
+  assert.ok(ensureGreeting('Dear 田中優希：thank you for writing.', 'compose', { name: '田中優希' }).includes('thank you'));
+  // And a name in a script with no case is greeted whole, not split.
+  assert.equal(firstNameOf('田中優希'), '田中優希');
+});
+
+test('the wrong name is still corrected when the punctuation is fullwidth', () => {
+  const fixed = ensureGreeting('Hi Bob，thanks for the CSV.', 'compose', { name: 'Dana Osei' });
+  assert.ok(fixed.startsWith('Hi Dana,'), fixed);
+  assert.ok(fixed.includes('thanks for the CSV'), fixed);
+});

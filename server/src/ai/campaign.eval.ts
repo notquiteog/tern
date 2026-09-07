@@ -29,7 +29,7 @@ import { firstNameOf } from './names.js';
 import { campaignMetrics } from '../services/campaigns.js';
 
 const N = Number(process.env.N || 8);
-const RUNS = Number(process.env.RUNS || 1);
+const RUNS = Number(process.env.RUNS || 3);
 const MODE = (process.env.MODE || 'review') as 'review' | 'auto';
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
 const ONLY = new Set((process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertSendable, findTemplateArtifacts, TemplateGuardError, findGreetingProblems, findInventedSpecifics, extractSpecifics } from './guard.js';
+import { assertSendable, findTemplateArtifacts, TemplateGuardError, findGreetingProblems, findInventedSpecifics, extractSpecifics, findBriefProblems, describeBriefProblems } from './guard.js';
 import { cleanOutput } from './prompts.js';
 
 const kinds = (r: ReturnType<typeof findTemplateArtifacts>) => [...new Set(r.map((h) => h.kind))];
@@ -184,5 +184,36 @@ test('describing somebody else\'s attachment is not claiming one of our own', ()
   assert.deepEqual(
     findInventedSpecifics('I have attached the plan.', { facts: 'The clean-up is a fixed fee.' }).map((h) => h.kind),
     ['false_attachment'],
+  );
+});
+
+test('a brief with a hole in it is caught before anything is generated', () => {
+  // The worst result in the whole evaluation: every model tested fills a
+  // placeholder with an invented figure rather than leaving it in, so this
+  // has to fire before the model sees the brief.
+  const holed = 'Tell them about our new service. Mention [product name] and say it costs [price]. Sign off as [Your Name].';
+  const hits = findBriefProblems(holed);
+  assert.equal(hits.length >= 2, true, JSON.stringify(hits));
+  assert.match(describeBriefProblems(hits), /\[price\]|\[product name\]/);
+  // An unrendered merge field is the same problem: the field did not resolve.
+  assert.equal(findBriefProblems('Ask {{first_name}} about {{unknown_field}}.').length > 0, true);
+  // A complete brief passes untouched, including one with ordinary brackets.
+  assert.deepEqual(findBriefProblems('We launched same-day reports. Free until January. Ask for a 15 minute walkthrough.'), []);
+  assert.deepEqual(findBriefProblems('Mention the report (the one from March) and ask for a call.'), []);
+});
+
+test('a recurring schedule is a fact, not prose', () => {
+  const tok = (v: string) => extractSpecifics(v).map((x) => x.token);
+  // The weakest fact in the whole depth sweep: the responder lost the board
+  // blackout two runs in three because nothing recognised the shape, so it
+  // never reached the agreed-facts block that carries the figures.
+  assert.deepEqual(tok('the board meets on the second Tuesday of every month'), ['recur:second-tue']);
+  assert.deepEqual(tok('the last Friday of the quarter'), ['recur:last-fri']);
+  // A plain weekday is still not one.
+  assert.deepEqual(tok('see you Tuesday'), []);
+  // And it is checked like any other specific.
+  assert.deepEqual(
+    findInventedSpecifics('Nothing is scheduled for the first Monday.', { facts: 'The board meets the second Tuesday.', hasAttachment: true }).map((h) => h.kind),
+    ['invented_date'],
   );
 });

@@ -117,7 +117,11 @@ export interface GreetingExpectation {
   forbidden?: (string | null | undefined)[];
 }
 
-const SALUTATION_RE = /^\s*(?:hi|hello|hey|dear|good (?:morning|afternoon|evening|day))\b[\s,]*([^\n,:!?.]{0,40})/i;
+// As in prompts.ts: the punctuation that ends a salutation is not only ASCII.
+// With a fullwidth comma unmatched, the capture below took forty characters
+// of the sentence after the name and then reported the recipient's own email
+// as addressed to the wrong person.
+const SALUTATION_RE = /^\s*(?:hi|hello|hey|dear|good (?:morning|afternoon|evening|day))\b[\s,\uFF0C]*([^\n,\uFF0C\u3001;\uFF1B:\uFF1A!\uFF01?\uFF1F.]{0,40})/i;
 // Greetings that name nobody. Any of these is a correct answer when no name
 // resolved, and none of them counts as a name when one did.
 const NEUTRAL_WORDS = new Set(['', 'there', 'all', 'team', 'everyone', 'everybody', 'both', 'folks', 'friend', 'friends', 'colleagues', 'sir', 'madam', 'sir or madam', 'to whom it may concern']);
@@ -132,7 +136,7 @@ export function findGreetingProblems(body: string, expect: GreetingExpectation):
   const named = (line: string): string | null => {
     const m = line.match(SALUTATION_RE);
     if (!m) return null;
-    const who = m[1].trim().replace(/[,:!?.]+$/, '');
+    const who = m[1].trim().replace(/[,:!?.\uFF0C\u3001\uFF1A\uFF01\uFF1F]+$/, '');
     return NEUTRAL_WORDS.has(who.toLowerCase()) ? '' : who;
   };
 
@@ -280,6 +284,14 @@ export function extractSpecifics(text: string): Specific[] {
     const part = (m[2] ?? m[3] ?? '').toLowerCase();
     add('date', `when:${day}-${part}`, m[0]);
   }
+  // A recurring date: "the second Tuesday of every month", "the last Friday".
+  // This is how a business states a blackout or a board meeting, and it was
+  // the single weakest fact in the depth sweep — the responder lost it two
+  // runs in three — because nothing in the extractor recognised the shape, so
+  // it never reached the agreed-facts block that carries the others.
+  for (const m of t.matchAll(/\b(first|second|third|fourth|last)\s+(mon|tues?|wednes|thurs?|fri|satur|sun)day\b/gi)) {
+    add('date', `recur:${m[1].toLowerCase()}-${m[2].toLowerCase().slice(0, 3)}`, m[0]);
+  }
   // Terms and durations: 3 months / three-month / two days / a fortnight
   for (const m of t.matchAll(new RegExp(`\\b(\\d{1,3}|${NUM_WORD_RE})[\\s-]+(${UNIT_RE})s?\\b`, 'gi'))) {
     const n = /^\d/.test(m[1]) ? Number(m[1]) : wordsToNumber(m[1]);
@@ -319,14 +331,43 @@ function weekdaysIn(text: string): Set<string> {
   return new Set([...text.matchAll(WEEKDAY_RE)].map((m) => m[1].toLowerCase().slice(0, 3)));
 }
 
+// Whether a duration in the body is foreign to the conversation, rather than
+// merely phrased differently from it. See the note at the call site.
+const NUM_WORD_OF: Record<number, string[]> = {
+  1: ['one', 'a', 'single'], 2: ['two', 'couple'], 3: ['three'], 4: ['four'], 5: ['five'], 6: ['six'],
+  7: ['seven'], 8: ['eight'], 9: ['nine'], 10: ['ten'], 11: ['eleven'], 12: ['twelve'],
+};
+function termIsForeign(token: string, facts: string, knownTerms: Set<string>): boolean {
+  if (knownTerms.has(token)) return false;
+  const [, rest] = token.split(':');
+  const [numStr, unit] = rest.split('-');
+  const n = Number(numStr);
+  const hay = facts.toLowerCase();
+  // The unit has to have come up at all.
+  if (!new RegExp(`\\b${unit}s?\\b`, 'i').test(hay)) return true;
+  // And the number, as a digit or as a word.
+  const forms = [String(n), ...(NUM_WORD_OF[n] ?? [])];
+  return !forms.some((f) => new RegExp(`\\b${f}\\b`, 'i').test(hay));
+}
+
 export function findInventedSpecifics(body: string, expect: SpecificsExpectation): GuardHit[] {
   const hits: GuardHit[] = [];
   const known = new Set(extractSpecifics(expect.facts).map((s) => s.token));
   const knownDays = weekdaysIn(expect.facts);
+  const knownTerms = new Set([...known].filter((t) => t.startsWith('term:')));
   const seen = new Set<string>();
   const kindOf: Record<SpecificKind, GuardHit['kind']> = { figure: 'invented_figure', date: 'invented_date', term: 'invented_term' };
   for (const s of extractSpecifics(body)) {
     if (s.token.startsWith('when:') && knownDays.has(s.token.slice(5).split('-')[0])) continue;
+    // Durations get recombined in a way money does not. A conversation that
+    // says "two days of my time, and a third for Priya" is fairly summarised
+    // as "three days" and "one day", neither of which appears in it verbatim.
+    // So a term counts as invented only when it is genuinely foreign: either
+    // the unit is never mentioned at all, or the number is. That still
+    // catches the case this check was written for — "a rolling three-year
+    // term" where the conversation said three months — because "year" never
+    // appears.
+    if (s.token.startsWith('term:') && !termIsForeign(s.token, expect.facts, knownTerms)) continue;
     if (known.has(s.token) || seen.has(s.token)) continue;
     seen.add(s.token);
     hits.push({ kind: kindOf[s.kind], sample: s.sample.slice(0, 60) });
@@ -392,6 +433,41 @@ export function findTemplateArtifacts(input: GuardInput): GuardHit[] {
   // fit to send, so the reason a person sees is the actionable one.
   if (!hits.length && bodyIsEmpty(bodyOnly)) push('no_body', bodyOnly.trim().replace(/\s+/g, ' ').slice(0, 40) || '(nothing)');
   return hits;
+}
+
+// ---------- The brief, before a word is generated ----------
+//
+// The single worst result in the evaluation: given a brief that still says
+// "Mention [product name] and say it costs [price]", qwen3.5:4b invents
+// $150, and mistral-small:24b — five times the size — invents $197. Neither
+// leaves the placeholder in. Both fill it in with something plausible and
+// wrong, which is strictly worse than leaving it, because a placeholder is
+// caught downstream and a price is sent.
+//
+// So the brief is checked first. A gap in the instructions is a gap the
+// person has to close, and telling them once about the brief beats holding
+// forty generated emails that each invented a different number. This runs
+// against the *rendered* brief, so a real merge field that resolved is fine
+// and one that did not is exactly what wants catching.
+export function findBriefProblems(brief: string): GuardHit[] {
+  const hits: GuardHit[] = [];
+  const seen = new Set<string>();
+  const push = (kind: GuardHit['kind'], sample: string) => {
+    const t = sample.trim().slice(0, 60);
+    if (seen.has(t.toLowerCase())) return;
+    seen.add(t.toLowerCase());
+    hits.push({ kind, sample: t });
+  };
+  for (const m of brief.matchAll(MERGE_RE)) push('merge_field', m[0]);
+  for (const m of brief.matchAll(SPIN_RE)) push('merge_field', m[0]);
+  for (const m of brief.matchAll(BRACKET_RE)) push('placeholder', m[0]);
+  return hits;
+}
+
+// What to tell the person, in their terms rather than the guard's.
+export function describeBriefProblems(hits: GuardHit[]): string {
+  const what = hits.map((h) => `"${h.sample}"`).join(', ');
+  return `The brief still has ${what} in it. Fill that in — a small model does not leave a gap like that alone, it invents something plausible to put there.`;
 }
 
 export function describeHits(hits: GuardHit[]): string {

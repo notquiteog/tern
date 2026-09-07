@@ -114,7 +114,7 @@ const SYSTEM = [
   'question — they ask something specific that needs an answer',
   'not_now — interested but say later, or ask to be contacted at another time',
   'not_interested — they decline',
-  'wrong_person — it is not their area, or they point at somebody else',
+  'wrong_person — it is not their area, they point at somebody else, or that person has left',
   '',
   'If none of them clearly fits, answer: unclear',
   'Answer with the single word only. No punctuation, no explanation.',

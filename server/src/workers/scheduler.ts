@@ -10,7 +10,7 @@ import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '
 import { jitterMs, reserveSendSlot, sendingBlocked } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
-import { describeHits, findTemplateArtifacts, type GuardInput } from '../ai/guard.js';
+import { describeBriefProblems, describeHits, findBriefProblems, findTemplateArtifacts, type GuardInput } from '../ai/guard.js';
 import { candidatesFromContact, resolveRecipient, type ResolvedName } from '../ai/names.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
@@ -440,7 +440,27 @@ async function runEnrollment(enr: any): Promise<void> {
   if (approved) {
     subject = approved.subject ?? ''; html = approved.body_html ?? '';
   } else if (step.ai_personalize && seq.ai_mode !== 'off') {
-    const gen = await personalize(acc, step, contact, rendered);
+    let gen;
+    try {
+      gen = await personalize(acc, step, contact, rendered);
+    } catch (e) {
+      // A brief with a hole in it is not a transient failure and retrying
+      // will not close it. The campaign stops and says what to fix, once,
+      // instead of writing an email with an invented price in it.
+      if (e instanceof BriefIncompleteError) {
+        // The hole is in the step, not in this contact, so every other
+        // enrollment on this campaign is about to fail in exactly the same
+        // way. Pausing the campaign says it once; pausing five hundred
+        // enrollments individually says it five hundred times and leaves
+        // somebody to work out that it was always the same sentence.
+        await query(`UPDATE sequences SET status='paused', updated_at=now() WHERE id=$1 AND status='active'`, [seq.id]);
+        await query(`UPDATE enrollments SET status='paused', error=$2, next_run_at=NULL, updated_at=now() WHERE id=$1 AND status='active'`, [enr.id, e.message.slice(0, 500)]);
+        publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'paused' });
+        log.warn('campaign paused: the brief is incomplete', { sequence: seq.id, reason: e.message });
+        return;
+      }
+      throw e;
+    }
     subject = gen.subject; html = gen.html;
     expectation = {
       greeting: { first: gen.greetingFirst, forbidden: [acc.name] },
@@ -597,6 +617,12 @@ export async function personalize(acc: AccountRow, step: StepRow, contact: any, 
   const settings = await getAiSettings();
   const name = campaignRecipient(acc, contact);
   const brief = rendered.brief || htmlToText(rendered.html);
+  // Nothing is generated from a brief with a hole in it. See
+  // `findBriefProblems`: every model tested fills the hole with an invented
+  // figure rather than leaving it, so the only safe moment to catch this is
+  // before the model sees it.
+  const holes = findBriefProblems(brief);
+  if (holes.length) throw new BriefIncompleteError(holes);
   const messages = buildMessages({
     mode: 'personalize',
     instruction: step.ai_instructions || undefined,
@@ -781,6 +807,15 @@ async function runResponderJob(job: any): Promise<string> {
   return responder.humanize ? 'queued to send with natural delay' : 'queued to send';
 }
 
+
+export class BriefIncompleteError extends Error {
+  hits: ReturnType<typeof findBriefProblems>;
+  constructor(hits: ReturnType<typeof findBriefProblems>) {
+    super(describeBriefProblems(hits));
+    this.name = 'BriefIncompleteError';
+    this.hits = hits;
+  }
+}
 
 // ---------- The preview a campaign is approved from ----------
 //

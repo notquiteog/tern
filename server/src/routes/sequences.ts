@@ -4,7 +4,7 @@ import { requireAuth } from '../auth.js';
 import { idParam, parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
 import { getAccount, getUserAccount } from '../services/accounts.js';
-import { previewCampaign, renderStep } from '../workers/scheduler.js';
+import { BriefIncompleteError, previewCampaign, renderStep } from '../workers/scheduler.js';
 import { publish } from '../events.js';
 import { campaignMetrics } from '../services/campaigns.js';
 import { requireCapability } from '../services/capabilities.js';
@@ -246,5 +246,11 @@ sequencesRouter.post('/campaign-preview', requireCapability('ai.campaigns'), asy
       : await query<any>(`SELECT * FROM contacts WHERE user_id=$1 AND status='active' ORDER BY id LIMIT $2`, [req.user!.id, count]);
   if (!contacts.length) throw badRequest('There is nobody in that audience to preview');
   const full = (await getAccount(acc.id))!;
-  res.json({ previews: await previewCampaign(full, { brief: b.brief, instructions: b.instructions, contacts }) });
+  try {
+    res.json({ previews: await previewCampaign(full, { brief: b.brief, instructions: b.instructions, contacts }) });
+  } catch (e) {
+    // A hole in the brief is something to fix, not a server error.
+    if (e instanceof BriefIncompleteError) throw badRequest(e.message);
+    throw e;
+  }
 });

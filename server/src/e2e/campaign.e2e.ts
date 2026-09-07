@@ -173,6 +173,29 @@ async function main(): Promise<void> {
       `current_step went ${afterFirst?.current_step} -> ${afterResume?.current_step}`);
   }
 
+  // ---------- a brief with a hole in it never reaches the model ----------
+  //
+  // Given "say it costs [price]", every model tested invents a price rather
+  // than leaving the placeholder — qwen3.5:4b wrote $150, mistral-small:24b
+  // wrote $197. So the campaign stops and says what to fix, once, instead of
+  // generating a different wrong number for every contact.
+  if (want('brief')) {
+    const f = await fixture(userId, acc.id, 'holedbrief', { ai: true });
+    await query(`UPDATE sequence_steps SET body_html=$2 WHERE sequence_id=$1 AND position=0`,
+      [f.seqId, '<p>Tell them about our new service. Mention [product name] and say it costs [price].</p>']);
+    await tick();
+    const enr = await one<{ status: string; error: string | null }>(`SELECT status, error FROM enrollments WHERE id=$1`, [f.enrollmentId]);
+    check('a campaign with a hole in its brief generates nothing', (await sendsFor(f)) === 0, `send_log has ${await sendsFor(f)} rows`);
+    check('it is paused rather than retried for ever', enr?.status === 'paused', `status is ${enr?.status}`);
+    check('and it says which placeholder to fill in', /\[price\]|\[product name\]/.test(enr?.error ?? ''), `error is ${JSON.stringify(enr?.error)}`);
+    const queued = (await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE enrollment_id=$1`, [f.enrollmentId]))?.n ?? 0;
+    check('and nothing was written for a person to review', queued === 0, `${queued} review row(s)`);
+    // The hole is in the step, so it is the campaign that stops, not one
+    // contact at a time.
+    const seq = await one<{ status: string }>(`SELECT status FROM sequences WHERE id=$1`, [f.seqId]);
+    check('the whole campaign stops, not one contact at a time', seq?.status === 'paused', `sequence status is ${seq?.status}`);
+  }
+
   console.log('');
   const failed = results.filter((r) => !r.ok);
   console.log(`${results.length - failed.length}/${results.length} checks passed${failed.length ? `\n\nfailed:\n${failed.map((f) => `  - ${f.name}${f.detail ? `: ${f.detail}` : ''}`).join('\n')}` : ''}`);
