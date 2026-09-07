@@ -14,7 +14,7 @@ import { powGuard } from '../services/workGuard.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { listAccounts } from '../services/accounts.js';
 import { semanticSearch, similarTo, indexPending } from '../services/semantic.js';
-import { explain, featuresOf, loadModel, retrain } from '../services/triage.js';
+import { explain, featuresOf, loadModel, recordFeedback, retrain, scorePending, MIN_SAMPLES } from '../services/triage.js';
 import { describe as describeGuard, guardFor } from '../services/guard.js';
 import { enrichmentStatus } from '../workers/enrichment.js';
 import { textFor } from '../services/attachments.js';
@@ -87,7 +87,29 @@ async function describeHits(userId: number, hits: { emailId: number; accountId: 
 // ---------- F2 ----------
 
 discoverRouter.post('/triage/retrain', requireCapability('triage'), powGuard('index'), async (req, res) => {
-  res.json(await retrain(req.user!.id));
+  const r = await retrain(req.user!.id);
+  // A retrained model that scores nothing has changed no order anyone can
+  // see, which reads as the button having done nothing.
+  if (r.trained) await scorePending(req.user!.id, 1000);
+  res.json({ ...r, minSamples: MIN_SAMPLES });
+});
+
+// Disagreeing with the ordering.
+//
+// Until now the only way to teach this model anything was to act on the mail:
+// archive it, star it, reply. That covers the common cases and cannot express
+// the one people actually want to say, which is "this is fine, it just does
+// not belong at the top". A row here says it outright.
+//
+// Retraining follows the correction rather than waiting for a nightly pass,
+// because a correction that changes nothing you can see is one nobody makes
+// twice. It is priced like any other indexing work.
+discoverRouter.post('/triage/feedback', requireCapability('triage'), powGuard('index'), async (req, res) => {
+  const b = parse(z.object({ emailId: z.number().int(), label: z.union([z.literal(0), z.literal(1)]) }), req.body);
+  if (!(await recordFeedback(req.user!.id, b.emailId, b.label))) throw notFound('Message not found');
+  const trained = await retrain(req.user!.id);
+  if (trained.trained) await scorePending(req.user!.id, 1000);
+  res.json({ ...trained, minSamples: MIN_SAMPLES });
 });
 
 // Why a message is where it is. Hashed terms cannot be turned back into
@@ -109,9 +131,13 @@ discoverRouter.get('/triage/why/:id', requireCapability('triage'), async (req, r
   );
   const known = new Set(contacts.map((c) => c.email_blind.toString('hex')));
   const features = featuresOf({ ...row, from_contact: Boolean(row.from_blind && known.has(row.from_blind.toString('hex'))) });
+  // Whether this one has already been argued with, so the panel can say so
+  // rather than offering a correction that has been made.
+  const said = await one<{ label: number }>('SELECT label FROM triage_feedback WHERE user_id=$1 AND email_id=$2', [req.user!.id, id]);
   res.json({
     priority: row.priority,
     reasons: explain(model, features),
+    feedback: said ? (said.label === 1 ? 'up' : 'down') : null,
     note: 'Learned from what you have archived, starred, replied to and junked. The words themselves are hashed and cannot be shown.',
   });
 });

@@ -3,7 +3,7 @@
 // gives the model the facts it is allowed to use instead of letting it guess.
 import type { ChatMessage } from './llm.js';
 
-export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies' | 'gist';
+export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies' | 'gist' | 'reschedule' | 'nudge';
 
 export interface DraftInput {
   mode: DraftMode;
@@ -21,6 +21,20 @@ export interface DraftInput {
   subject?: string;
   systemPrompt?: string;
   voice?: string;
+  // The ledger entry a reschedule or a nudge is about. Every field here comes
+  // out of the database rather than off the wire: the promise the email
+  // apologises for has to be the promise that was recorded, or the model is
+  // being asked to apologise for whatever the browser last said.
+  commitment?: {
+    kind: 'owed' | 'awaiting';
+    what: string;
+    /** What the person typed into the "why" box. Their words, not the model's. */
+    reason?: string;
+    /** The date it was originally due, written out, or absent if it never had one. */
+    was?: string;
+    /** The new date, written out, or absent when there is not one yet. */
+    now?: string;
+  };
   // How many characters of the conversation may be spent. Derived from the
   // model's context window by `threadBudgetChars`; the default suits the
   // 8192-token window Tern ships with.
@@ -78,6 +92,11 @@ export function modeTuning(mode: DraftMode): { temperature?: number; maxTokens?:
     // of a long thread the model starts summarising it instead, in one long
     // sentence, and there is nothing to pick from.
     case 'quick_replies': return { temperature: 0.8, maxTokens: 220, threadChars: 3_000, stop: TURN_STOPS };
+    // Both are short emails about one specific thing, and both are the kind
+    // of message people make worse by writing more of. A low temperature
+    // because there is nothing here to be creative about: the facts are the
+    // promise, the reason and the date, and all three were given.
+    case 'reschedule': case 'nudge': return { temperature: 0.45, maxTokens: 320, stop: TURN_STOPS };
     default: return { stop: TURN_STOPS };
   }
 }
@@ -201,7 +220,7 @@ export function firstNameOf(raw?: string | null): string {
 // Who the email is to, stated once and plainly. Small models otherwise pick a
 // name out of the thread, or invent one, and greet the wrong person.
 function addressingBlock(input: DraftInput): string {
-  if (!['compose', 'reply', 'personalize'].includes(input.mode)) return '';
+  if (!['compose', 'reply', 'personalize', 'reschedule', 'nudge'].includes(input.mode)) return '';
   const r = input.recipient;
   const name = cleanRecipientName(r?.name);
   const first = firstNameOf(r?.name);
@@ -271,6 +290,50 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
         input.instruction ? `Extra direction: ${input.instruction}` : '', tone, len,
       );
       break;
+    // ---------- Moving a commitment ----------
+    //
+    // Both of these are written from the ledger, and both fail in the same
+    // way if the model is left to its own devices: it writes a paragraph of
+    // apology or chasing that never names the thing. So the promise, the
+    // reason and the date are stated as facts it must use, and the shape of
+    // the email is prescribed sentence by sentence.
+    case 'reschedule': {
+      const c = input.commitment;
+      parts.push(
+        `Write a short email telling the recipient that something you promised them is going to be late.`,
+        c?.what ? `What you promised: ${c.what}` : '',
+        c?.was ? `You had said: ${c.was}.` : '',
+        c?.reason ? `Why it has slipped, in the sender's own words: ${c.reason}` : '',
+        c?.now
+          ? `The new commitment is ${c.now}. State that date plainly and do not hedge it with "hopefully" or "I aim to".`
+          : `There is no new date yet. Say when you will be able to give one, or ask what would work — do not invent a date.`,
+        // The failure mode this exists to prevent: a small model handed
+        // "sorry" writes four sentences of contrition and never says what
+        // is late or when it will arrive.
+        `Structure: acknowledge the specific thing you owe them, give the reason in one clause, state the new date, and offer nothing else. Three or four sentences in total.`,
+        `Apologise exactly once and briefly. Do not grovel, do not say "I sincerely apologise for any inconvenience this may have caused", and do not thank them for their patience more than once.`,
+        `Do not promise anything that was not stated above, and do not offer a discount, a call or a favour to make up for it.`,
+        tone,
+      );
+      break;
+    }
+    case 'nudge': {
+      const c = input.commitment;
+      parts.push(
+        `Write a short, friendly email following up on something the recipient said they would do and has not done yet.`,
+        c?.what ? `What you are waiting for: ${c.what}` : '',
+        c?.was ? `They had said: ${c.was}.` : '',
+        c?.reason ? `Context the sender has added: ${c.reason}` : '',
+        // A nudge that opens by reciting how late somebody is has already
+        // lost. The useful version assumes it was missed, not withheld.
+        `Assume it was simply missed rather than ignored: no reproach, no counting of days, no "as per my last email".`,
+        `Structure: say what you are following up on, ask plainly whether it is still on track, and make it easy to answer. Two or three sentences in total.`,
+        c?.now ? `Say that you need it by ${c.now}, once, without repeating it.` : '',
+        `Do not state any date, figure or detail that is not given above.`,
+        tone,
+      );
+      break;
+    }
     case 'quick_replies':
       parts.push(
         `Suggest three different short replies the sender could send to the last message in the conversation. Answer only that message; do not summarise the thread. Output exactly three lines and then stop. One reply per line, each a complete sentence of at most 12 words, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off, no explanation.`,
@@ -340,6 +403,28 @@ export function cleanOutput(text: string, mode: DraftMode): string {
 }
 
 
+// A date the model can put in a sentence.
+//
+// Everywhere else in this file a date is handed over as `toDateString()` —
+// "Thu Sep 11 2026" — which is fine as a fact in a list the model reads, and
+// wrong as something it must copy into prose: it either repeats the machine
+// form verbatim or reformats it and gets the day of the week wrong. So the
+// one place a date is meant to be written out gets it written out.
+//
+// The time only appears when there is one. A due date is midnight and saying
+// "at 00:00" would be worse than saying nothing; a slot picked off the
+// calendar is a real time and dropping it would lose the whole point.
+export function writeDate(iso: string, tz?: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  const zone = (() => {
+    try { new Intl.DateTimeFormat('en-GB', { timeZone: tz }); return tz; } catch { return undefined; }
+  })();
+  const day = new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long' }).format(at);
+  const hm = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hour12: false }).format(at);
+  return hm === '00:00' ? day : `${day} at ${hm}`;
+}
+
 // ---------- Guarantees the model cannot be trusted with ----------
 
 // The salutation and whatever name it used. The name runs to the first
@@ -356,7 +441,7 @@ export interface FinalizeContext { recipient?: DraftInput['recipient']; senderNa
 // thread; this rewrites the first line so the person who receives the mail
 // is the one addressed. Only for modes that produce a whole email.
 export function ensureGreeting(text: string, mode: DraftMode, recipient?: DraftInput['recipient']): string {
-  if (!['compose', 'reply', 'personalize'].includes(mode)) return text;
+  if (!['compose', 'reply', 'personalize', 'reschedule', 'nudge'].includes(mode)) return text;
   const first = firstNameOf(recipient?.name);
   const lines = text.split('\n');
   const i = lines.findIndex((l) => l.trim());
@@ -468,7 +553,7 @@ function collectQuickReplies(raw: string, names: string[], maxWords: number, max
 export function finalizeOutput(raw: string, mode: DraftMode, ctx: FinalizeContext = {}): string {
   if (mode === 'quick_replies') return parseQuickReplies(raw, [ctx.recipient?.name ?? '', ctx.senderName ?? '']).join('\n');
   let t = cleanOutput(raw, mode);
-  if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish'].includes(mode)) t = stripModelSignature(t, ctx);
+  if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish', 'reschedule', 'nudge'].includes(mode)) t = stripModelSignature(t, ctx);
   t = ensureGreeting(t, mode, ctx.recipient);
   return t.trim();
 }

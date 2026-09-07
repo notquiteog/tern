@@ -414,7 +414,7 @@ export default function MailPage() {
                 </span>
               </div>
             )}
-            {isLoading && <div className="center" style={{ padding: 40 }}><Spinner size={22} /></div>}
+            {isLoading && <ThreadListSkeleton />}
             {!isLoading && !threads.length && (
               accounts.length === 0
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
@@ -663,6 +663,27 @@ function useSwipe(onRight: () => void, onLeft: () => void) {
       onPointerCancel: () => { from.current = null; move(0); },
     },
   };
+}
+
+// While the first page is on its way. A spinner says only that something is
+// happening; these say what is about to arrive and where, so the list does not
+// jump when it does. Eight rows is about a screen at either density.
+function ThreadListSkeleton() {
+  return (
+    <div className="thread-skeleton" aria-hidden="true">
+      {Array.from({ length: 8 }, (_, i) => (
+        <div className="sk-row" key={i} style={{ '--i': i } as any}>
+          <span className="skeleton sk-avatar" />
+          <div className="sk-lines">
+            <span className="skeleton sk-line sk-who" />
+            <span className="skeleton sk-line sk-subject" />
+            <span className="skeleton sk-line sk-snippet" />
+          </div>
+          <span className="skeleton sk-when" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary, onSummarize, summarizing }: RowViewProps) {

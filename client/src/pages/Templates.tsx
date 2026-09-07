@@ -55,9 +55,9 @@ export default function TemplatesPage() {
       <div className="grid-cards">
         {visible.map((t) => (
           <div key={t.id} className="card" style={{ cursor: 'pointer', borderColor: t.errors?.length ? 'var(--danger)' : undefined }} onClick={() => setEditing(t)}>
-            <div className="card-title"><h2 className="truncate">{t.name}</h2><div className="row gap-4"><Badge>{t.category}</Badge><IconButton label={t.starred ? 'Unstar' : 'Star'} className={cls('btn-sm', t.starred && 'active')} onClick={(e) => { e.stopPropagation(); api.put(`/api/templates/${t.id}`, { starred: !t.starred }).then(invalidate); }}><Star size={14} fill={t.starred ? 'currentColor' : 'none'} /></IconButton></div></div>
+            <div className="card-title"><h2 className="clamp-2">{t.name}</h2><div className="row gap-4"><Badge>{t.category}</Badge><IconButton label={t.starred ? 'Unstar' : 'Star'} className={cls('btn-sm', t.starred && 'active')} onClick={(e) => { e.stopPropagation(); api.put(`/api/templates/${t.id}`, { starred: !t.starred }).then(invalidate); }}><Star size={14} fill={t.starred ? 'currentColor' : 'none'} /></IconButton></div></div>
             {t.description && <div className="small muted mb-8">{t.description}</div>}
-            <div className="strong small truncate mb-8">{t.subject || <span className="faint">(subject from the thread)</span>}</div>
+            <div className="strong small clamp-2 mb-8">{t.subject || <span className="faint">(subject from the thread)</span>}</div>
             <div className="small muted" style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', minHeight: 54 }}>{String(t.body_html).replace(/<[^>]+>/g, ' ').trim() || 'Empty body'}</div>
             {t.errors?.length > 0 && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}><AlertTriangle size={12} /> {t.errors[0]}</div>}
             <div className="row mt-16" style={{ justifyContent: 'space-between' }}>
@@ -97,7 +97,7 @@ function LibraryModal({ open, onClose, owned, onAdded }: { open: boolean; onClos
           <div key={t.key} className="card" style={{ padding: 14 }}>
             <div className="card-title" style={{ marginBottom: 6 }}><h2 style={{ fontSize: 14 }} className="truncate">{t.name}</h2><Badge>{t.category}</Badge></div>
             <div className="small muted mb-8" style={{ minHeight: 34 }}>{t.description}</div>
-            <div className="small truncate mb-8"><span className="faint">Subject:</span> {t.subject || <span className="faint">(thread subject)</span>}</div>
+            <div className="small clamp-2 mb-8"><span className="faint">Subject:</span> {t.subject || <span className="faint">(thread subject)</span>}</div>
             <div className="row gap-4"><Button size="sm" icon={<Eye size={13} />} onClick={() => setPreview(t)}>Preview</Button>{owned.has(t.key) ? <Badge kind="success">added</Badge> : <Button size="sm" variant="primary" icon={<Plus size={13} />} loading={busy} onClick={() => add([t.key])}>Add</Button>}</div>
           </div>
         ))}

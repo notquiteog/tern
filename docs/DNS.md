@@ -192,8 +192,9 @@ the domain says so.
 Hardly any DNS host takes an SRV record as a name and a value; nearly all of
 them ask for seven separate boxes, and the two numbers in the middle are the
 ones that get transposed. Each SRV row in Admin → Mail server → DNS setup
-says which piece belongs in which box, and each value copies on click. The
-`_jmap` row above splits like this:
+says which piece belongs in which box. Every name and value on that page
+copies when you click it — whole, even where a long one is shown cut short —
+so there is nothing to retype. The `_jmap` row above splits like this:
 
 | Field | Value |
 |---|---|
@@ -206,7 +207,8 @@ says which piece belongs in which box, and each value copies on click. The
 | Target | `mx1.example.com` |
 
 A host that asks only for a name and a value wants the whole
-`_jmap._tcp.example.com` and `0 1 443 mx1.example.com` instead.
+`_jmap._tcp.example.com` and `0 1 443 mx1.example.com` instead; that second
+form is the **one value** line under the rule at the foot of each SRV row.
 
 The three CNAMEs get their certificates from Caddy on first request, so add
 them before testing a client. Check them with:

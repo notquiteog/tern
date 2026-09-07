@@ -59,8 +59,8 @@ function SequenceCard({ s, onOpen, onStatus }: { s: any; onOpen: () => void; onS
   const replyRate = s.sent_count ? Math.round((100 * (s.reply_count ?? 0)) / s.sent_count) : 0;
   return (
     <div className="card" style={{ cursor: 'pointer' }} onClick={onOpen}>
-      <div className="card-title"><h2 className="truncate">{s.name}</h2><Badge kind={STATUS_KIND[s.status]} dot>{s.status}</Badge></div>
-      <div className="small muted mb-8 truncate">{s.step_count} step{s.step_count === 1 ? '' : 's'} · {s.account_email ?? <span style={{ color: 'var(--warning-text)' }}>no sending account</span>}{s.ai_mode !== 'off' ? ` · AI ${s.ai_mode}` : ''}</div>
+      <div className="card-title"><h2 className="clamp-2">{s.name}</h2><Badge kind={STATUS_KIND[s.status]} dot>{s.status}</Badge></div>
+      <div className="small muted mb-8 clamp-2">{s.step_count} step{s.step_count === 1 ? '' : 's'} · {s.account_email ?? <span style={{ color: 'var(--warning-text)' }}>no sending account</span>}{s.ai_mode !== 'off' ? ` · AI ${s.ai_mode}` : ''}</div>
       <div className="sequence-status mb-8">
         <span className="s"><b>{Number(st.active ?? 0) + Number(st.waiting_review ?? 0)}</b> in progress</span>
         <span className="s"><b>{st.replied ?? 0}</b> replied</span>

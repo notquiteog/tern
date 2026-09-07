@@ -27,7 +27,11 @@ function shape(t: any) {
 templatesRouter.get('/', async (req, res) => {
   const rows = await query<any>(
     `SELECT t.*, (SELECT count(*)::int FROM sequence_steps s WHERE s.template_id=t.id) AS used_in_steps,
-            (SELECT count(*)::int FROM send_log l WHERE l.template_id=t.id AND l.status='sent') AS sent_count
+            (SELECT count(*)::int FROM send_log l WHERE l.template_id=t.id AND l.status='sent') AS sent_count,
+            -- What a template is actually for. The send count says it was
+            -- used; only this says it worked, and it is the number that
+            -- should decide which one the composer offers first.
+            (SELECT count(*)::int FROM send_log l WHERE l.template_id=t.id AND l.status='sent' AND l.replied_at IS NOT NULL) AS reply_count
      FROM templates t WHERE t.user_id=$1 ORDER BY t.starred DESC, t.updated_at DESC`,
     [req.user!.id],
   );

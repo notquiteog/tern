@@ -1058,4 +1058,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_email_uid_idx ON calendar_even
 UPDATE mail_imports SET filename = NULL WHERE filename IS NOT NULL;
 `,
   },
+  {
+    // Two columns and a table, for two features that both needed a way to
+    // record "the person told us otherwise".
+    //
+    // `commitments.settle_after` exists because an owed commitment closes
+    // itself as soon as anything of yours lands in the thread, and a
+    // reschedule email is a message in the thread. Without a watermark,
+    // writing "the quote will be Thursday instead" marks the quote as
+    // delivered. Moving the goalposts sets this to now, and settling
+    // compares against it rather than against when the item was created;
+    // null means it has never moved and `created_at` still governs.
+    //
+    // `triage_feedback` is the priority model's only source of evidence that
+    // did not come from watching. Everything else it learns is inferred from
+    // archiving, starring, replying and junking, which cannot express "this
+    // one is fine, it just does not belong at the top". A row here is a
+    // label the person stated, and it outranks the inferred one.
+    id: '20260906_2140_commitment_settle_after_and_triage_feedback',
+    up: `
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS settle_after TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS triage_feedback (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email_id BIGINT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+  label SMALLINT NOT NULL CHECK (label IN (0, 1)),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, email_id)
+);
+CREATE INDEX IF NOT EXISTS triage_feedback_user_idx ON triage_feedback(user_id);
+`,
+  },
 ];

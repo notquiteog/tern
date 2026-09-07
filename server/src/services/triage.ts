@@ -258,13 +258,42 @@ function rowFeatures(row: any, contacts: Set<string>, replied: Set<string>): Fea
 // Tern for a few days" rather than showing a number nobody should trust.
 export const MIN_SAMPLES = 40;
 
+// What the person said outright, as opposed to what they were observed doing.
+// Everything else this model learns is inferred from archiving, starring,
+// replying and junking, none of which can say "this is fine, it just does not
+// belong at the top". A stated label wins over an inferred one for the same
+// message, because it was stated.
+export async function recordFeedback(userId: number, emailId: number, label: 0 | 1): Promise<boolean> {
+  // The ownership test is a WHERE on the SELECT that feeds the insert, not one
+  // hung off ON CONFLICT: a condition there only guards the update half, and
+  // the first write for somebody else's message would sail past it.
+  const rows = await query<{ email_id: string }>(
+    `INSERT INTO triage_feedback (user_id, email_id, label)
+     SELECT $1, $2, $3
+      WHERE EXISTS (SELECT 1 FROM emails e JOIN accounts a ON a.id=e.account_id WHERE e.id=$2 AND a.user_id=$1)
+     ON CONFLICT (user_id, email_id) DO UPDATE SET label=EXCLUDED.label, created_at=now()
+     RETURNING email_id`,
+    [userId, emailId, label],
+  );
+  return rows.length > 0;
+}
+
+async function statedLabels(userId: number): Promise<Map<number, 0 | 1>> {
+  const rows = await query<{ email_id: string; label: number }>(
+    'SELECT email_id, label FROM triage_feedback WHERE user_id=$1', [userId],
+  );
+  return new Map(rows.map((r) => [Number(r.email_id), (r.label === 1 ? 1 : 0) as 0 | 1]));
+}
+
 export async function retrain(userId: number): Promise<{ trained: boolean; samples: number; accuracy: number | null }> {
   if (!(await allowed(userId, 'triage'))) return { trained: false, samples: 0, accuracy: null };
-  const [boxes, contacts, replied] = await Promise.all([mailboxRoles(userId), contactSenders(userId), repliedThreads(userId)]);
+  const [boxes, contacts, replied, stated] = await Promise.all([mailboxRoles(userId), contactSenders(userId), repliedThreads(userId), statedLabels(userId)]);
   const rows = await query<any>(FEATURE_SQL, [userId, 4000, 180, false]);
   const set: { features: Features; label: 0 | 1 }[] = [];
   for (const r of rows) {
-    const label = labelOf(r, boxes, replied);
+    // A stated label replaces the inferred one, and rescues a message that
+    // would otherwise have been left out of training for want of evidence.
+    const label = stated.get(Number(r.id)) ?? labelOf(r, boxes, replied);
     if (label === null) continue;
     set.push({ features: rowFeatures(r, contacts, replied), label });
   }

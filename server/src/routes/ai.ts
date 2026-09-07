@@ -7,8 +7,9 @@ import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isVali
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
-import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
+import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
+import { getCommitment } from '../services/commitments.js';
 import { config } from '../config.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
 import { htmlToText } from '../services/merge.js';
@@ -274,7 +275,7 @@ aiRouter.post('/summaries/one', requireCapability('ai.summaries'), rateLimit({ n
 });
 
 const draftSchema = z.object({
-  mode: z.enum(['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies']),
+  mode: z.enum(['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies', 'reschedule', 'nudge']),
   instruction: z.string().max(4000).optional(),
   tone: z.string().max(60).optional(),
   length: z.enum(['short', 'medium', 'long']).optional(),
@@ -286,6 +287,15 @@ const draftSchema = z.object({
   recipientEmail: z.string().max(320).optional(),
   recipientName: z.string().max(200).optional(),
   template: z.string().max(60000).optional(),
+  // For 'reschedule' and 'nudge'. Only the id travels: the promise itself is
+  // read out of the ledger below, so a request cannot ask the model to
+  // apologise for something that was never recorded.
+  commitmentId: z.number().int().optional(),
+  reason: z.string().max(1000).optional(),
+  dueAt: z.string().datetime().nullable().optional(),
+  // Only ever used to write a date the way the reader will read it. Not a
+  // fact about the person, and not stored.
+  tz: z.string().max(64).optional(),
 });
 
 // Only these modes work on what is in the editor. The others (compose, reply,
@@ -324,6 +334,27 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
       if (hit) input.recipient.name = String(hit.name);
     }
   }
+  // The ledger entry behind a reschedule or a nudge, and the dates written the
+  // way a person writes them — the model is poor at turning an ISO timestamp
+  // into "Thursday the 11th" and has no business trying.
+  if (b.mode === 'reschedule' || b.mode === 'nudge') {
+    if (!b.commitmentId) throw badRequest('Which commitment this is about was not given');
+    const c = await getCommitment(req.user!.id, b.commitmentId);
+    if (!c) throw notFound('Commitment not found');
+    if (b.mode === 'reschedule' && c.kind !== 'owed') throw badRequest('Only something you owe can be rescheduled');
+    if (b.mode === 'nudge' && c.kind !== 'awaiting') throw badRequest('Only something you are waiting on can be nudged');
+    input.commitment = {
+      kind: c.kind,
+      what: c.text,
+      reason: b.reason?.trim() || undefined,
+      was: c.dueAt ? writeDate(c.dueAt, b.tz) : undefined,
+      now: b.dueAt ? writeDate(b.dueAt, b.tz) : undefined,
+    };
+    // The counterparty is who this goes to; the thread usually supplies the
+    // name, but a manual item may only ever have had an address.
+    if (!input.recipient && c.counterparty) input.recipient = { name: c.counterparty };
+  }
+
   const send = sse(res);
   const abort = new AbortController();
   req.on('close', () => abort.abort());

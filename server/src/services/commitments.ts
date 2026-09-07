@@ -32,6 +32,8 @@ export interface Commitment {
   text: string;
   counterparty: string | null;
   dueAt: string | null;
+  /** When this was last rescheduled, or null if it has never moved. */
+  movedAt: string | null;
   status: 'open' | 'done' | 'dropped';
   threadId: string;
   accountId: number;
@@ -258,6 +260,7 @@ async function openRows(userId: number, rows: any[]): Promise<Commitment[]> {
     text: openWith(dek, r.text) ?? '',
     counterparty: r.counterparty ? openWith(dek, r.counterparty) : null,
     dueAt: r.due_at ? new Date(r.due_at).toISOString() : null,
+    movedAt: r.settle_after ? new Date(r.settle_after).toISOString() : null,
     status: r.status,
     threadId: r.thread_id,
     accountId: r.account_id,
@@ -285,9 +288,40 @@ export async function addCommitment(userId: number, input: { accountId: number; 
   return rows[0].id;
 }
 
+// One item, by id, so the drafting route can put the promise in front of the
+// model without the browser being trusted to say what was promised. The text
+// the model apologises for has to come out of the ledger, not off the wire.
+export async function getCommitment(userId: number, id: number): Promise<Commitment | null> {
+  const rows = await query<any>('SELECT c.* FROM commitments c WHERE c.id=$1 AND c.user_id=$2', [id, userId]);
+  return (await openRows(userId, rows))[0] ?? null;
+}
+
+// Moving the goalposts. The item keeps its identity — it is the same promise,
+// on a new date — and the watermark stops the mail that announces the move
+// from being read as the move having happened.
+//
+// A due date is optional because plenty of reschedules genuinely have no new
+// date ("as soon as the audit is back"). Passing null clears it; passing
+// undefined leaves it alone.
+export async function moveCommitment(userId: number, id: number, dueAt?: string | null): Promise<Commitment | null> {
+  const rows = await query<{ id: number }>(
+    `UPDATE commitments SET settle_after=now()${dueAt === undefined ? '' : ', due_at=$3'}
+      WHERE id=$1 AND user_id=$2 AND status='open' RETURNING id`,
+    dueAt === undefined ? [id, userId] : [id, userId, dueAt],
+  );
+  if (!rows.length) return null;
+  return getCommitment(userId, id);
+}
+
 // An "awaiting" item closes itself when the other side writes back, and an
 // "owed" one when the user sends into the thread. That is what stops the
 // list becoming another inbox nobody empties.
+//
+// "Since when" is `settle_after` where the item has been moved and
+// `created_at` where it has not. Rescheduling writes that watermark, because
+// the reschedule is itself a message in the thread: without it, sending "the
+// quote will be Thursday instead" would settle the very quote it postponed,
+// and a nudge would settle the thing you are still waiting for.
 export async function settleFromMail(userId: number): Promise<number> {
   const rows = await query<{ id: number }>(
     `UPDATE commitments c SET status='done', closed_at=now()
@@ -296,7 +330,7 @@ export async function settleFromMail(userId: number): Promise<number> {
       WHERE c.user_id=$1 AND c.status='open' AND c.kind='owed'
         AND e.account_id = c.account_id AND e.thread_id = c.thread_id
         AND e.mailbox_ids @> ARRAY[m.jmap_id]
-        AND e.received_at > c.created_at
+        AND e.received_at > coalesce(c.settle_after, c.created_at)
       RETURNING c.id`,
     [userId],
   );
@@ -305,7 +339,7 @@ export async function settleFromMail(userId: number): Promise<number> {
        FROM emails e
       WHERE c.user_id=$1 AND c.status='open' AND c.kind='awaiting'
         AND e.account_id = c.account_id AND e.thread_id = c.thread_id
-        AND e.received_at > c.created_at
+        AND e.received_at > coalesce(c.settle_after, c.created_at)
         AND NOT EXISTS (
           SELECT 1 FROM mailboxes m WHERE m.account_id = e.account_id AND m.role='sent' AND e.mailbox_ids @> ARRAY[m.jmap_id]
         )

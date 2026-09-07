@@ -27,7 +27,7 @@
   --border-strong: #d3d7e0;
   --text: #101218;
   --text-2: #5b6274;
-  --text-3: #676d7e;
+  --text-3: #5f6575;
   --accent: #16181d;
   --accent-hover: #000000;
   --accent-soft: #eef0f3;
@@ -90,7 +90,7 @@
   --border-strong: #363b4b;
   --text: #e8eaf1;
   --text-2: #a4a9ba;
-  --text-3: #868ca0;
+  --text-3: #a2a8bc;
   --accent: #f2f3f7;
   --accent-hover: #ffffff;
   --accent-soft: #262930;
@@ -220,8 +220,8 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .toggle[aria-checked="true"] { background: var(--accent); }
 .toggle[aria-checked="true"]::after { transform: translateX(16px); }
 .toggle:disabled { opacity: .5; }
-.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
-.form-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 14px; }
+.form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; }
+.form-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 14px; }
 .segmented { display: inline-flex; background: var(--bg-sunken); border-radius: 8px; padding: 3px; gap: 2px; }
 .segmented button { height: 28px; padding: 0 12px; border: 0; background: transparent; border-radius: 6px; color: var(--text-2); font-weight: 500; font-size: 13px; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease); }
 .segmented button:hover:not(.active) { color: var(--text); background: rgba(var(--accent-rgb), .07); }
@@ -246,7 +246,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .chip .chip-x { width: 18px; height: 18px; border-radius: 50%; border: 0; background: transparent; color: var(--text-3); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
 .chip .chip-x:hover { background: var(--border-strong); color: var(--text); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 500; background: var(--accent-soft); color: var(--accent-text); }
-.avatar { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; color: #fff; font-weight: 600; font-size: 12px; flex: none; letter-spacing: .02em; overflow: hidden; background-image: linear-gradient(135deg, rgba(255,255,255,.22), rgba(0,0,0,.12)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); position: relative; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; color: #fff; font-weight: 600; font-size: 12px; flex: none; letter-spacing: .02em; overflow: hidden; background-image: linear-gradient(135deg, rgba(255,255,255,.12), rgba(0,0,0,.14)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); position: relative; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .avatar-xl { width: 72px; height: 72px; font-size: 24px; }
 .avatar-sm { width: 24px; height: 24px; font-size: 10px; }
@@ -316,7 +316,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 12px; background: var(--glass); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); border-bottom: 1px solid var(--glass-border); }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: -.02em; width: calc(var(--sidebar-w) - 12px); text-decoration: none; color: var(--text); }
 .brand:hover { text-decoration: none; }
-.brand-logo { width: 28px; height: 28px; border-radius: 9px; background: linear-gradient(135deg, var(--g1), var(--g2)); display: inline-flex; align-items: center; justify-content: center; color: #fff; box-shadow: var(--glow-soft); }
+.brand-logo { width: 28px; height: 28px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 62%, var(--g2))); display: inline-flex; align-items: center; justify-content: center; color: var(--on-accent); box-shadow: var(--glow-soft); }
 .brand-logo.custom { background: none; box-shadow: none; }
 .brand-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; display: block; }
 .search { flex: 1 1 0; min-width: 0; max-width: 720px; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 14px; border-radius: 12px; background: var(--glass-strong); border: 1px solid var(--glass-border); transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
@@ -368,7 +368,38 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .list-filters { display: flex; align-items: center; gap: 6px; padding: 8px 12px; position: sticky; top: 0; z-index: 2; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border-bottom: 1px solid var(--glass-border); }
 .list-filters .segmented { background: rgba(var(--accent-rgb), .06); }
 .mail-body:not(.split) .thread-list { border-right: 0; }
-.thread-row { display: grid; grid-template-columns: 40px 28px 36px minmax(120px, 190px) 1fr auto; align-items: center; gap: 8px; height: var(--row-h); padding: 0 14px 0 6px; border-bottom: 1px solid var(--border); cursor: pointer; position: relative; color: var(--text-2); font-size: 13.5px; }
+/* ---------- the conversation row ----------
+   One row layout, chosen by how wide the list actually is rather than how wide
+   the window is. The list is a query container, so the same rules give the
+   right answer for a reading pane beside the list, a pane below it, and a
+   phone — with no per-arrangement special case.
+
+   Stacked is the default because it is the safe one: who and when, then the
+   subject, then the snippet with room to be read. The dense single line is an
+   enhancement the container opts into when it has the width to spare. */
+.thread-row {
+  display: grid;
+  grid-template-columns: 34px 28px auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check star avatar who  when"
+    "check star avatar main main";
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 10px 12px 10px 4px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  position: relative;
+  color: var(--text-2);
+  font-size: 13.5px;
+}
+.thread-row .t-check { grid-area: check; }
+.thread-row .t-star { grid-area: star; }
+.thread-row .t-avatar { grid-area: avatar; display: flex; align-items: center; align-self: start; margin-top: 2px; }
+.thread-row .t-avatar .avatar { width: 34px; height: 34px; }
+.thread-row .t-names { grid-area: who; }
+.thread-row .t-meta { grid-area: when; }
+.thread-row .t-main { grid-area: main; }
 .thread-row { transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease); }
 .thread-row:hover { background: rgba(var(--accent-rgb), .07); z-index: 0; }
 /* The ring is inset: the list clips its own overflow, so an outer ring on the
@@ -388,9 +419,23 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .thread-row .t-star.on { color: #f2b01e; }
 .thread-row .t-star:hover { color: #f2b01e; }
 .thread-row .t-names { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thread-row .t-main { min-width: 0; display: flex; align-items: center; gap: 6px; }
-.thread-row .t-subject { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thread-row .t-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+/* Labels, subject and trust marks share the first line; the snippet takes a
+   full-width basis so it wraps onto its own, where it gets two lines to say
+   something useful instead of the four characters it used to be left with. */
+.thread-row .t-main { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 1px; }
+/* A zero basis, not `auto`: flex wraps a line before it shrinks one, so a long
+   subject measured at its full width would push the trust marks onto a line of
+   their own. From zero it grows into whatever the marks leave. */
+.thread-row .t-subject { flex: 1 1 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.thread-row .t-snippet {
+  flex: 1 0 100%; min-width: 0; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: 12.5px; line-height: 1.45;
+  /* A subject or preview can be one long unbroken token — a URL, a tracking
+     id, a merge field. It has to be allowed to break, or it sets a min-content
+     width the row cannot shrink under and the list overflows sideways. */
+  overflow-wrap: anywhere;
+}
 .thread-row .t-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .thread-row.unread .t-meta { color: var(--text); font-weight: 600; }
 .thread-row .t-count { font-size: 11.5px; color: var(--text-3); font-weight: 500; margin-left: 4px; }
@@ -400,16 +445,52 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .thread-row:hover .row-actions { display: flex; }
 .thread-row:hover .t-meta { visibility: hidden; }
 .thread-row .acct-stripe { position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; }
-.mail-body.split .thread-row { grid-template-columns: 32px 26px 40px 1fr auto; grid-template-rows: auto auto; row-gap: 1px; height: auto; padding: 9px 12px 9px 4px; }
-.mail-body.split .thread-row .t-avatar { display: flex; grid-column: 3; grid-row: 1 / 3; align-items: center; }
-.mail-body.split .thread-row .t-avatar .avatar { width: 34px; height: 34px; }
-.mail-body.split .thread-row .t-names { grid-column: 4; grid-row: 1; }
-.mail-body.split .thread-row .t-meta { grid-column: 5; grid-row: 1; }
-.mail-body.split .thread-row .t-main { grid-column: 4 / 6; grid-row: 2; }
-.mail-body.split .thread-row .t-check, .mail-body.split .thread-row .t-star { grid-row: 1 / 3; }
-.mail-body.split .thread-row .t-subject { max-width: 70%; }
+/* Row layout is decided by the list's own width (see the container query
+   below), not by which pane arrangement is on, so the split view needs no
+   geometry of its own — only where the hover actions sit on a taller row. */
 .mail-body.split .thread-row .row-actions { top: auto; bottom: 6px; transform: none; }
-.mail-body.split .thread-row:hover .t-meta { visibility: visible; }
+/* Attachment chips. Stacked, they take a line of their own — the row has the
+   height for it and naming the files is worth more than a paperclip. */
+.thread-row .t-atts { display: inline-flex; gap: 4px; flex: 1 0 100%; min-width: 0; overflow: hidden; margin-top: 2px; }
+.thread-row .t-att { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 10.5px; color: var(--text-2); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+
+/* Wide enough for one line to hold everything and still leave the preview
+   something worth reading. 880px is where that becomes true: below it the
+   fixed parts — names, subject, date — eat the line and the preview drops to
+   about 150px, which is the failure the stacked layout exists to avoid.
+   Names get a fixed column, and the subject and snippet share what is left. The subject shrinks first and
+   the snippet is guaranteed a real share — the old rule let the subject take
+   60% before the snippet was measured at all, which is how a preview ended up
+   96px wide next to 1600px of text. */
+@container threadlist (min-width: 880px) {
+  .thread-row {
+    grid-template-columns: 40px 28px 36px minmax(140px, 190px) minmax(0, 1fr) auto;
+    grid-template-areas: "check star avatar who main when";
+    height: var(--row-h);
+    padding: 0 14px 0 6px;
+    row-gap: 0;
+  }
+  .thread-row .t-avatar { align-self: center; margin-top: 0; }
+  .thread-row .t-avatar .avatar { width: 32px; height: 32px; }
+  .thread-row .t-main { flex-wrap: nowrap; }
+  /* Everything on one line has to survive being squeezed, so each part carries
+     its own floor and they give ground in the order a reader can spare them:
+     the attachment chips shrink, then the preview, and the subject last. The
+     floor is what stops the flex algorithm taking an item to zero — without
+     one, a row that has attachments loses its subject completely. */
+  .thread-row .t-subject { flex: 0 1 auto; min-width: min(18ch, 100%); max-width: 46ch; }
+  .thread-row .t-snippet { flex: 1 1 240px; min-width: 110px; white-space: nowrap; display: block; overflow: hidden; text-overflow: ellipsis; }
+  .thread-row .t-atts { flex: 0 1 auto; min-width: 0; max-width: 190px; margin-top: 0; margin-left: 2px; }
+  .thread-row .t-att { max-width: 110px; }
+}
+/* Roomier still: the preview earns a second line back and the row grows to
+   suit, which is the most information the list can carry without becoming the
+   card view. */
+@container threadlist (min-width: 1240px) {
+  .thread-row .t-subject { max-width: 60ch; }
+  .thread-row .t-snippet { min-width: 200px; }
+}
+
 .thread-list .date-sep { padding: 10px 14px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); background: var(--bg-elev); position: sticky; top: 0; z-index: 1; }
 .thread-pane { min-width: 0; min-height: 0; overflow-y: auto; background: transparent; position: relative; z-index: 0; isolation: isolate; }
 .thread-view { padding: 20px 24px 120px; max-width: 980px; }
@@ -444,10 +525,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .reply-bar { display: flex; gap: 8px; margin-top: 12px; }
 /* The rail is now a column of cards rather than one card, so the whole
    column sticks and the cards inside it stack. */
-.thread-side { display: grid; grid-template-columns: 1fr 260px; gap: 20px; }
+.thread-side { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; }
 .thread-side .context { position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; gap: 12px; max-height: 100vh; overflow-y: auto; overscroll-behavior: contain; }
 .thread-side .context::-webkit-scrollbar { width: 6px; }
-@media (max-width: 1300px) { .thread-side { grid-template-columns: 1fr; } .thread-side .context { order: 1; position: static; max-height: none; overflow: visible; } }
+@media (max-width: 1300px) { .thread-side { grid-template-columns: minmax(0, 1fr); } .thread-side .context { order: 1; position: static; max-height: none; overflow: visible; } }
 
 /* Cards in the rail are quieter than a page card: they are context, not
    content, and they sit beside something you are reading. */
@@ -503,7 +584,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 @media (hover: none) { .brief-track { opacity: 1; } }
 
 /* What needs you today, at the top of the home page. */
-.today-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.today-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px; margin-bottom: 20px; }
 .today-card { display: block; padding: 14px 16px; color: inherit; text-decoration: none; }
 .today-card:hover { border-color: rgba(var(--accent-rgb), .35); }
 .today-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); }
@@ -573,14 +654,20 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .ai-thinking-head svg { transition: transform .15s ease; flex: none; }
 .ai-thinking-body { padding: 0 10px 10px 29px; max-height: 150px; overflow: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); font-family: var(--mono); }
 @media (prefers-reduced-motion: reduce) { .ai-thinking-head svg { transition: none; } }
-.ai-btn { background: linear-gradient(135deg, var(--g2), var(--accent), var(--g4)); background-size: 200% 200%; color: #fff; border: 0; animation: shimmer-bg 6s ease infinite; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .3); }
+/* The gradient has to stay near the accent for the label to stay legible: it
+   used to run from a mid grey through the accent to a near-white palette stop
+   with the text pinned to white, which on a dark theme put white on #f2f3f7 —
+   about 1.05:1, an invisible button. Every stop is now a shade of the accent,
+   so `--on-accent` is the right colour against all of them in both themes. */
+.ai-btn { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 86%, var(--g2)), var(--accent) 50%, color-mix(in srgb, var(--accent) 80%, var(--g3))); background-size: 200% 200%; color: var(--on-accent); border: 0; animation: shimmer-bg 6s ease infinite; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .3); }
+.ai-btn:disabled { opacity: .55; }
 .ai-btn:hover { filter: brightness(1.08); }
 @keyframes shimmer-bg { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
 
 /* ---------- lists / other pages ---------- */
 .list-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
-.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 14px; }
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 14px; margin-bottom: 20px; }
 .step-card { display: flex; gap: 14px; padding: 14px 16px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; }
 .step-card.wait { background: var(--bg); border-style: dashed; }
 .step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12.5px; flex: none; }
@@ -588,7 +675,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .sequence-status { display: inline-flex; gap: 10px; flex-wrap: wrap; }
 .sequence-status .s { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-2); }
 .sequence-status .s b { color: var(--text); }
-.kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13.5px; }
+.kv { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 6px 12px; font-size: 13.5px; }
 .kv dt { color: var(--text-3); } .kv dd { margin: 0; }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -611,7 +698,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .color-dots { display: flex; gap: 6px; flex-wrap: wrap; }
 .color-dots button { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
 .color-dots button.active { border-color: var(--text); box-shadow: 0 0 0 2px var(--bg-elev) inset; }
-.shortcut-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; font-size: 13px; }
+.shortcut-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 24px; font-size: 13px; }
 .shortcut-grid div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border); }
 .mobile-only { display: none; }
 
@@ -624,23 +711,14 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .main { border-radius: 0; border: 0; }
   .mail-body.split { grid-template-columns: 1fr; }
   .mail-body.split .thread-list { display: none; }
-  .thread-row { grid-template-columns: 30px 24px 38px 1fr auto; grid-template-rows: auto auto; row-gap: 1px; height: auto; padding: 9px 10px 9px 2px; }
-  .thread-row .t-avatar { display: flex; grid-column: 3; grid-row: 1 / 3; align-items: center; }
-  .thread-row .t-avatar .avatar { width: 32px; height: 32px; }
-  .thread-row .t-check, .thread-row .t-star { grid-row: 1 / 3; }
-  .thread-row .t-check { grid-column: 1; }
-  .thread-row .t-star { grid-column: 2; }
-  .thread-row .t-names { grid-column: 4; grid-row: 1; }
-  .thread-row .t-meta { grid-column: 5; grid-row: 1; }
-  .thread-row .t-main { grid-column: 4 / 6; grid-row: 2; }
-  .thread-row .t-subject { max-width: 70%; }
+  /* Geometry comes from the container query; a phone only drops the hover
+     actions, which have no pointer to appear under. */
   .thread-row .row-actions { display: none !important; }
-  .thread-row:hover .t-meta { visibility: visible; }
   .search input::placeholder { font-size: 13px; }
   .page { padding: 16px; }
   .compose-dock { right: 0; left: 0; }
   .compose-win { width: 100vw; max-width: 100vw; height: calc(100vh - var(--topbar-h)); border-radius: 0; }
-  .form-row, .form-grid-3 { grid-template-columns: 1fr; }
+  .form-row, .form-grid-3 { grid-template-columns: minmax(0, 1fr); }
   .mobile-only { display: inline-flex; }
   .desktop-only { display: none !important; }
   .thread-view { padding: 14px 14px 120px; }
@@ -675,7 +753,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .ctx-menu .stars { display: inline-flex; gap: 4px; margin-left: auto; }
 
 /* Swatches for the appearance page */
-.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr)); gap: 10px; }
 .swatch-card { border: 2px solid var(--glass-border); border-radius: 14px; padding: 10px; cursor: pointer; background: var(--glass-strong); transition: transform .15s, border-color .15s, box-shadow .15s; text-align: left; }
 .swatch-card:hover { transform: translateY(-2px); }
 .swatch-card.active { border-color: var(--accent); box-shadow: var(--glow-soft); }
@@ -715,15 +793,15 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .fab { display: inline-flex; }
   .page { padding: 14px 14px 96px; }
   .page-header h1 { font-size: 20px; }
-  .stats-row { grid-template-columns: repeat(2, 1fr); }
-  .grid-cards { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-cards { grid-template-columns: minmax(0, 1fr); }
   .list-toolbar .search { max-width: none; width: 100%; }
-  .thread-side { grid-template-columns: 1fr; }
+  .thread-side { grid-template-columns: minmax(0, 1fr); }
   .thread-side .context { order: 1; }
   .reply-bar { flex-wrap: wrap; }
-  .kv { grid-template-columns: 1fr; gap: 2px 0; }
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
   .kv dt { margin-top: 6px; }
-  .shortcut-grid { grid-template-columns: 1fr; }
+  .shortcut-grid { grid-template-columns: minmax(0, 1fr); }
   .compose-dock { z-index: 62; }
   .search input::placeholder { font-size: 13px; }
   .topbar { padding: 0 8px; gap: 6px; }
@@ -733,18 +811,6 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   /* The logo is a link home, and on a phone the menu and the bottom bar both
      go there. Dropping it is what buys the search box a usable width. */
   .topbar .brand { display: none; }
-  /* Three lines, the way a phone mail client is read: who and when, then the
-     subject, then the snippet on a line of its own. Sharing one line left the
-     snippet about four characters wide, which is worse than not showing it. */
-  .thread-row .t-main { flex-wrap: wrap; row-gap: 0; }
-  /* A zero basis, not `auto`: flex wraps a line before it shrinks one, so a
-     long subject measured at its full width would push the trust marks onto a
-     line of their own. From zero it grows into whatever the marks leave. */
-  .thread-row .t-subject { flex: 1 1 0; min-width: 0; max-width: 100%; }
-  /* A full-width basis is what puts the snippet on its own line while the
-     subject and its trust marks stay together on the one above. */
-  .thread-row .t-snippet { flex: 1 0 100%; margin-top: 1px; }
-  .thread-row .t-avatar { align-self: start; margin-top: 3px; }
   .thread-rows { padding-bottom: 76px; }
   /* The AI pair keeps its icons and loses its labels here; both keep their
      names for a screen reader. */
@@ -756,7 +822,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .modal.wide, .modal.xl { max-width: none; }
   .modal-body { padding-bottom: 24px; }
   .tabs { margin-left: -4px; margin-right: -4px; }
-  .form-grid-3 { grid-template-columns: 1fr; }
+  .form-grid-3 { grid-template-columns: minmax(0, 1fr); }
   .segmented { flex-wrap: wrap; }
   .page-header { flex-direction: column; align-items: flex-start; }
   .page-header .row { width: 100%; }
@@ -770,8 +836,8 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .drawer { width: 100vw; }
   .toast-stack { bottom: 88px; width: calc(100vw - 24px); }
   .thread-head h1 { font-size: 18px; }
-  .stats-row { grid-template-columns: 1fr 1fr; }
-  .swatches { grid-template-columns: repeat(2, 1fr); }
+  .stats-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .swatches { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .search { height: 36px; }
   .list-filters { overflow-x: auto; }
   .list-filters > .small { display: none; }
@@ -791,7 +857,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .dt-card-check { padding-top: 3px; display: inline-flex; }
 .dt-card-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .dt-card-sub { font-weight: 400; color: var(--text-2); font-size: 12.5px; margin-top: 2px; }
-.dt-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 12px; margin: 10px 0 0; }
+.dt-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 8px 12px; margin: 10px 0 0; }
 .dt-kv > div { min-width: 0; }
 .dt-kv > .dt-wide { grid-column: 1 / -1; }
 .dt-kv dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); font-weight: 600; margin-bottom: 2px; }
@@ -804,9 +870,9 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .list-toolbar .search { height: 36px; max-width: 360px; }
 
 /* Mail-app guide */
-.server-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.server-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
 .server-block { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; min-width: 0; }
-.kv-tight { grid-template-columns: 120px 1fr; gap: 6px 10px; }
+.kv-tight { grid-template-columns: 120px minmax(0, 1fr); gap: 6px 10px; }
 .kv-tight dd { min-width: 0; overflow-wrap: anywhere; }
 .copyval { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
 .copyval .mono { overflow-wrap: anywhere; font-size: 12.5px; }
@@ -851,9 +917,9 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .thread-toolbar::-webkit-scrollbar { display: none; }
   .thread-toolbar > *, .thread-toolbar .btn { flex: none; }
   .thread-toolbar .ml-auto { margin-left: auto; width: auto; padding-left: 8px; }
-  .server-grid { grid-template-columns: 1fr; }
-  .kv-tight { grid-template-columns: 1fr; }
-  .editor-layout { grid-template-columns: 1fr; }
+  .server-grid { grid-template-columns: minmax(0, 1fr); }
+  .kv-tight { grid-template-columns: minmax(0, 1fr); }
+  .editor-layout { grid-template-columns: minmax(0, 1fr); }
   .editor-layout aside { order: 2; }
   /* `top: 0` pins to the scrollport, which starts below the page's own 14px of
      padding — leaving a band that content scrolled past showing above the bar.
@@ -902,18 +968,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .select-caret:hover { background: var(--bg-hover); color: var(--text); }
 .thread-list .date-sep { padding: 10px 14px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); position: sticky; top: 0; z-index: 1; }
 .thread-list .list-filters + div .date-sep, .thread-list .list-filters ~ div .date-sep { top: 44px; }
-.thread-row .t-atts { display: inline-flex; gap: 4px; margin-left: 6px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
-.thread-row .t-att { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 10.5px; color: var(--text-2); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .thread-row[draggable="true"] { cursor: pointer; }
 .thread-row.unread .t-avatar .avatar::after { content: ""; position: absolute; right: -1px; top: -1px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-elev); }
 .mail-body.split-bottom { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 42%) minmax(200px, 1fr); }
 .mail-body.split-bottom .thread-list { border-right: 0; border-bottom: 1px solid var(--glass-border); }
-.mail-body.split-bottom .thread-row { grid-template-columns: 40px 28px 36px minmax(120px, 190px) 1fr auto; grid-template-rows: auto; height: var(--row-h); padding: 0 14px 0 6px; }
-.mail-body.split-bottom .thread-row .t-avatar { grid-column: 3; grid-row: 1; }
-.mail-body.split-bottom .thread-row .t-names { grid-column: 4; }
-.mail-body.split-bottom .thread-row .t-main { grid-column: 5; grid-row: 1; }
-.mail-body.split-bottom .thread-row .t-meta { grid-column: 6; grid-row: 1; }
-.mail-body.split-bottom .thread-row .t-check, .mail-body.split-bottom .thread-row .t-star { grid-row: 1; }
 .nav-item.drop-over { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 2px var(--accent); }
 .link-btn { border: 0; background: transparent; color: var(--accent-text); padding: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .link-btn:hover { text-decoration: underline; }
@@ -1109,10 +1167,6 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 /* On a narrow screen the filter row scrolls sideways rather than wrapping
    into two lines under the count. */
 @media (max-width: 720px) {
-  /* Attachment chips are the widest thing a row can carry and the least
-     useful at this size — the paperclip in the meta column already says a
-     conversation has files. Off, so the row cannot outgrow the list. */
-  .thread-row .t-atts { display: none; }
   .list-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .list-filters::-webkit-scrollbar { display: none; }
   .list-filters .segmented { flex: none; }
@@ -1376,7 +1430,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .admin-feature-row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
 .admin-feature-row:last-child { border-bottom: 0; }
 .admin-feature-main { flex: 1; min-width: 0; }
-.retention-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.retention-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 14px; }
 .retention-grid .field { margin: 0; }
 
 /* The attestation panel: a table of what is running, with drift called out. */
@@ -1439,15 +1493,24 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .describe-row .input { flex: 1; min-width: 0; }
 @media (max-width: 640px) { .describe-row { flex-wrap: wrap; } .describe-row .input { flex-basis: 100%; } }
 
+/* Every name and value on the DNS page exists to be retyped into a form at a
+   registrar, so each one copies itself when clicked. A button beside each of
+   them would be a column of buttons taller than the records; the text is the
+   button, and it says so on hover. What is copied is not always what is
+   shown — a DKIM key is displayed cut short and copied whole. */
+.copy-text { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.copy-text:hover { color: var(--accent-text); text-decoration: underline; }
+.copy-text:focus-visible { outline: none; border-radius: 4px; box-shadow: var(--focus); }
+
 /* An SRV record as a registrar's form asks for it. Every DNS host splits
    `_jmap._tcp` and `0 1 443 mx1.example.com` back into seven boxes, and the
    guesswork about which number is the weight and which the port is where
-   these records get typed in wrong. */
+   these records get typed in wrong. The last row is for the hosts that ask
+   for one value after all. */
 .srv-fields { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1px 10px; align-items: baseline; margin: 0; }
 .srv-fields dt { font-family: var(--font); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
 .srv-fields dd { margin: 0; min-width: 0; }
-.srv-fields dd button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
-.srv-fields dd button:hover { color: var(--accent); text-decoration: underline; }
+.srv-fields .rule { grid-column: 1 / -1; height: 1px; margin: 5px 0 4px; background: var(--border); }
 
 /* The BIMI walkthrough: five numbered stages, each with the live checks that
    say whether that stage is done. The prose stays visible after a check runs,
@@ -1459,3 +1522,244 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .bimi-check { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: baseline; margin-top: 8px; }
 .bimi-check > .badge { grid-row: span 2; }
 .bimi-fix { grid-column: 2; }
+
+/* ======================================================================
+   Fit, touch and motion.
+
+   Three promises, in the order they matter:
+
+     1. Nothing overflows. Where a row cannot hold everything it carries, it
+        wraps — it never pushes what is beside it down to a few pixels.
+     2. Nothing is cut down to uselessness. Text that has to give ground
+        clamps to whole lines instead of shrinking to four characters and an
+        ellipsis, which costs the same space and says nothing.
+     3. Anything a finger has to find is about 44px, without the same control
+        growing on a desktop where the pointer is precise.
+   ====================================================================== */
+
+/* ---------- 1. nothing is crushed ---------- */
+
+/* A card row holding a block of text beside a group of buttons is the shape
+   that fails hardest on a phone: the buttons will not shrink, so the text next
+   to them collapses. On Rules it reached one pixel — a rule whose name you
+   could no longer read. Under the width where both fit, the text takes the
+   line and the actions drop beneath it. */
+@media (max-width: 720px) {
+  .card .row:has(> .flex-1),
+  .dt-card .row:has(> .flex-1),
+  .callout .row:has(> .flex-1) { flex-wrap: wrap; row-gap: 10px; }
+  .card .row:has(> .flex-1) > .flex-1,
+  .dt-card .row:has(> .flex-1) > .flex-1,
+  .callout .row:has(> .flex-1) > .flex-1 { flex: 1 1 100%; }
+  /* The actions keep to the right of the line they drop onto. */
+  .card .row:has(> .flex-1) > .row,
+  .dt-card .row:has(> .flex-1) > .row,
+  .callout .row:has(> .flex-1) > .row { margin-left: auto; }
+}
+
+/* One unbroken token — a URL, a merge field, a message id — sets a min-content
+   width that its container cannot shrink below, which is how a card ends up
+   wider than the screen it is on. These are where long strings land. */
+.card, .dt-card, .callout, .step-card, .grid-cards > *, .stats-row > * { min-width: 0; }
+.card-title, .card-title h2, .tc-subject, .t-names, .tc-names, .commit-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* Shorten by lines, not by characters. */
+.clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
+.clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
+
+/* The list search shared a line with the category chips and lost, ending up
+   about two characters wide with a placeholder reading "Se". It takes its own
+   line on a phone, and the chips scroll under it. */
+@media (max-width: 720px) {
+  .list-toolbar { gap: 10px; }
+  .list-toolbar .search { flex: 1 0 100%; width: 100%; max-width: none; }
+  .list-toolbar .segmented { flex: 1 1 auto; max-width: 100%; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .list-toolbar .segmented::-webkit-scrollbar { display: none; }
+  .list-toolbar .segmented button { flex: none; }
+}
+
+/* The page no longer needs a sideways scrollbar to hide a layout that did not
+   fit; if something still does not fit, that is a bug to see, not to scroll. */
+.page { overflow-x: hidden; }
+
+/* ---------- 2. touch ---------- */
+
+/* Sized by what is pointing at the screen rather than how wide it is: a narrow
+   desktop window keeps the compact controls, a tablet gets the large ones. */
+@media (pointer: coarse) {
+  .btn { height: 42px; padding: 0 16px; }
+  .btn-sm { height: 36px; padding: 0 13px; font-size: 13px; }
+  .btn-lg { height: 48px; }
+  .btn-icon { width: 42px; height: 42px; }
+  .btn-icon.btn-sm { width: 40px; height: 40px; }
+  .btn-compose { height: 48px; }
+  .nav-item { height: 44px; font-size: 14px; }
+  .segmented { padding: 4px; }
+  /* A short label like "All" would otherwise leave a 34px target, so the
+     minimum is set on the box rather than left to the text. */
+  .segmented button { height: 40px; min-width: 44px; padding: 0 14px; }
+  .tabs button, .tabs a { height: 46px; padding: 0 14px; }
+  .client-tabs button { height: 40px; }
+  .cat-tab { padding: 12px 14px 13px; }
+  .commit-act { height: 36px; padding: 0 11px; }
+  .select-caret { width: 40px; height: 40px; }
+  .chip { height: 32px; }
+  .chip .chip-x { width: 24px; height: 24px; }
+  .search-chip { height: 30px; }
+  .search-chip button { width: 24px; height: 24px; }
+  .input, .select { height: 44px; }
+  .input-sm { height: 38px; }
+  .textarea { min-height: 110px; }
+  .search { height: 46px; }
+  .pgp-pill { height: 34px; }
+  .ai-panel .ai-modes button { height: 34px; }
+  .color-dots button { width: 30px; height: 30px; }
+  /* The control keeps the size it was drawn at; the target grows around it,
+     so a switch looks the same and is twice as easy to hit. */
+  .toggle::before { content: ""; position: absolute; inset: -12px -8px; border-radius: 22px; }
+  .checkbox { width: 18px; height: 18px; }
+  .thread-row .t-check, .thread-row .t-star,
+  .thread-card .t-check, .thread-card .t-star { min-width: 38px; min-height: 38px; }
+  /* Both row layouts need their leading columns widened to hold the larger
+     check and star; the dense one is restated so it is not lost to the rule
+     above it. */
+  .thread-row { grid-template-columns: 40px 34px auto minmax(0, 1fr) auto; }
+  @container threadlist (min-width: 880px) {
+    .thread-row { grid-template-columns: 42px 34px 36px minmax(140px, 190px) minmax(0, 1fr) auto; }
+  }
+  /* A tap has no hover to reveal an action under, so what a pointer would
+     have waited for is simply shown. */
+  .gist-ask { visibility: visible; }
+}
+
+/* Momentum and a resting place for every strip that scrolls sideways, so a
+   flick lands on a tab rather than between two. */
+.tabs, .list-filters, .cat-tabs, .thread-toolbar, .client-tabs, .list-toolbar .segmented {
+  -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scroll-padding-inline: 12px;
+}
+.tabs > *, .cat-tabs > * { scroll-snap-align: start; }
+@media (pointer: coarse) { .tabs, .cat-tabs { scroll-snap-type: x proximity; } }
+
+
+/* ---------- 3. the list while it loads ----------
+   Shaped like the rows that are coming, so the page does not jump when they
+   land. It mirrors the row layout, container query and all, which is why the
+   widths are in the same terms rather than fixed pixels. */
+.thread-skeleton { padding: 4px 0; }
+.sk-row {
+  display: grid; grid-template-columns: 34px auto minmax(0, 1fr) auto; align-items: center;
+  column-gap: 10px; padding: 12px 14px 12px 8px; border-bottom: 1px solid var(--border);
+  animation: rowIn .3s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms);
+}
+.sk-row::before { content: ""; }
+/* Spans, so they need a box before width and height mean anything. */
+.sk-avatar, .sk-line, .sk-when { display: block; }
+.sk-avatar { width: 34px; height: 34px; border-radius: 50%; }
+.sk-lines { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sk-line { height: 9px; border-radius: 5px; }
+.sk-who { width: 38%; max-width: 160px; }
+.sk-subject { width: 72%; }
+.sk-snippet { width: 90%; height: 8px; opacity: .68; }
+.sk-when { width: 44px; height: 9px; border-radius: 5px; align-self: start; margin-top: 3px; }
+/* The shimmer is the only thing moving on the screen at this point, so it is
+   the first thing to go when motion is not wanted. */
+@media (prefers-reduced-motion: reduce) { .sk-row { animation: none; } }
+@container threadlist (min-width: 880px) {
+  .sk-row { grid-template-columns: 34px auto minmax(140px, 190px) minmax(0, 1fr) auto; padding: 0 14px 0 8px; height: var(--row-h); }
+  .sk-lines { flex-direction: row; align-items: center; gap: 14px; flex: 1 1 auto; }
+  .sk-who { width: 150px; flex: none; }
+  .sk-subject { width: 34%; flex: none; }
+  .sk-snippet { flex: 1 1 auto; width: auto; }
+}
+
+/* ---------- 4. motion and glow ----------
+   The house style is one easing curve and three durations. What follows adds
+   depth rather than movement: things lift toward the reader under a pointer,
+   the accent bleeds a little where attention is, and everything settles fast
+   enough that it is felt rather than watched. */
+
+/* A row lights from its leading edge, the direction a reader arrives from.
+   This is a background layer rather than an overlay: an overlay would be
+   painted above the row's own text and dull it, and the row's hover colour
+   would in turn hide anything sent behind it. */
+.thread-row:hover, .thread-row:focus-visible {
+  background-image: linear-gradient(90deg, rgba(var(--accent-rgb), .10), transparent 45%);
+}
+.thread-row.selected, .thread-row.active {
+  background-image: linear-gradient(90deg, rgba(var(--accent-rgb), .12), transparent 55%);
+}
+
+/* Cards rise a little and warm their border. The shadow carries the accent so
+   the lift reads as light rather than as a heavier drop shadow. */
+.card { will-change: auto; }
+.grid-cards > .card:hover, .dt-card.clickable:hover {
+  transform: translateY(-2px);
+  border-color: rgba(var(--accent-rgb), .34);
+  box-shadow: var(--shadow-2), 0 10px 30px rgba(var(--accent-rgb), .12);
+}
+.dt-card { transition: transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease); }
+
+/* A star is worth a moment. It overshoots once on the way to being set and
+   simply fades on the way back, because undoing wants less ceremony. */
+@media (prefers-reduced-motion: no-preference) {
+  .t-star.on svg, .thread-card .t-star.on svg { animation: starPop .34s var(--ease-out); }
+  @keyframes starPop { 0% { transform: scale(.6) rotate(-18deg); } 55% { transform: scale(1.22) rotate(6deg); } 100% { transform: none; } }
+}
+
+/* Primary actions keep a slow accent bloom under the pointer. */
+.btn-primary, .btn-compose, .fab { position: relative; }
+.btn-primary:hover, .btn-compose:hover { box-shadow: 0 2px 6px rgba(0,0,0,.08), 0 10px 30px rgba(var(--accent-rgb), .38); }
+
+/* The sidebar's active item glows from its own bar rather than its whole box,
+   which keeps a long label readable over the tint. */
+.nav-item.active::before { box-shadow: 0 0 10px 1px rgba(var(--accent-rgb), .6); }
+.nav-item:active { transform: scale(.985); }
+
+/* Badges and counts settle in rather than appearing. */
+@media (prefers-reduced-motion: no-preference) {
+  .nav-item .count.hot, .mn-count, .cat-tab-count { animation: pop .22s var(--ease-out) both; }
+}
+
+/* Anything that can be pressed answers the press. Transform only, so it costs
+   the compositor and nothing else. */
+.btn:active:not(:disabled), .nav-item:active, .cat-tab:active, .segmented button:active,
+.chip:active, .pgp-pill:active, .client-tabs button:active { transform: scale(.97); }
+.thread-row:active, .thread-card:active { transform: scale(.996); }
+
+/* On a touch screen there is no hover to preview an action, so the press is
+   the whole feedback and it is worth making legible. */
+@media (pointer: coarse) {
+  .thread-row:active { background: rgba(var(--accent-rgb), .12); }
+  .card:active, .dt-card.clickable:active { transform: scale(.994); }
+}
+
+/* On a phone the leading gutter — checkbox, star, avatar and three gaps — was
+   taking 136 of 375 points before a word of the conversation began. The
+   targets stay comfortably over 40px tall because the row itself is three
+   lines high, so the width is what gives, and the subject and preview get
+   about a quarter more room. */
+@media (max-width: 640px) {
+  .thread-row { grid-template-columns: 34px 30px auto minmax(0, 1fr) auto; column-gap: 6px; padding-left: 2px; padding-right: 10px; }
+  .thread-row .t-check, .thread-row .t-star { min-width: 34px; }
+  .thread-row .t-avatar .avatar { width: 32px; height: 32px; }
+}
+
+/* A maximized composer is `inset: 40px`, which is a comfortable frame on a
+   desktop and a quarter of the screen on a phone — enough that the send row
+   ran out of room and clipped its own buttons. On a small screen "maximized"
+   means the screen. */
+@media (max-width: 960px) {
+  .compose-win.maximized { inset: var(--topbar-h) 0 0 0; width: auto; height: auto; max-width: none; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+}
+/* The send row carries a split button, three icon actions and the drafting
+   assistant. Where they no longer fit on one line they wrap onto a second
+   rather than running off the edge, with the send button staying first. */
+@media (max-width: 640px) {
+  .compose-foot { flex-wrap: wrap; row-gap: 8px; }
+  .compose-foot .send-group { flex: none; }
+  /* Discard is last in the row and the first to be pushed onto a second line.
+     Sent to the far end of whichever line it lands on it reads as placed
+     rather than left over — and it keeps the destructive action away from
+     Send, which is the point of it being last to begin with. */
+  .compose-foot > :last-child { margin-left: auto; }
+}

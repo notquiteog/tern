@@ -16,7 +16,11 @@ export function initials(s: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-const PALETTE = ['#4f6df5', '#e0567b', '#e08a3c', '#2fa572', '#8b5cf6', '#0ea5b7', '#d946ef', '#f59e0b', '#10b981', '#ef4444', '#6366f1', '#14b8a6'];
+// Initials are drawn in white, so every colour here has to be dark enough to
+// carry white text at 4.5:1 once the avatar's own highlight has lightened it.
+// The previous set was picked for vibrancy alone and several were far under —
+// white on the amber came out at about 2.7:1.
+const PALETTE = ['#3f51c9', '#b62a4c', '#96590f', '#156b47', '#6a34c4', '#0b6b7c', '#9b1fa0', '#a24d09', '#0a7052', '#b32f27', '#4740b8', '#0e6b64'];
 export function colorFor(s: string): string {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;

@@ -262,11 +262,49 @@ export async function getInvitation(userId: number, id: number): Promise<Invitat
 // meeting rather than an awkward sentence.
 export interface Slot { startsAt: string; endsAt: string }
 
-export async function freeSlots(userId: number, opts: { minutes?: number; days?: number; count?: number; startHour?: number; endHour?: number } = {}): Promise<Slot[]> {
+// Working hours are local hours. The slots used to be built with `Date.UTC`,
+// which quietly meant "nine o'clock UTC" — a proposal of 09:00 that lands at
+// four in the morning for anyone far enough west, and the sort of mistake
+// that only shows up as a confused reply. So the caller names a zone and the
+// hour is resolved in it, per day, which also gets the clocks-change week
+// right without a table of rules.
+//
+// `Intl` is the whole implementation: formatting a UTC instant in the target
+// zone and reading back the fields it claims tells us that zone's offset at
+// that instant, and two rounds of it converge on the right one either side of
+// a DST boundary.
+function offsetAt(tz: string, at: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(at));
+  const f: Record<string, number> = {};
+  for (const p of parts) if (p.type !== 'literal') f[p.type] = Number(p.value);
+  // `hour` comes back as 24 rather than 0 at midnight in some engines.
+  const asUtc = Date.UTC(f.year, f.month - 1, f.day, f.hour % 24, f.minute, f.second);
+  return asUtc - at;
+}
+
+// The instant at which the wall clock in `tz` reads this local date and hour.
+function zonedTime(tz: string, y: number, m: number, d: number, hour: number): number {
+  const guess = Date.UTC(y, m, d, hour, 0, 0);
+  const first = guess - offsetAt(tz, guess);
+  return guess - offsetAt(tz, first);
+}
+
+// A zone the browser made up, or one this build of Node has never heard of,
+// must not take the whole request down with it.
+function safeZone(tz: string | undefined): string {
+  if (!tz) return 'UTC';
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return 'UTC'; }
+}
+
+export async function freeSlots(userId: number, opts: { minutes?: number; days?: number; count?: number; startHour?: number; endHour?: number; tz?: string } = {}): Promise<Slot[]> {
   const minutes = Math.min(480, Math.max(15, opts.minutes ?? 30));
   const days = Math.min(30, Math.max(1, opts.days ?? 10));
-  const startHour = opts.startHour ?? 9;
-  const endHour = opts.endHour ?? 17;
+  const tz = safeZone(opts.tz);
+  const startHour = Math.min(23, Math.max(0, opts.startHour ?? 9));
+  const endHour = Math.min(24, Math.max(startHour + 1, opts.endHour ?? 17));
   const busy = await query<{ starts_at: Date; ends_at: Date | null }>(
     `SELECT starts_at, ends_at FROM calendar_events
       WHERE user_id=$1 AND starts_at IS NOT NULL AND reply IS DISTINCT FROM 'declined'
@@ -281,14 +319,19 @@ export async function freeSlots(userId: number, opts: { minutes?: number; days?:
   const out: Slot[] = [];
   const step = minutes * 60_000;
   const now = Date.now();
-  for (let d = 0; d < days && out.length < (opts.count ?? 6); d++) {
-    const day = new Date(now + d * 86_400_000);
+  const count = Math.min(20, Math.max(1, opts.count ?? 6));
+  // Which local day it is where the person is, not where the server is.
+  const local = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
+  for (let d = 0; d < days && out.length < count; d++) {
+    const parts = local.formatToParts(new Date(now + d * 86_400_000));
+    const get = (t: string) => parts.find((p) => p.type === t)!.value;
+    const [y, m, day] = [Number(get('year')), Number(get('month')) - 1, Number(get('day'))];
     // Weekends are not offered by default. Somebody who wants them can pick
     // a time by hand; suggesting them is a different kind of rudeness.
-    const dow = day.getUTCDay();
-    if (dow === 0 || dow === 6) continue;
-    for (let hour = startHour; hour < endHour && out.length < (opts.count ?? 6); hour++) {
-      const start = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, 0, 0);
+    const dow = get('weekday');
+    if (dow === 'Sat' || dow === 'Sun') continue;
+    for (let hour = startHour; hour < endHour && out.length < count; hour++) {
+      const start = zonedTime(tz, y, m, day, hour);
       if (start < now + 3600_000) continue; // never propose the next hour
       const end = start + step;
       if (blocks.some((b) => b.from < end && b.to > start)) continue;

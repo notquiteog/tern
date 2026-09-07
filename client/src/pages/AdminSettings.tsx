@@ -804,14 +804,30 @@ function recordValue(r: any): string {
   return r.value;
 }
 
+// Every name and value here is on its way to a form at a registrar, so the
+// text itself is the copy button. `text` is what reaches the clipboard and
+// the children are what is shown, which differ whenever a value is too long
+// to print in full.
+function CopyText({ text, children, className }: { text: string; children?: ReactNode; className?: string }) {
+  const toast = useToast();
+  return (
+    <button type="button" className={cls('copy-text', className)} title={`Copy ${text.length > 60 ? text.slice(0, 57) + '…' : text}`} onClick={() => { navigator.clipboard?.writeText(text); toast.success('Copied'); }}>
+      {children ?? text}
+    </button>
+  );
+}
+
 // A registrar's SRV form, already filled in. Every DNS host asks for these
 // seven boxes rather than one value, and the two numbers in the middle are
-// the ones people transpose; each value copies itself on click.
-function SrvFields({ r, copy }: { r: any; copy: (t: string) => void }) {
+// the ones people transpose. The last line is the same record written the
+// way the few hosts with a single value box want it.
+function SrvFields({ r }: { r: any }) {
   const fields: [string, string][] = [['Service', r.srv.service], ['Protocol', r.srv.protocol], ['Name', r.srv.host], ['Priority', String(r.srv.priority)], ['Weight', String(r.srv.weight)], ['Port', String(r.srv.port)], ['Target', r.srv.target]];
   return (
     <dl className="srv-fields">
-      {fields.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd><button type="button" title={`Copy ${v}`} onClick={() => copy(v)}>{v}</button></dd></Fragment>)}
+      {fields.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd><CopyText text={v} /></dd></Fragment>)}
+      <div className="rule" />
+      <dt>One value</dt><dd><CopyText text={recordValue(r)} /></dd>
     </dl>
   );
 }
@@ -850,7 +866,7 @@ function DnsSetup({ data }: { data: any }) {
         <div className="strong mb-8">Trusted mail in five steps</div>
         <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
           <li>At your <b>hosting provider</b>, set the reverse DNS of <code>{dns.serverIp ?? 'the server IP'}</code> to <code>{dns.mailHost}</code>{dns.serverIpv6 && <> — and the same for <code>{dns.serverIpv6}</code>, since mail delivered over IPv6 is judged on that address</>}.</li>
-          <li>At your <b>DNS host</b> (where {dns.domain} is managed), add the records below. Use the copy buttons; long values are fine to paste as one piece. If Cloudflare proxies your DNS, turn the proxy off for these names.</li>
+          <li>At your <b>DNS host</b> (where {dns.domain} is managed), add the records below. Every name and value copies when you click it, whole even where it is shown cut short. If Cloudflare proxies your DNS, turn the proxy off for these names.</li>
           <li>Press <b>Check DNS</b>. Every record shows found, missing or differs, with what the resolver saw.</li>
           <li>Once the required rows are green, send a message to a Gmail address and open "Show original": SPF, DKIM and DMARC should say PASS.</li>
           <li>Add a brand logo (next tab) so your mail carries it, and switch MTA-STS to enforce once its two records are green.</li>
@@ -868,14 +884,13 @@ function DnsSetup({ data }: { data: any }) {
         <div key={g} className="card">
           <div className="card-title"><h2>{GROUP_TITLES[g][0]}</h2><span className="small muted">{GROUP_TITLES[g][1]}</span></div>
           {g === 'clients' && dns.records.some((r: any) => r.group === 'clients' && r.type === 'SRV') && (
-            <p className="small muted mb-8" style={{ marginTop: 0 }}>Nearly every DNS host splits an SRV record into its own boxes — Service, Protocol, Name, Priority, Weight, Port and Target — so each SRV row below says which piece goes in which box, and each one copies on click. If yours asks only for a name and a value instead, use the full name in the Name column and <code>priority weight port target</code> (the <b>Value</b> button copies exactly that).</p>
+            <p className="small muted mb-8" style={{ marginTop: 0 }}>Nearly every DNS host splits an SRV record into its own boxes — Service, Protocol, Name, Priority, Weight, Port and Target — so each SRV row below says which piece goes in which box. If yours asks only for a name and a value instead, use the name on the left and the <b>one value</b> line under the rule.</p>
           )}
           <DataTable rows={dns.records.filter((r: any) => r.group === g)} rowKey={(r: any) => r.id} minWidth={720} columns={[
             { key: 'type', header: 'Type', width: 70, cell: (r: any) => <Badge>{r.type}</Badge> },
-            { key: 'name', header: 'Name', primary: true, className: 'mono small', cell: (r: any) => <span style={{ display: 'block', maxWidth: 260, overflowWrap: 'anywhere' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)', fontWeight: 400 }}>{r.purpose}</div>}</span> },
-            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{r.type === 'SRV' && r.srv ? <SrvFields r={r} copy={copy} /> : recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning-text)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
+            { key: 'name', header: 'Name', primary: true, className: 'mono small', cell: (r: any) => <span style={{ display: 'block', maxWidth: 260, overflowWrap: 'anywhere' }}><CopyText text={r.type === 'PTR' ? (r.ip ?? r.name) : r.name}>{r.name}</CopyText>{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)', fontWeight: 400 }}>{r.purpose}</div>}</span> },
+            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{r.type === 'SRV' && r.srv ? <SrvFields r={r} /> : <CopyText text={recordValue(r)}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}</CopyText>}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning-text)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
             { key: 'status', header: 'Status', width: 100, cell: (r: any) => { const c = checks[r.id]; return c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>; } },
-            { key: 'act', actions: true, cell: (r: any) => <>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></> },
           ]} />
           {g === 'recommended' && sts && (
             <div className="row mt-16 wrap">
@@ -971,7 +986,7 @@ function BrandLogo({ domain }: { domain: string }) {
         <div className="row gap-16 wrap" style={{ alignItems: 'center' }}>
           <div style={{ width: 112, height: 112, borderRadius: 24, overflow: 'hidden', background: 'var(--bg-sunken)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--glow-soft)' }}>{brand ? <img src={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} alt="Brand logo" style={{ width: '100%', height: '100%' }} /> : <span className="faint small">none</span>}</div>
           <div className="col gap-4 flex-1">
-            {brand ? <div className="small">Hosted at <code>{brand.url}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.url); toast.success('Copied'); }}>Copy</Button></div> : <div className="small muted">No logo yet. Drop an image here, upload one, or generate a default avatar below.</div>}
+            {brand ? <div className="small">Hosted at <CopyText text={brand.url}><code>{brand.url}</code></CopyText></div> : <div className="small muted">No logo yet. Drop an image here, upload one, or generate a default avatar below.</div>}
             {brand?.report?.removedAttributes !== undefined && <div className="small muted">Last import: {Object.values(brand.report.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0)} metadata elements and {brand.report.removedAttributes} attributes removed, {brand.report.stylesConverted ?? 0} style rules converted, coordinates rounded to {brand.report.precision ?? 3} decimals.</div>}
             <div className="row gap-4 wrap"><Button size="sm" icon={<Upload size={13} />} loading={busy || Boolean(tracing)} onClick={() => input.current?.click()}>Upload image or SVG</Button>{brand && <a className="btn btn-sm" href={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} download={`${domain}.svg`}><Download size={13} />Download SVG</a>}{brand && <Button size="sm" variant="ghost" onClick={() => runTrace(`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`, 'svg')}>Simplify by tracing</Button>}{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
             <div className="help-text">Square works best. The result is SVG Tiny PS: no scripts, no external references, no bitmaps, no metadata, under {Math.round(maxBytes / 1024)} KB.</div>
@@ -1003,7 +1018,7 @@ function BrandLogo({ domain }: { domain: string }) {
         {brand ? (
           <>
             <div className="small mb-8">Publish this TXT record at <code>default._bimi.{domain}</code> (it is also listed under DNS setup):</div>
-            <div className="row"><code className="small" style={{ overflowWrap: 'anywhere', flex: 1 }}>{brand.record}</code><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.record); toast.success('Copied'); }}>Copy</Button></div>
+            <CopyText text={brand.record}><code className="small" style={{ overflowWrap: 'anywhere' }}>{brand.record}</code></CopyText>
           </>
         ) : <div className="small muted">The record appears once a logo exists.</div>}
       </div>

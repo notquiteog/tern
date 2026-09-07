@@ -15,7 +15,7 @@ import { requireCapability } from '../services/capabilities.js';
 import { powGuard } from '../services/workGuard.js';
 import { getUserAccount } from '../services/accounts.js';
 import { generateBrief, getBrief } from '../services/brief.js';
-import { addCommitment, closeCommitment, listCommitments, openCount } from '../services/commitments.js';
+import { addCommitment, closeCommitment, listCommitments, moveCommitment, openCount } from '../services/commitments.js';
 import { draftRule, draftSearch } from '../services/nlRules.js';
 import { buildReply, freeSlots, getInvitation, invitationsFor, recordReply, upcoming } from '../services/calendarMail.js';
 import { MAX_AUDIO_BYTES, AUDIO_TYPES, transcribe, voiceConfigured } from '../services/voice.js';
@@ -64,6 +64,19 @@ assistRouter.post('/commitments', requireCapability('commitments'), async (req, 
   res.json({ id: await addCommitment(req.user!.id, b) });
 });
 
+// Moving one, which is what "reschedule" and "nudge" both do to the ledger.
+//
+// The draft itself is written by /api/ai/draft; this is only the bookkeeping,
+// and it is deliberately a separate call made when the mail is actually
+// handed to the composer. Generating a draft you then abandon should not move
+// a date in the ledger.
+assistRouter.post('/commitments/:id/move', requireCapability('commitments'), async (req, res) => {
+  const b = parse(z.object({ dueAt: z.string().datetime().nullable().optional() }), req.body);
+  const moved = await moveCommitment(req.user!.id, idParam(req.params.id), b.dueAt);
+  if (!moved) throw notFound('Commitment not found, or already closed');
+  res.json({ commitment: moved });
+});
+
 assistRouter.post('/commitments/:id/close', requireCapability('commitments'), async (req, res) => {
   const { status } = parse(z.object({ status: z.enum(['done', 'dropped']) }), req.body);
   if (!(await closeCommitment(req.user!.id, idParam(req.params.id), status))) throw notFound('That is not an open commitment');
@@ -107,12 +120,21 @@ assistRouter.get('/invitations/message/:id', requireCapability('calendar'), asyn
   res.json({ invitations: await invitationsFor(req.user!.id, idParam(req.params.id)) });
 });
 
+// Times to offer somebody, worked out from the calendar and never from the
+// model. The zone comes from the browser because "nine in the morning" is a
+// fact about where the person is sitting, and the server has no way to know
+// that: no IP is stored, and the account's send window is about when mail may
+// leave rather than when its owner is awake.
 assistRouter.get('/invitations/slots', requireCapability('calendar'), async (req, res) => {
+  const num = (v: unknown, dflt: number) => (Number.isFinite(Number(v)) ? Number(v) : dflt);
   res.json({
     slots: await freeSlots(req.user!.id, {
-      minutes: Number(req.query.minutes ?? 30),
-      days: Number(req.query.days ?? 10),
-      count: Number(req.query.count ?? 6),
+      minutes: num(req.query.minutes, 30),
+      days: num(req.query.days, 10),
+      count: num(req.query.count, 6),
+      startHour: num(req.query.startHour, 9),
+      endHour: num(req.query.endHour, 17),
+      tz: typeof req.query.tz === 'string' ? req.query.tz.slice(0, 64) : undefined,
     }),
   });
 });
