@@ -112,8 +112,13 @@ function FeatureRow({ cap, busy, onToggle }: { cap: CapabilityInfo; busy: boolea
       <div className="feature-main">
         <div className="feature-head">
           <strong>{cap.label}</strong>
-          {cap.readsMail && <Badge kind="warning"><Eye size={11} /> Reads your mail</Badge>}
-          {!cap.readsMail && cap.usesAi && <Badge kind="info"><EyeOff size={11} /> Does not read your mail</Badge>}
+          {/* The reassuring half is worth saying out loud, and it is worth
+              saying about the cheap deterministic features most of all —
+              those are the ones somebody is most likely to want and least
+              likely to know are safe. */}
+          {cap.readsMail
+            ? <Badge kind="warning"><Eye size={11} /> Reads your mail</Badge>
+            : <Badge kind="info"><EyeOff size={11} /> Does not read your mail</Badge>}
           {cap.usesAi && <Badge kind="accent"><Brain size={11} /> Uses the model</Badge>}
           {cap.heavy && <Badge><Gauge size={11} /> Uses real CPU</Badge>}
           {cap.adminOnly && <Badge><Lock size={11} /> Admin</Badge>}
