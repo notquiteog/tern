@@ -1763,3 +1763,167 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
      Send, which is the point of it being last to begin with. */
   .compose-foot > :last-child { margin-left: auto; }
 }
+
+/* ---------- Proposing times ---------- */
+
+/* The slot picker, in the menu the button opens. The list is a grid rather
+   than a column because a fortnight of half-hours is a shape — three per row
+   makes "Tuesday has two, Wednesday none" readable at a glance, which a
+   single column of fourteen rows never is. */
+.slots { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.slots-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.slots-title { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+.slots-note { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+.slots-note svg { flex: none; margin-top: 2px; }
+.slots-error { color: var(--danger-text); }
+.slots-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 232px; overflow-y: auto; }
+.slot {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg-elev); color: var(--text-2); cursor: pointer; text-align: left;
+  font: inherit; transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.slot:hover { border-color: rgba(var(--accent-rgb), .45); }
+.slot:focus-visible { outline: none; box-shadow: var(--focus); }
+/* Ticked slots are the ones going into the email, so they carry the accent
+   rather than a checkbox: the chip is the state. */
+.slot.on { border-color: var(--accent); background: rgba(var(--accent-rgb), .12); color: var(--accent-text); }
+.slot-day { font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.slot-time { font-size: 13px; font-variant-numeric: tabular-nums; }
+.slots-foot { display: flex; }
+.slots-foot .btn { flex: 1; justify-content: center; }
+
+/* The chip beside the model's three suggestions. It borrows their shape so
+   the row reads as one set of options, and is drawn in the neutral border
+   rather than the accent because it is the one that is not a guess. */
+.quick-slot {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+  border-radius: 999px; border: 1px dashed var(--border-strong); background: var(--bg-elev);
+  color: var(--text-2); font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+.quick-slot:hover { background: var(--bg-sunken); color: var(--text); transform: translateY(-1px); }
+.quick-slot:focus-visible { outline: none; box-shadow: var(--focus); }
+
+/* ---------- The command palette ---------- */
+
+/* The input is its own row now that there is an icon in it, and the list
+   below is grouped. Everything else about the frame is unchanged. */
+.palette-input { display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--border); color: var(--text-3); }
+.palette-input svg { flex: none; }
+.palette-input input { height: 52px; border: 0; border-bottom: 0; padding: 0; }
+.palette-list { max-height: 56vh; }
+.palette-group + .palette-group { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 4px; }
+.palette-group-title { padding: 6px 12px 3px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); }
+/* Two lines where there is a second one worth having, one where there is not,
+   and the row keeps the same height either way so a list that gains a subtitle
+   as results land does not shudder. */
+.palette-item { align-items: center; gap: 10px; min-height: 38px; }
+.palette-icon { display: flex; flex: none; width: 18px; color: var(--text-3); }
+.palette-item.active .palette-icon { color: var(--accent-text); }
+.palette-text { display: flex; flex-direction: column; gap: 0; min-width: 0; flex: 1; }
+.palette-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-sub { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- The review queue ---------- */
+
+.review-help { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+.review-group-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.review-group-icon { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 8px; background: var(--accent-soft); color: var(--accent-text); }
+/* The focused card carries a ring rather than a background: the card already
+   sits on its own surface, and tinting it would fight the amber a held draft
+   is wearing. */
+.review-card { transition: box-shadow var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease); }
+.review-card.focused { border-color: rgba(var(--accent-rgb), .5); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .14); }
+.review-card.held { border-left: 3px solid var(--warning); }
+/* The message being answered, as a way into the conversation. It is a button
+   the width of the card because the whole block is the target — a chevron on
+   its own is a smaller thing to hit than the two lines beside it. */
+.review-original {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; margin-bottom: 8px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); text-align: left; font: inherit; cursor: pointer; position: relative;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.review-original:disabled { cursor: default; }
+.review-original:not(:disabled):hover { border-color: rgba(var(--accent-rgb), .4); background: var(--bg-elev); }
+.review-original:focus-visible { outline: none; box-shadow: var(--focus); }
+.review-original-go { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--text-3); opacity: 0; transition: opacity var(--dur-1) var(--ease); }
+.review-original:hover .review-original-go { opacity: .8; }
+
+/* ---------- Arguing with the priority ordering ---------- */
+
+.why-say { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* ---------- The guard's two moves ---------- */
+
+/* Quiet buttons inside a coloured banner. Filled ones would make the banner
+   look like a dialogue demanding an answer, and most of the time the right
+   response to the guard is to read the message and carry on. */
+.guard-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.guard-act {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg-elev);
+  color: var(--text-2); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.guard-act svg { margin: 0; color: inherit; }
+.guard-act:hover { background: var(--bg); color: var(--text); }
+.guard-act:focus-visible { outline: none; box-shadow: var(--focus); }
+.guard-act-danger:hover { color: var(--danger-text); border-color: var(--danger); }
+
+/* ---------- Snoozing to a date the conversation already holds ---------- */
+
+.snooze-commitments { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* ---------- Moving a commitment ---------- */
+
+/* The panel opens inside the row, in the second column, so it lines up under
+   the promise it is about rather than under the avatar. It is tinted to read
+   as part of the row and not as a card dropped on top of one. */
+.commit-row-moving { background: var(--bg-elev); }
+.commit-move {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 10px; padding: 11px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); animation: pop .12s;
+}
+.commit-move-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); }
+.commit-move-close { margin-left: auto; display: flex; padding: 2px; border: 0; border-radius: 6px; background: none; color: var(--text-3); cursor: pointer; }
+.commit-move-close:hover { background: var(--bg-sunken); color: var(--text); }
+.commit-move .field { margin: 0; }
+/* The date input and the three shortcuts share a line and wrap together. The
+   input is given a floor rather than a share of the row: a date box narrower
+   than its own placeholder is unusable in every browser that draws one. */
+.commit-move-dates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.commit-move-dates .input { flex: 0 1 168px; min-width: 148px; }
+.commit-date {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 11px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elev);
+  color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.commit-date:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text); }
+.commit-date:focus-visible { outline: none; box-shadow: var(--focus); }
+.commit-date.on { border-color: var(--accent); background: rgba(var(--accent-rgb), .12); color: var(--accent-text); }
+.commit-move-times { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 9px; background: rgba(var(--accent-rgb), .08); color: var(--accent-text); }
+.commit-move-times svg { flex: none; }
+.commit-move-draft { display: flex; flex-direction: column; gap: 6px; }
+.commit-move-draft .textarea { font-size: 13.5px; line-height: 1.55; }
+.commit-move-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.commit-act.on { background: var(--accent-soft); color: var(--accent-text); }
+
+/* ---------- What a template and a contact are actually doing ---------- */
+
+.tpl-rate { display: inline-flex; align-items: center; gap: 4px; color: var(--success-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.contact-standing { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-weight: 500; white-space: nowrap; }
+.contact-standing-replied { color: var(--success-text); }
+/* Only silence that has lasted long enough to mean something is coloured.
+   Everything under a week is somebody who has not got to it yet. */
+.contact-standing.quiet { color: var(--warning-text); }
+
+@media (max-width: 640px) {
+  .slots-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .commit-move-dates .input { flex: 1 1 100%; }
+  .review-group-head { align-items: flex-start; }
+}

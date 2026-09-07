@@ -381,7 +381,7 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
       full += piece;
       send('token', { t: piece });
     }
-    send('done', { text: finalizeOutput(full, b.mode, { recipient: input.recipient, senderName: input.senderName, senderEmail: input.senderEmail }) });
+    send('done', { text: finalizeOutput(full, b.mode, { recipient: input.recipient, senderName: input.senderName, senderEmail: input.senderEmail, commitment: input.commitment }) });
   } catch (e) {
     send('error', { error: (e as Error).message });
   }

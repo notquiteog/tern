@@ -15,6 +15,11 @@ reviewRouter.use(requireAuth);
 reviewRouter.get('/', async (req, res) => {
   const rows = await query<any>(
     `SELECT r.*, c.email, c.first_name, c.last_name, c.company, s.name AS sequence_name, s.id AS sequence_id, a.email AS account_email, st.position AS step_position, rp.name AS responder_name,
+            -- The thread the reply belongs to, so the queue can offer the
+            -- conversation rather than only a two-line quotation of it.
+            -- Deciding whether a draft is right usually means reading what
+            -- it is answering.
+            (SELECT x.thread_id FROM emails x WHERE x.id=r.reply_to_email_id) AS thread_id,
             (SELECT jsonb_build_object('subject', x.subject, 'from', x.from_addr, 'preview', x.preview, 'received_at', x.received_at) FROM emails x WHERE x.id=r.reply_to_email_id) AS original
      FROM review_queue r LEFT JOIN contacts c ON c.id=r.contact_id LEFT JOIN enrollments e ON e.id=r.enrollment_id LEFT JOIN sequences s ON s.id=e.sequence_id JOIN accounts a ON a.id=r.account_id LEFT JOIN sequence_steps st ON st.id=r.step_id LEFT JOIN responders rp ON rp.id=r.responder_id
      WHERE r.user_id=$1 AND r.status='pending' ORDER BY r.created_at`,

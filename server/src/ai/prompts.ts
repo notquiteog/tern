@@ -434,7 +434,7 @@ export function writeDate(iso: string, tz?: string): string {
 const GREETING_RE = /^\s*(hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[\s,]*([^\n,:!]*)[,:!]?/i;
 const NEUTRAL = new Set(['there', 'all', 'team', 'everyone', 'both', 'folks', 'friend', 'sir', 'madam', 'sir or madam', '']);
 
-export interface FinalizeContext { recipient?: DraftInput['recipient']; senderName?: string; senderEmail?: string }
+export interface FinalizeContext { recipient?: DraftInput['recipient']; senderName?: string; senderEmail?: string; commitment?: DraftInput['commitment'] }
 
 // The salutation always names the actual recipient. A small model will
 // sometimes skip the greeting, greet the sender, or borrow a name from the
@@ -550,11 +550,66 @@ function collectQuickReplies(raw: string, names: string[], maxWords: number, max
   return out;
 }
 
+// The date a reschedule commits to, guaranteed the way the salutation is.
+//
+// This is not a hypothetical. Handed "Thursday 10 September at 12:00", the
+// small model this ships with wrote "Thursday, October 9th at noon" — a
+// confident, fluent, wrong date, in an email whose entire purpose is to name
+// the right one. A greeting to the wrong person is embarrassing; a delivery
+// date the recipient then plans around is worse, and unlike the greeting it
+// is not obvious to whoever presses send.
+//
+// So the same treatment: the model's phrasing is kept and the fact is
+// corrected afterwards, from the value the ledger is being moved to.
+const DATE_EXPR = new RegExp(
+  [
+    // "Thursday, October 9th at noon", "Fri 11 Sept at 14:00"
+    '(?:(?:mon|tues?|wednes|thurs?|fri|satur|sun)day|mon|tue|wed|thu|fri|sat|sun)\\b[,]?(?:\\s+the)?(?:\\s+\\d{1,2}(?:st|nd|rd|th)?)?(?:\\s+(?:of\\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)?(?:\\s+\\d{1,2}(?:st|nd|rd|th)?)?(?:\\s+at\\s+(?:\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|noon|midday))?',
+    // "October 9th at 12:00", "9 October"
+    '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s+\\d{1,2}(?:st|nd|rd|th)?(?:\\s+at\\s+(?:\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|noon|midday))?',
+    '\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*',
+    // "next week", "tomorrow", "the end of the month"
+    '(?:next|this)\\s+(?:week|month)',
+    'tomorrow',
+  ].join('|'),
+  'gi',
+);
+
+// The part of the written date that must appear for it to count as stated:
+// "Thursday 10 September at 12:00" is satisfied by "10 September", because a
+// model that drops the weekday or the time has still named the right day.
+function dayPart(written: string): string {
+  return written.replace(/^[a-z]+\s+/i, '').replace(/\s+at\s+.*$/i, '').trim();
+}
+
+export function ensureCommitmentDate(text: string, mode: DraftMode, commitment?: DraftInput['commitment']): string {
+  const want = commitment?.now;
+  if (!want || (mode !== 'reschedule' && mode !== 'nudge')) return text;
+  const day = dayPart(want);
+  // Already there, however it was phrased around: nothing to do.
+  if (day && text.toLowerCase().includes(day.toLowerCase())) return text;
+
+  const found = text.match(DATE_EXPR) ?? [];
+  // Exactly one date expression, and it is not the right one: it is the date
+  // the model invented, and swapping it keeps the sentence the model built
+  // around it.
+  if (found.length === 1) return text.replace(DATE_EXPR, want);
+  // None to replace, or several — where rewriting each one is more likely to
+  // break a sentence ("I will call Monday about the Friday delivery") than to
+  // fix it. Saying it plainly at the end is the honest repair.
+  const sep = text.trim().endsWith('.') || text.trim().endsWith('?') ? ' ' : '. ';
+  const paragraphs = text.trimEnd().split(/\n{2,}/);
+  const last = paragraphs.length - 1;
+  paragraphs[last] = `${paragraphs[last].trimEnd()}${sep}To be precise: ${want}.`;
+  return paragraphs.join('\n\n');
+}
+
 export function finalizeOutput(raw: string, mode: DraftMode, ctx: FinalizeContext = {}): string {
   if (mode === 'quick_replies') return parseQuickReplies(raw, [ctx.recipient?.name ?? '', ctx.senderName ?? '']).join('\n');
   let t = cleanOutput(raw, mode);
   if (['compose', 'reply', 'personalize', 'rewrite', 'expand', 'shorten', 'polish', 'reschedule', 'nudge'].includes(mode)) t = stripModelSignature(t, ctx);
   t = ensureGreeting(t, mode, ctx.recipient);
+  t = ensureCommitmentDate(t, mode, ctx.commitment);
   return t.trim();
 }
 

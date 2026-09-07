@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Sparkles, X, Loader2, Check, RotateCcw } from 'lucide-react';
-import { apiStream } from '../api';
+import { streamWithWork } from '../lib/work';
 import { Button, IconButton } from './ui';
 import { useAiStatus } from '../lib/queries';
 import { AiThinking, useAiThinking } from './AiThinking';
@@ -38,7 +38,7 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
     abort.current?.abort();
     abort.current = new AbortController();
     try {
-      await apiStream('/api/ai/draft', { mode, instruction: instruction || undefined, tone, length, accountId: context.accountId ?? null, contactId: context.contactId ?? null, threadKey: context.threadKey ?? null, draft: getDraft() || undefined, subject: context.subject, recipientEmail: context.recipientEmail, recipientName: context.recipientName }, {
+      await streamWithWork('ai', '/api/ai/draft', { mode, instruction: instruction || undefined, tone, length, accountId: context.accountId ?? null, contactId: context.contactId ?? null, threadKey: context.threadKey ?? null, draft: getDraft() || undefined, subject: context.subject, recipientEmail: context.recipientEmail, recipientName: context.recipientName }, {
         signal: abort.current.signal,
         onEvent: (ev, data) => {
           if (thinking.onEvent(ev, data)) return;

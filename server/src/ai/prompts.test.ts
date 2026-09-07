@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, threadBudgetChars, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureCommitmentDate, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -257,4 +257,116 @@ test('a voice note that fights the greeting rule is told which one wins', () => 
   // Modes with no salutation of their own have nothing to contradict.
   const edit = buildMessages({ mode: 'polish', draft: 'hello', voice: 'Very terse.' })[1].content;
   assert.ok(!edit.includes('which always wins'));
+});
+
+test('writeDate writes a date a model can put in a sentence, and only names a time when there is one', () => {
+  // Midnight in the target zone is a date, not an appointment.
+  assert.equal(writeDate('2026-09-10T00:00:00Z', 'UTC'), 'Thursday 10 September');
+  // A real time survives, in the reader's zone rather than the server's.
+  assert.equal(writeDate('2026-09-10T09:30:00Z', 'UTC'), 'Thursday 10 September at 09:30');
+  // Same instant, a zone four hours ahead: a different clock and, here, a
+  // different day — which is the whole reason the zone is passed at all.
+  assert.equal(writeDate('2026-09-10T21:00:00Z', 'Asia/Dubai'), 'Friday 11 September at 01:00');
+  // A zone this build has never heard of must not throw.
+  assert.ok(writeDate('2026-09-10T09:30:00Z', 'Mars/Olympus').startsWith('Thursday 10 September'));
+  assert.equal(writeDate('not a date'), '');
+});
+
+test('reschedule is given the promise, the reason and both dates, and is told not to grovel', () => {
+  const p = buildMessages({
+    mode: 'reschedule',
+    commitment: { kind: 'owed', what: 'Send the revised quote', reason: 'the pricing review slipped', was: 'Tuesday 8 September', now: 'Friday 11 September' },
+    recipient: { name: 'Dana Osei', email: 'dana@acme.example' },
+  })[1].content;
+  assert.ok(p.includes('What you promised: Send the revised quote'));
+  assert.ok(p.includes('You had said: Tuesday 8 September.'));
+  assert.ok(p.includes('the pricing review slipped'));
+  assert.ok(p.includes('The new commitment is Friday 11 September'));
+  assert.ok(p.includes('Apologise exactly once'));
+  // The addressing rules apply to it: it is a whole email to a real person.
+  assert.ok(p.includes('exactly "Hi Dana,"'));
+});
+
+test('a reschedule with no new date is told to say so rather than invent one', () => {
+  const p = buildMessages({ mode: 'reschedule', commitment: { kind: 'owed', what: 'Send the deck' } })[1].content;
+  assert.ok(p.includes('There is no new date yet'));
+  assert.ok(p.includes('do not invent a date'));
+  assert.ok(!p.includes('The new commitment is'));
+});
+
+test('a nudge chases without reproaching, and states nothing it was not given', () => {
+  const p = buildMessages({ mode: 'nudge', commitment: { kind: 'awaiting', what: 'Their answer on the date' } })[1].content;
+  assert.ok(p.includes('What you are waiting for: Their answer on the date'));
+  assert.ok(p.includes('no reproach'));
+  assert.ok(p.includes('as per my last email'));
+  assert.ok(p.includes('Do not state any date, figure or detail that is not given above.'));
+});
+
+test('both new modes are tuned low and keep the turn stops', () => {
+  for (const mode of ['reschedule', 'nudge'] as const) {
+    const t = modeTuning(mode);
+    assert.equal(t.temperature, 0.45);
+    assert.ok((t.maxTokens ?? 0) > 0 && (t.maxTokens ?? 0) <= 400);
+    assert.ok(t.stop?.includes('\nUser:'));
+  }
+});
+
+test('the salutation guarantee covers the two new modes', () => {
+  const r = { name: 'Dana Osei', email: 'dana@acme.example' };
+  assert.ok(ensureGreeting('The quote will be Friday.', 'reschedule', r).startsWith('Hi Dana,'));
+  assert.ok(ensureGreeting('Hi Bob,\n\nAny news?', 'nudge', r).startsWith('Hi Dana,'));
+  // A mode that edits text the person wrote is still left alone.
+  assert.equal(ensureGreeting('Fixed text.', 'polish', r), 'Fixed text.');
+});
+
+test('a reschedule that names the wrong date has it corrected, not left to be planned around', () => {
+  const c = { kind: 'owed' as const, what: 'Send the quote', now: 'Thursday 10 September at 12:00' };
+  // The real failure, observed from the model this ships with.
+  const wrong = 'Hi Alice,\n\nWe need to reschedule. The new time is Thursday, October 9th at noon. Sorry about this.';
+  const fixed = ensureCommitmentDate(wrong, 'reschedule', c);
+  assert.ok(fixed.includes('Thursday 10 September at 12:00'));
+  assert.ok(!/October 9th/.test(fixed));
+  // The sentence the model built around the date survives the swap.
+  assert.ok(fixed.includes('The new time is Thursday 10 September at 12:00'));
+});
+
+test('a draft that already names the right day is left exactly alone', () => {
+  const c = { kind: 'owed' as const, what: 'Send the quote', now: 'Thursday 10 September at 12:00' };
+  for (const ok of [
+    'Hi Alice,\n\nIt will be with you on 10 September.',
+    'Hi Alice,\n\nThursday 10 September at 12:00 is the new date.',
+    'Hi Alice,\n\nI will send it 10 September, first thing.',
+  ]) assert.equal(ensureCommitmentDate(ok, 'reschedule', c), ok);
+});
+
+test('with no date to replace, or several, the correction is stated plainly instead', () => {
+  const c = { kind: 'owed' as const, what: 'Send the quote', now: 'Friday 11 September' };
+  const none = ensureCommitmentDate('Hi Alice,\n\nIt is going to be late, sorry.', 'reschedule', c);
+  assert.ok(none.endsWith('To be precise: Friday 11 September.'));
+  assert.ok(none.startsWith('Hi Alice,'), 'the greeting is untouched');
+
+  // Two dates: rewriting both would mangle a sentence that is partly right.
+  const many = ensureCommitmentDate('Hi Alice,\n\nI will call Monday about the Tuesday delivery.', 'reschedule', c);
+  assert.ok(many.includes('Monday') && many.includes('Tuesday'));
+  assert.ok(many.endsWith('To be precise: Friday 11 September.'));
+});
+
+test('the date guarantee applies only where a date was committed to', () => {
+  const c = { kind: 'owed' as const, what: 'Send the quote', now: 'Friday 11 September' };
+  const t = 'Hi Alice,\n\nIt is going to be late.';
+  // No new date given: nothing is asserted, so nothing is appended.
+  assert.equal(ensureCommitmentDate(t, 'reschedule', { kind: 'owed', what: 'x' }), t);
+  // Not a mode that commits to anything.
+  assert.equal(ensureCommitmentDate(t, 'reply', c), t);
+  assert.equal(ensureCommitmentDate(t, 'reschedule', undefined), t);
+});
+
+test('finalizeOutput applies the greeting and the date guarantee together', () => {
+  const out = finalizeOutput('Hi Bob,\n\nThe new time is October 9th.', 'reschedule', {
+    recipient: { name: 'Alice Probe', email: 'alice@probe.test' },
+    commitment: { kind: 'owed', what: 'Send the quote', now: 'Thursday 10 September at 12:00' },
+  });
+  assert.ok(out.startsWith('Hi Alice,'), 'greets the actual recipient');
+  assert.ok(out.includes('Thursday 10 September at 12:00'));
+  assert.ok(!/October/.test(out));
 });

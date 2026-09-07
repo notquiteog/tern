@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff, Lock } from 'lucide-react';
+import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff, Lock, Reply, Clock } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose } from '../state/compose';
@@ -10,9 +10,50 @@ import { useDebounced } from '../lib/hooks';
 import { Avatar, Badge, Button, Confirm, Drawer, Empty, Field, IconButton, Input, Menu, MenuItem, Modal, PageHeader, Select, Spinner, Textarea, Callout } from '../components/ui';
 import { AvatarUploader } from './Settings';
 import { DataTable } from '../components/DataTable';
-import { fmtDate, fmtDateTime, fmtNumber, plural } from '../lib/format';
+import { cls, fmtDate, fmtDateTime, fmtNumber, plural } from '../lib/format';
 
 const STATUS_KIND: Record<string, any> = { active: 'success', replied: 'accent', unsubscribed: 'danger', bounced: 'danger', do_not_contact: 'danger' };
+
+// Where a contact stands, said in words.
+//
+// The list carried two raw dates — "last contacted" and "replied" — and left
+// the reader to subtract one from the other twenty times down a page. The
+// question anybody actually opens this list with is "who has gone quiet", and
+// the answer was sitting in those two columns unsaid.
+//
+// Nothing new is read to work this out. Both dates were already on the row.
+export type Standing =
+  | { kind: 'new'; label: string }
+  | { kind: 'replied'; label: string; at: string }
+  | { kind: 'waiting'; label: string; days: number; at: string };
+
+export function standingOf(c: { last_contacted_at?: string | null; last_replied_at?: string | null }): Standing {
+  if (!c.last_contacted_at) return { kind: 'new', label: 'Not contacted' };
+  const sent = new Date(c.last_contacted_at).getTime();
+  const back = c.last_replied_at ? new Date(c.last_replied_at).getTime() : 0;
+  // A reply older than the last thing we sent is not an answer to it: they
+  // replied once, and have not replied to this.
+  if (back >= sent) return { kind: 'replied', label: 'Replied', at: c.last_replied_at! };
+  const days = Math.max(0, Math.floor((Date.now() - sent) / 86_400_000));
+  return {
+    kind: 'waiting',
+    label: days === 0 ? 'Sent today' : `Quiet ${days}d`,
+    days,
+    at: c.last_contacted_at,
+  };
+}
+
+// How long is long enough to mean something. Under a week, silence is just
+// somebody who has not got to it yet, and colouring it amber would make amber
+// mean nothing by the second screen — the same rule `dueIn` follows.
+const QUIET_DAYS = 7;
+
+const SORTS: { value: string; label: string; sort: string; dir: 'asc' | 'desc' }[] = [
+  { value: 'added', label: 'Recently added', sort: 'created_at', dir: 'desc' },
+  { value: 'quiet', label: 'Quiet longest', sort: 'last_contacted_at', dir: 'asc' },
+  { value: 'replied', label: 'Recently replied', sort: 'last_replied_at', dir: 'desc' },
+  { value: 'company', label: 'Company', sort: 'company', dir: 'asc' },
+];
 
 export default function ContactsPage() {
   const { id } = useParams();
@@ -25,6 +66,8 @@ export default function ContactsPage() {
   const dq = useDebounced(q, 250);
   const tag = params.get('tag') ?? '';
   const status = params.get('status') ?? '';
+  const sortKey = params.get('sort') ?? 'added';
+  const sorting = SORTS.find((x) => x.value === sortKey) ?? SORTS[0];
   const page = Math.max(1, Number(params.get('page') ?? 1));
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<any | null | 'new'>(null);
@@ -33,12 +76,12 @@ export default function ContactsPage() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const { data: tags = [] } = useContactTags();
-  const { data, isLoading } = useQuery({ queryKey: ['contacts', dq, tag, status, page], queryFn: () => api.get<{ contacts: any[]; total: number; size: number }>(`/api/contacts?q=${encodeURIComponent(dq)}&tag=${encodeURIComponent(tag)}&status=${status}&page=${page}`), placeholderData: (p) => p });
+  const { data, isLoading } = useQuery({ queryKey: ['contacts', dq, tag, status, page, sortKey], queryFn: () => api.get<{ contacts: any[]; total: number; size: number }>(`/api/contacts?q=${encodeURIComponent(dq)}&tag=${encodeURIComponent(tag)}&status=${status}&page=${page}&sort=${sorting.sort}&dir=${sorting.dir}`), placeholderData: (p) => p });
   const { data: stats } = useQuery({ queryKey: ['contact-stats'], queryFn: () => api.get<any>('/api/contacts/stats') });
   const rows = data?.contacts ?? [];
   const total = data?.total ?? 0;
   const size = data?.size ?? 50;
-  useEffect(() => { setSelected(new Set()); }, [dq, tag, status, page]);
+  useEffect(() => { setSelected(new Set()); }, [dq, tag, status, page, sortKey]);
   const setParam = (k: string, v: string) => setParams((p) => { if (v) p.set(k, v); else p.delete(k); p.delete('page'); return p; });
   const invalidate = () => { qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['contact-stats'] }); qc.invalidateQueries({ queryKey: ['contact-tags'] }); };
 
@@ -59,6 +102,12 @@ export default function ContactsPage() {
         <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => { setQ(e.target.value); setParam('q', e.target.value); }} placeholder="Search name, email, company" /></div>
         <Select value={tag} onChange={(e) => setParam('tag', e.target.value)} style={{ width: 180 }}><option value="">All tags</option>{tags.map((t) => <option key={t.tag} value={t.tag}>{t.tag} ({t.n})</option>)}</Select>
         <Select value={status} onChange={(e) => setParam('status', e.target.value)} style={{ width: 170 }}><option value="">Any status</option><option value="active">Active</option><option value="replied">Replied</option><option value="unsubscribed">Unsubscribed</option><option value="bounced">Bounced</option><option value="do_not_contact">Do not contact</option></Select>
+        {/* The server has always accepted these orderings and the page never
+            offered them. "Quiet longest" is the one worth having: it is the
+            list of people an outreach inbox exists to notice. */}
+        <Select value={sortKey} onChange={(e) => setParam('sort', e.target.value === 'added' ? '' : e.target.value)} style={{ width: 175 }}>
+          {SORTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </Select>
         {selected.size > 0 && (
           <div className="row gap-4 ml-auto">
             <span className="small muted">{selected.size} selected</span>
@@ -82,8 +131,17 @@ export default function ContactsPage() {
               { key: 'company', header: 'Company', className: 'muted', cell: (c) => c.company ? <>{c.company}{c.title ? <span className="faint"> · {c.title}</span> : ''}</> : null },
               { key: 'tags', header: 'Tags', cell: (c) => (c.tags ?? []).length ? <div className="row wrap gap-4">{(c.tags ?? []).slice(0, 3).map((t: string) => <span key={t} className="tag">{t}</span>)}{c.tags?.length > 3 && <span className="small faint">+{c.tags.length - 3}</span>}</div> : null },
               { key: 'status', header: 'Status', cell: (c) => <><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{c.active_enrollments > 0 && <span className="small faint"> · {c.active_enrollments} seq</span>}</> },
-              { key: 'last', header: 'Last contact', className: 'small muted', nowrap: true, cell: (c) => fmtDate(c.last_contacted_at) },
-              { key: 'replied', header: 'Replied', className: 'small muted', nowrap: true, cell: (c) => fmtDate(c.last_replied_at) },
+              { key: 'standing', header: 'Standing', className: 'small', nowrap: true, cell: (c) => {
+                const st = standingOf(c);
+                if (st.kind === 'new') return <span className="faint">{st.label}</span>;
+                const quiet = st.kind === 'waiting' && st.days >= QUIET_DAYS;
+                return (
+                  <span className={cls('contact-standing', `contact-standing-${st.kind}`, quiet && 'quiet')} title={`${st.kind === 'replied' ? 'Last replied' : 'Last contacted'} ${fmtDate(st.at, { always: true })}`}>
+                    {st.kind === 'replied' ? <Reply size={11} /> : <Clock size={11} />}
+                    {st.label}
+                  </span>
+                );
+              } },
               { key: 'act', actions: true, cell: (c) => <><IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton><IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton></> },
             ]} />
           <div className="row mt-16" style={{ justifyContent: 'flex-end' }}><span className="small muted">{(page - 1) * size + 1}–{Math.min(total, page * size)} of {fmtNumber(total)}</span><IconButton label="Previous" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton><IconButton label="Next" disabled={page * size >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton></div>

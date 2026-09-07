@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlarmClock, Archive, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText, Link2Off, Wrench } from 'lucide-react';
-import { api, apiStream } from '../api';
+import { AlarmClock, Archive, Clock, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText, Link2Off, Wrench } from 'lucide-react';
+import { api } from '../api';
+import { streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from './AiThinking';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment } from '../state/compose';
 import { useToast } from '../state/toast';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { useMailboxes } from '../lib/queries';
+import { asksAboutTime, ProposeTimesButton, ProposeTimesChip } from './ProposeTimes';
 import { useMailPrefs } from '../state/mailPrefs';
 import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input } from './ui';
 import { MessageBody } from './MessageBody';
@@ -132,7 +134,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   async function summarize() {
     setSummarizing(true); setSummary(''); summaryThinking.reset();
     try {
-      await apiStream('/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (summaryThinking.onEvent(ev, d)) return; if (ev === 'token') setSummary((s) => (s ?? '') + d.t); if (ev === 'error') toast.error(d.error); } });
+      await streamWithWork('ai', '/api/ai/draft', { mode: 'summarize', threadKey: `${accountId}:${threadId}`, accountId }, { onEvent: (ev, d) => { if (summaryThinking.onEvent(ev, d)) return; if (ev === 'token') setSummary((s) => (s ?? '') + d.t); if (ev === 'error') toast.error(d.error); } });
     } catch (e) { toast.error(e); } finally { setSummarizing(false); }
   }
   async function quickReplies() {
@@ -141,7 +143,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
     const target = replyRecipients({ from: lastInbound.from_addr, replyTo: lastInbound.reply_to, to: lastInbound.to_addr, cc: lastInbound.cc_addr }, me).to[0];
     let text = '';
     try {
-      await apiStream('/api/ai/draft', { mode: 'quick_replies', threadKey: `${accountId}:${threadId}`, accountId, contactId: data?.contact?.id ?? null, recipientEmail: target?.email, recipientName: target?.name ?? undefined }, { onEvent: (ev, d) => { if (quickThinking.onEvent(ev, d)) return; if (ev === 'done') text = d.text; if (ev === 'error') toast.error(d.error); } });
+      await streamWithWork('ai', '/api/ai/draft', { mode: 'quick_replies', threadKey: `${accountId}:${threadId}`, accountId, contactId: data?.contact?.id ?? null, recipientEmail: target?.email, recipientName: target?.name ?? undefined }, { onEvent: (ev, d) => { if (quickThinking.onEvent(ev, d)) return; if (ev === 'done') text = d.text; if (ev === 'error') toast.error(d.error); } });
     } catch (e) { toast.error(e); }
     const items = text.split('\n').map((s) => s.trim()).filter(Boolean);
     setQuick({ items, loading: false });
@@ -255,6 +257,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
               onDelete={() => act('trash', {}, { jmapIds: [m.jmap_id], msg: 'Message moved to trash' })}
               onBlock={() => { if (confirm(`Block ${m.from_email}? Future messages go to Junk.`)) void blockSender(m.from_email); }}
               onFilter={() => nav(`/mail/all?q=${encodeURIComponent(`from:${m.from_email}`)}`)}
+              onFindFrom={(email) => nav(`/mail/all?q=${encodeURIComponent(`from:${email}`)}`)}
               onRule={() => nav(`/rules?from=${encodeURIComponent(m.from_email)}`)}
               onQuote={(t) => openInline(m, 'reply', { initialText: t })}
               onUnsubscribe={(u) => { if (u.url && !u.mailto) window.open(u.url, '_blank', 'noopener'); else if (u.mailto) setUnsub({ m, mailto: u.mailto, subject: u.subject }); }}
@@ -281,9 +284,25 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                   {(lastInbound.to_addr.length + (lastInbound.cc_addr?.length ?? 0) > 1 || lastInbound.from_email === me) && <Button icon={<ReplyAll size={15} />} onClick={() => reply(lastInbound, true)} title="Reply all (a)">Reply all</Button>}
                   <Button icon={<Forward size={15} />} onClick={() => forward(last)} title="Forward (f)">Forward</Button>
                   <Button variant="ghost" icon={<Zap size={15} />} onClick={quickReplies} loading={quick?.loading} title="Three short replies suggested by the AI">Quick replies</Button>
+                  {/* A reply opened with the times already in it. The other
+                      buttons on this row open an empty reply; this one is
+                      only worth pressing because of what it puts in it. */}
+                  <ProposeTimesButton onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
                 </div>
                 <AiThinking trace={quickThinking} busy={Boolean(quick?.loading)} />
-                {quick && !quick.loading && quick.items.length > 0 && <div className="quick-replies">{quick.items.map((q) => <button key={q} type="button" onClick={() => openInline(lastInbound, 'reply', { initialText: q })}><Sparkles size={12} /> {q}</button>)}</div>}
+                {quick && !quick.loading && quick.items.length > 0 && (
+                  <div className="quick-replies">
+                    {quick.items.map((q) => <button key={q} type="button" onClick={() => openInline(lastInbound, 'reply', { initialText: q })}><Sparkles size={12} /> {q}</button>)}
+                    {/* One of the three suggestions the model gives for a
+                        message like this is always "how about Tuesday" with
+                        no day in it — it is told not to invent a date, and it
+                        cannot see the calendar. This chip is that suggestion,
+                        answered properly. */}
+                    {asksAboutTime(lastInbound.body_text || lastInbound.preview) && (
+                      <ProposeTimesChip onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -305,6 +324,28 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
       <Modal open={snoozeOpen} onClose={() => setSnoozeOpen(false)} title="Snooze until" footer={<><Button onClick={() => setSnoozeOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setSnoozeOpen(false); void act('snooze', { until: new Date(snoozeAt).toISOString() }, { back: true, msg: `Snoozed until ${fmtDateTime(snoozeAt)}` }); }}>Snooze</Button></>}>
         <Field label="Return to inbox at"><Input type="datetime-local" value={snoozeAt} onChange={(e) => setSnoozeAt(e.target.value)} /></Field>
         <div className="row wrap gap-4">{[['Later today', 3], ['Tomorrow', 24], ['In 3 days', 72], ['Next week', 168]].map(([l, h]) => <Button key={String(l)} size="sm" onClick={() => { const d = new Date(Date.now() + Number(h) * 3600_000); if (Number(h) >= 24) d.setHours(9, 0, 0, 0); setSnoozeAt(localDateTimeValue(d)); }}>{l}</Button>)}</div>
+        {/* Snoozing and a commitment's due date are the same wish said two
+            ways — "not now, then" — and the two features had no idea the
+            other existed. If this conversation carries a dated promise, the
+            date it is already keeping is offered as the day to come back. */}
+        {(data?.commitments ?? []).filter((c: ThreadCommitment) => c.dueAt).length > 0 && (
+          <div className="snooze-commitments">
+            <div className="small muted mb-8">This conversation is already carrying a date:</div>
+            <div className="row wrap gap-4">
+              {(data.commitments as ThreadCommitment[]).filter((c) => c.dueAt).map((c) => (
+                <Button
+                  key={c.id}
+                  size="sm"
+                  icon={c.kind === 'owed' ? <Clock size={13} /> : <AlarmClock size={13} />}
+                  title={c.text}
+                  onClick={() => { const d = new Date(c.dueAt!); d.setHours(9, 0, 0, 0); setSnoozeAt(localDateTimeValue(d)); }}
+                >
+                  {c.kind === 'owed' ? 'Due' : 'Expected'} {fmtDate(c.dueAt, { always: true })}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
       <Modal open={Boolean(unsub)} onClose={() => setUnsub(null)} title="Unsubscribe?" footer={<><Button onClick={() => setUnsub(null)}>Cancel</Button><Button variant="primary" onClick={sendUnsubscribe}>Send unsubscribe email</Button></>}>
         <div className="muted">An email will be sent to <b>{unsub?.mailto}</b> asking to be removed from this list, the way the list asked for it in its headers.</div>
@@ -318,8 +359,8 @@ function attachmentUrl(accountId: number, a: any): string {
   return `/api/mail/blob/${accountId}/${encodeURIComponent(a.blobId)}?name=${encodeURIComponent(a.name ?? 'attachment')}&type=${encodeURIComponent(a.type ?? '')}`;
 }
 
-function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onReply, onReplyAll, onForward, onStar, onUnreadFromHere, onDelete, onBlock, onFilter, onRule, onUnsubscribe, unsubscribed, onPreview, onQuote }: {
-  m: Msg; accountId: number; me: string; isContact: boolean; open: boolean; single: boolean; onToggle: () => void; onReply: () => void; onReplyAll: () => void; onForward: () => void; onStar: () => void; onUnreadFromHere: () => void; onDelete: () => void; onBlock: () => void; onFilter: () => void; onRule: () => void; onUnsubscribe: (u: { mailto: string | null; subject: string | null; url: string | null }) => void; unsubscribed: boolean; onPreview: (a: any) => void; onQuote: (text: string) => void;
+function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onReply, onReplyAll, onForward, onStar, onUnreadFromHere, onDelete, onBlock, onFilter, onFindFrom, onRule, onUnsubscribe, unsubscribed, onPreview, onQuote }: {
+  m: Msg; accountId: number; me: string; isContact: boolean; open: boolean; single: boolean; onToggle: () => void; onReply: () => void; onReplyAll: () => void; onForward: () => void; onStar: () => void; onUnreadFromHere: () => void; onDelete: () => void; onBlock: () => void; onFilter: () => void; onFindFrom: (email: string) => void; onRule: () => void; onUnsubscribe: (u: { mailto: string | null; subject: string | null; url: string | null }) => void; unsubscribed: boolean; onPreview: (a: any) => void; onQuote: (text: string) => void;
 }) {
   const [prefs] = useMailPrefs();
   const from = m.from_addr?.[0];
@@ -399,7 +440,11 @@ function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onRe
           {/* The guard's line and any invitation sit above the message, not
               inside it: both are statements about the message rather than
               part of what the sender wrote. */}
-          <GuardBanner emailId={m.id} />
+          <GuardBanner
+            emailId={m.id}
+            onBlock={onBlock}
+            onFindFrom={(email) => onFindFrom(email)}
+          />
           <InvitationCard emailId={m.id} accountId={accountId} />
           <div className="msg-body">{pgpKind ? <EncryptedMessage m={m} accountId={accountId} kind={pgpKind} /> : <MessageBody html={m.body_html} text={m.body_text} attachments={m.attachments} accountId={accountId} senderEmail={from?.email} autoAllow={prefs.showImagesFromContacts && isContact} />}</div>
           {pgpKind !== 'pgp/mime' && atts.length > 0 && (

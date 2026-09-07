@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Copy, Pencil, Plus, Sparkles, Trash2, Eye, Star, Library, Download, Upload, Shuffle, Send, AlertTriangle, Search } from 'lucide-react';
-import { api, apiStream } from '../api';
+import { BookOpen, Copy, Pencil, Plus, Sparkles, Trash2, Eye, Star, Library, Download, Upload, Shuffle, Send, AlertTriangle, Search, Reply } from 'lucide-react';
+import { api } from '../api';
+import { streamWithWork } from '../lib/work';
+import { byPerformance, replyRate } from '../lib/templates';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useToast } from '../state/toast';
 import { useAccounts, useTemplates } from '../lib/queries';
@@ -23,10 +25,18 @@ export default function TemplatesPage() {
   const [library, setLibrary] = useState(false);
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('');
+  const [sort, setSort] = useState<'recent' | 'replies'>('recent');
   const fileInput = useRef<HTMLInputElement>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['templates'] });
   const categories = useMemo(() => [...new Set(templates.map((t) => t.category))].sort(), [templates]);
-  const visible = templates.filter((t) => (!cat || t.category === cat) && (!q || `${t.name} ${t.subject} ${t.description} ${t.body_html}`.toLowerCase().includes(q.toLowerCase())));
+  const visible = useMemo(() => {
+    const rows = templates.filter((t) => (!cat || t.category === cat) && (!q || `${t.name} ${t.subject} ${t.description} ${t.body_html}`.toLowerCase().includes(q.toLowerCase())));
+    return sort === 'replies' ? [...rows].sort(byPerformance) : rows;
+  }, [templates, cat, q, sort]);
+  // The control only appears once something here has been sent enough times
+  // to have a rate: offering "by reply rate" over a set of templates that
+  // have never been used sorts by nothing and says so to nobody.
+  const anyRated = templates.some((t) => replyRate(t) !== null);
   async function importFile(f: File) {
     try {
       const j = JSON.parse(await f.text());
@@ -48,6 +58,12 @@ export default function TemplatesPage() {
         <div className="list-toolbar">
           <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search templates" /></div>
           <div className="segmented"><button className={!cat ? 'active' : ''} onClick={() => setCat('')}>All</button>{categories.map((c) => <button key={c} className={cat === c ? 'active' : ''} onClick={() => setCat(c)}>{c}</button>)}</div>
+          {anyRated && (
+            <div className="segmented ml-auto">
+              <button className={sort === 'recent' ? 'active' : ''} onClick={() => setSort('recent')}>Recent</button>
+              <button className={sort === 'replies' ? 'active' : ''} onClick={() => setSort('replies')}>By reply rate</button>
+            </div>
+          )}
         </div>
       )}
       {!isLoading && !templates.length && <Empty icon={<BookOpen size={24} />} title="No templates yet" action={<div className="row"><Button variant="primary" icon={<Library size={15} />} onClick={() => setLibrary(true)}>Browse the library</Button><Button onClick={() => setEditing('new')}>Write your own</Button></div>}>Start from 25 ready-made templates for outreach, follow-ups, customers, scheduling and replies, or write one with {'{{first_name|there}}'}-style fields.</Empty>}
@@ -61,7 +77,15 @@ export default function TemplatesPage() {
             <div className="small muted" style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', minHeight: 54 }}>{String(t.body_html).replace(/<[^>]+>/g, ' ').trim() || 'Empty body'}</div>
             {t.errors?.length > 0 && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}><AlertTriangle size={12} /> {t.errors[0]}</div>}
             <div className="row mt-16" style={{ justifyContent: 'space-between' }}>
-              <span className="small faint">{t.fields?.length ? `${t.fields.length} field${t.fields.length === 1 ? '' : 's'}` : 'no fields'} · {t.sent_count ? `${t.sent_count} sent` : t.used_in_steps ? `in ${t.used_in_steps} step${t.used_in_steps === 1 ? '' : 's'}` : fmtDate(t.updated_at)}</span>
+              <span className="small faint row gap-4">
+                <span>{t.fields?.length ? `${t.fields.length} field${t.fields.length === 1 ? '' : 's'}` : 'no fields'}</span>
+                <span>·</span>
+                {replyRate(t) !== null
+                  ? <span className="tpl-rate" title={`${t.reply_count} replies to ${t.sent_count} sent`}>
+                      <Reply size={11} /> {replyRate(t)}% replied
+                    </span>
+                  : <span>{t.sent_count ? `${t.sent_count} sent` : t.used_in_steps ? `in ${t.used_in_steps} step${t.used_in_steps === 1 ? '' : 's'}` : fmtDate(t.updated_at)}</span>}
+              </span>
               <div className="row gap-4" onClick={(e) => e.stopPropagation()}>
                 <IconButton label="Duplicate" className="btn-sm" onClick={() => api.post(`/api/templates/${t.id}/duplicate`).then(invalidate)}><Copy size={14} /></IconButton>
                 <IconButton label="Edit" className="btn-sm" onClick={() => setEditing(t)}><Pencil size={14} /></IconButton>
@@ -160,10 +184,10 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
     setGen(true); thinking.reset();
     let out = '';
     try {
-      await apiStream('/api/ai/draft', { mode: 'compose', instruction: `${brief}\n\nWrite it as a reusable template: greet with {{first_name|there}}, use {{company}} where the recipient's company belongs, and keep merge fields exactly in that double-brace form. Put any sentence the sender must fill in themselves inside square brackets.`, length: 'medium' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') { out += d.t; editor.current?.setHtml(textToHtml(out)); } if (ev === 'error') toast.error(d.error); if (ev === 'done') { editor.current?.setHtml(textToHtml(d.text)); html.current = editor.current?.getHtml() ?? ''; } } });
+      await streamWithWork('ai', '/api/ai/draft', { mode: 'compose', instruction: `${brief}\n\nWrite it as a reusable template: greet with {{first_name|there}}, use {{company}} where the recipient's company belongs, and keep merge fields exactly in that double-brace form. Put any sentence the sender must fill in themselves inside square brackets.`, length: 'medium' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') { out += d.t; editor.current?.setHtml(textToHtml(out)); } if (ev === 'error') toast.error(d.error); if (ev === 'done') { editor.current?.setHtml(textToHtml(d.text)); html.current = editor.current?.getHtml() ?? ''; } } });
       if (!subject.trim()) {
         let s = '';
-        await apiStream('/api/ai/draft', { mode: 'subject', draft: out }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'done') s = d.text; } });
+        await streamWithWork('ai', '/api/ai/draft', { mode: 'subject', draft: out }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'done') s = d.text; } });
         if (s) setSubject(s);
       }
     } catch (e) { toast.error(e); } finally { setGen(false); }

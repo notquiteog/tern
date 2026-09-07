@@ -43,8 +43,8 @@ export const api = {
 };
 
 // POST + server-sent events. EventSource cannot POST, so read the stream by hand.
-export async function apiStream(path: string, body: unknown, handlers: { onEvent: (event: string, data: any) => void; signal?: AbortSignal }): Promise<void> {
-  const res = await fetch(path, { method: 'POST', headers: { 'X-Requested-With': 'tern', 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(body), credentials: 'same-origin', signal: handlers.signal });
+export async function apiStream(path: string, body: unknown, handlers: { onEvent: (event: string, data: any) => void; signal?: AbortSignal; headers?: Record<string, string> }): Promise<void> {
+  const res = await fetch(path, { method: 'POST', headers: { 'X-Requested-With': 'tern', 'Content-Type': 'application/json', Accept: 'text/event-stream', ...handlers.headers }, body: JSON.stringify(body), credentials: 'same-origin', signal: handlers.signal });
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
     try { msg = (await res.json()).error ?? msg; } catch { /* ignore */ }

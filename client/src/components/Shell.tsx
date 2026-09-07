@@ -17,6 +17,7 @@ import { useHotkeys, useServerEvents } from '../lib/hooks';
 import { useAccountFilter, useAccounts, useCounts, useMailboxes, type Mailbox } from '../lib/queries';
 import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Input, ColorPicker, Confirm } from './ui';
 import { ComposeDock } from './Compose';
+import { CommandPalette } from './CommandPalette';
 import { api } from '../api';
 import { adoptServerAppearance, getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
 import { Background } from './Background';
@@ -381,71 +382,6 @@ function AdvancedSearch({ initial, onSearch, onClose }: { initial: string; onSea
   );
 }
 
-function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const nav = useNavigate();
-  const compose = useCompose();
-  const { user } = useAuth();
-  const [q, setQ] = useState('');
-  const [idx, setIdx] = useState(0);
-  const items = useMemo(() => [
-    { label: 'Compose new message', hint: 'c', run: () => compose.open() },
-    { label: 'Go to Inbox', hint: 'g i', run: () => nav('/mail/inbox') },
-    { label: 'Go to Starred', hint: 'g s', run: () => nav('/mail/starred') },
-    { label: 'Go to Sent', hint: 'g t', run: () => nav('/mail/sent') },
-    { label: 'Go to Drafts', hint: 'g d', run: () => nav('/mail/drafts') },
-    { label: 'Go to Snoozed', run: () => nav('/mail/snoozed') },
-    { label: 'Go to Scheduled sends', run: () => nav('/mail/scheduled') },
-    { label: 'Go to All mail', hint: 'g a', run: () => nav('/mail/all') },
-    { label: 'Overview', hint: 'g h', run: () => nav('/home') },
-    { label: 'Contacts', hint: 'g c', run: () => nav('/contacts') },
-    { label: 'Import contacts from CSV', run: () => nav('/contacts?import=1') },
-    { label: 'Sequences', hint: 'g q', run: () => nav('/sequences') },
-    { label: 'New sequence', run: () => nav('/sequences?new=1') },
-    { label: 'Templates', run: () => nav('/templates') },
-    { label: 'AI review queue', hint: 'g r', run: () => nav('/review') },
-    { label: 'Inbox rules', run: () => nav('/rules') },
-    { label: 'AI responders', run: () => nav('/responders') },
-    { label: 'New AI campaign', run: () => nav('/sequences?campaign=1') },
-    { label: 'Settings: Accounts', run: () => nav('/settings/accounts') },
-    { label: 'Settings: AI assistant', run: () => nav('/settings/ai') },
-    { label: 'Settings: Sending policy', run: () => nav('/settings/accounts') },
-    { label: 'Settings: Security', run: () => nav('/settings/security') },
-    { label: 'Settings: Appearance', run: () => nav('/settings/appearance') },
-    { label: 'Toggle dark mode', run: () => setAppearance({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }) },
-    { label: 'Settings: Profile picture', run: () => nav('/settings/profile') },
-    { label: 'Settings: Encryption and Autocrypt', run: () => nav('/settings/encryption') },
-    { label: 'Settings: Mail apps and mailbox password', run: () => nav('/settings/mailapps') },
-    ...(user?.role === 'admin' ? [
-      { label: 'Admin: Users and sign-up', run: () => nav('/admin/users') },
-      { label: 'Admin: Mail server', run: () => nav('/admin/mailserver') },
-      { label: 'Admin: AI model', run: () => nav('/admin/ai') },
-      { label: 'Admin: Branding', run: () => nav('/admin/branding') },
-      { label: 'Admin: Audit log', run: () => nav('/admin/audit') },
-      { label: 'Admin: General', run: () => nav('/admin/general') },
-    ] : []),
-  ], [nav, compose, user?.role]);
-  const filtered = items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
-  useEffect(() => { setIdx(0); }, [q, open]);
-  useEffect(() => { if (!open) setQ(''); }, [open]);
-  if (!open) return null;
-  const run = (i: typeof items[number]) => { i.run(); onClose(); };
-  return (
-    <div className="palette-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="palette">
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type a command or destination…" onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((i) => Math.min(filtered.length - 1, i + 1)); }
-          if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((i) => Math.max(0, i - 1)); }
-          if (e.key === 'Enter' && filtered[idx]) run(filtered[idx]);
-          if (e.key === 'Escape') onClose();
-        }} />
-        <div className="palette-list">
-          {filtered.map((i, n) => <div key={i.label} className={cls('palette-item', n === idx && 'active')} onMouseEnter={() => setIdx(n)} onClick={() => run(i)}>{i.label}{i.hint && <span className="hint">{i.hint}</span>}</div>)}
-          {!filtered.length && <div className="palette-item faint">No matches</div>}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
   const rows: [string, string][] = [['c', 'Compose'], ['/', 'Search'], ['⌘/Ctrl K', 'Command palette'], ['j / k', 'Next / previous conversation'], ['o or Enter', 'Open conversation'], ['u or Esc', 'Back to list'], ['x', 'Select conversation'], ['e', 'Archive'], ['#', 'Delete'], ['!', 'Mark as junk'], ['s', 'Star'], ['r / a / f', 'Reply / reply all / forward (inline)'], ['⌘/Ctrl Enter', 'Send the message being written'], ['Shift+I / Shift+U', 'Mark read / unread'], ['b', 'Snooze'], ['m', 'Mute / unmute'], ['] / [', 'Older / newer conversation'], ['g i', 'Inbox'], ['g s', 'Starred'], ['g t', 'Sent'], ['g d', 'Drafts'], ['g a', 'All mail'], ['g c', 'Contacts'], ['g q', 'Sequences'], ['g h', 'Overview'], ['?', 'This help']];

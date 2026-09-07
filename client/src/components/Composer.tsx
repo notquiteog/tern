@@ -9,6 +9,8 @@ import { api } from '../api';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment, type Upload } from '../state/compose';
 import { useToast } from '../state/toast';
 import { useAccounts, useTemplates } from '../lib/queries';
+import { ProposeTimesButton } from './ProposeTimes';
+import { byPerformance, replyRate } from '../lib/templates';
 import { useMailPrefs } from '../state/mailPrefs';
 import { AddressInput } from './AddressInput';
 import { Editor, type EditorHandle } from './Editor';
@@ -380,10 +382,35 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
           <IconButton label="Attach files" onClick={() => fileInput.current?.click()}><Paperclip size={17} /></IconButton>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
           {templates.length > 0 && (
-            <Menu trigger={(open) => <IconButton label="Insert template" onClick={open}><FileText size={17} /></IconButton>} width={280}>
-              {(c) => <>{templates.map((t) => <MenuItem key={t.id} onClick={() => { void insertTemplate(t); c(); }}><span className="col" style={{ gap: 0, minWidth: 0 }}><span className="truncate">{t.starred ? '★ ' : ''}{t.name}</span><span className="small faint truncate">{t.category}{t.subject ? ` · ${t.subject}` : ''}</span></span></MenuItem>)}</>}
+            <Menu trigger={(open) => <IconButton label="Insert template" onClick={open}><FileText size={17} /></IconButton>} width={300}>
+              {/* Ordered by what has actually been answered, not by whatever
+                  the list came back in. The app has always known which of
+                  these get replies and offered them in an order that ignored
+                  it — which on a list of twenty-five means the best one is
+                  found by scrolling, if at all. */}
+              {(c) => <>{[...templates].sort(byPerformance).map((t) => {
+                const rate = replyRate(t);
+                return (
+                  <MenuItem key={t.id} onClick={() => { void insertTemplate(t); c(); }}>
+                    <span className="col" style={{ gap: 0, minWidth: 0, flex: 1 }}>
+                      <span className="truncate">{t.starred ? '★ ' : ''}{t.name}</span>
+                      <span className="small faint truncate">{t.category}{t.subject ? ` · ${t.subject}` : ''}</span>
+                    </span>
+                    {rate !== null && <span className="tpl-rate small" title={`${t.reply_count} replies to ${t.sent_count} sent`}>{rate}%</span>}
+                  </MenuItem>
+                );
+              })}</>}
             </Menu>
           )}
+          {/* Deterministic, and next to the assistant rather than inside it:
+              the times come out of the calendar, so this is the one button in
+              this row that cannot be wrong about a fact. */}
+          <ProposeTimesButton compact onInsert={(t) => {
+            editor.current?.focus();
+            editor.current?.insertText(t);
+            html.current = editor.current?.getHtml() ?? html.current;
+            setDirty(true);
+          }} />
           <Button variant="ai" size="sm" icon={<Sparkles size={14} />} onClick={() => setAi((v) => !v)} className={ai ? 'active' : ''}>{isReply ? 'AI reply' : 'Draft with AI'}</Button>
           <span className="ml-auto small faint desktop-only">{dirty ? 'Saving…' : savedAt || draftId ? 'Draft saved' : ''}</span>
           <IconButton label="Discard draft" onClick={() => void discard()}><Trash2 size={17} /></IconButton>

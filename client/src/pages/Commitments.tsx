@@ -16,13 +16,14 @@
 // first, then soonest, then the ones with no date at all.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, ChevronRight, Clock, Plus, Timer, X } from 'lucide-react';
+import { Check, ChevronRight, Clock, PenLine, Plus, Timer, X } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { useFeatures } from '../state/features';
 import { Avatar, Badge, Button, Empty, Field, Input, Modal, PageHeader, Select, Spinner } from '../components/ui';
 import { FeatureOffNotice } from './Features';
 import { useToast } from '../state/toast';
 import { cls, dueIn } from '../lib/format';
+import { CommitmentMove } from '../components/CommitmentMove';
 
 interface Commitment {
   id: number;
@@ -30,6 +31,7 @@ interface Commitment {
   text: string;
   counterparty: string | null;
   dueAt: string | null;
+  movedAt: string | null;
   status: 'open' | 'done' | 'dropped';
   threadId: string;
   accountId: number;
@@ -121,6 +123,7 @@ export default function CommitmentsPage() {
             empty="Nothing is on you right now."
             items={owed}
             onClose={close}
+            onChanged={() => void load()}
           />
           <Column
             title="You are waiting on"
@@ -129,6 +132,7 @@ export default function CommitmentsPage() {
             empty="You are not waiting on anybody."
             items={awaiting}
             onClose={close}
+            onChanged={() => void load()}
           />
         </div>
       )}
@@ -140,9 +144,9 @@ export default function CommitmentsPage() {
 
 // A column keeps its header and its frame even when it is empty, so the board
 // does not reflow into one lopsided list the moment you clear one side.
-function Column({ title, icon, kind, items, empty, onClose }: {
+function Column({ title, icon, kind, items, empty, onClose, onChanged }: {
   title: string; icon: React.ReactNode; kind: 'owed' | 'awaiting';
-  items: Commitment[]; empty: string; onClose: (id: number, s: 'done' | 'dropped') => void;
+  items: Commitment[]; empty: string; onClose: (id: number, s: 'done' | 'dropped') => void; onChanged: () => void;
 }) {
   return (
     <section className={cls('card commit-col', `commit-col-${kind}`)}>
@@ -152,16 +156,17 @@ function Column({ title, icon, kind, items, empty, onClose }: {
         <span className="commit-col-count">{items.length}</span>
       </h2>
       {items.length
-        ? <div className="commit-list">{items.map((c) => <Row key={c.id} c={c} onClose={onClose} />)}</div>
+        ? <div className="commit-list">{items.map((c) => <Row key={c.id} c={c} onClose={onClose} onChanged={onChanged} />)}</div>
         : <p className="commit-col-empty">{empty}</p>}
     </section>
   );
 }
 
-function Row({ c, onClose }: { c: Commitment; onClose: (id: number, s: 'done' | 'dropped') => void }) {
+function Row({ c, onClose, onChanged }: { c: Commitment; onClose: (id: number, s: 'done' | 'dropped') => void; onChanged: () => void }) {
   const due = dueIn(c.dueAt);
+  const [moving, setMoving] = useState(false);
   return (
-    <div className={cls('commit-row', due?.late && 'commit-row-late')}>
+    <div className={cls('commit-row', due?.late && 'commit-row-late', moving && 'commit-row-moving')}>
       {/* The other party is the fastest thing to recognise in a row of
           sentences, so it gets the colour and the left edge. Without one
           — a note you wrote yourself — the slot stays, dimmed, rather than
@@ -187,6 +192,10 @@ function Row({ c, onClose }: { c: Commitment; onClose: (id: number, s: 'done' | 
             {c.counterparty && <span className="commit-party">{c.counterparty}</span>}
             {due && <Badge kind={due.late ? 'danger' : due.today ? 'warning' : undefined}>{due.label}</Badge>}
             {c.source === 'manual' && <Badge>Added by you</Badge>}
+            {/* A promise that has already moved once says so. It is not a
+                reproach — it is the thing you want to know before moving it
+                again, and before writing the email that does. */}
+            {c.movedAt && <Badge>Moved</Badge>}
           </div>
 
           {/* Both ways out sit in the row and hold their space: a commitment
@@ -197,6 +206,18 @@ function Row({ c, onClose }: { c: Commitment; onClose: (id: number, s: 'done' | 
             <button type="button" className="commit-act commit-act-done" onClick={() => onClose(c.id, 'done')} title="Mark this done">
               <Check size={14} /><span>Done</span>
             </button>
+            {/* The third way out, and the one that was missing. "Done" and
+                "not a commitment" are the two endings; this is what actually
+                happens to most of them, which is that they move. */}
+            <button
+              type="button"
+              className={cls('commit-act', moving && 'on')}
+              onClick={() => setMoving((v) => !v)}
+              title={c.kind === 'owed' ? 'Tell them it has moved' : 'Ask them again'}
+            >
+              {c.kind === 'owed' ? <PenLine size={14} /> : <Timer size={14} />}
+              <span>{c.kind === 'owed' ? 'Reschedule' : 'Nudge'}</span>
+            </button>
             {/* "Not a commitment" rather than "delete": the model proposed
                 it, and saying so is how somebody learns what the list is. */}
             <button type="button" className="commit-act" onClick={() => onClose(c.id, 'dropped')} title="This was never a commitment">
@@ -204,6 +225,12 @@ function Row({ c, onClose }: { c: Commitment; onClose: (id: number, s: 'done' | 
             </button>
           </div>
         </div>
+
+        {/* In the row rather than in a modal. Rescheduling is a decision made
+            against the other items in the column — what else is late, what
+            else is on this person — and a dialogue over the top of them hides
+            exactly the context the decision needs. */}
+        {moving && <CommitmentMove c={c} onClose={() => setMoving(false)} onMoved={onChanged} />}
       </div>
     </div>
   );

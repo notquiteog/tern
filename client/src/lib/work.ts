@@ -10,14 +10,14 @@
 // before a button finishes animating — and climbs with how much this session
 // has already asked for and with how busy the model is. Somebody working
 // through their inbox never notices; a script pays for its enthusiasm.
-import { api, ApiError } from '../api';
+import { api, apiStream, ApiError } from '../api';
 import { createSolver } from './powSolver';
 
 export type WorkPurpose = 'ai' | 'brief' | 'search' | 'index' | 'voice' | 'import';
 
 interface Challenge { challenge: string; difficulty: number; expiresAt: string }
 
-export interface WorkHeaders { 'X-Work-Challenge': string; 'X-Work-Nonce': string }
+export interface WorkHeaders extends Record<string, string> { 'X-Work-Challenge': string; 'X-Work-Nonce': string }
 
 // Solving happens in a worker when there is one, and inline in small slices
 // when there is not, so a low-powered phone still yields to the UI thread
@@ -96,6 +96,25 @@ export async function uploadWithWork<T>(purpose: WorkPurpose, path: string, blob
     });
     return unwrap<T>(res);
   }, signal);
+}
+
+// The streaming shape, which every AI button in the app needs and none of
+// them had.
+//
+// `apiStream` was written before the work guard existed and never carried a
+// proof. That is invisible at first — the guard is free for the opening
+// requests of a window — and then the composer, the thread summary, the quick
+// replies, the template writer and the admin playground all start failing at
+// once with "This request needs browser verification", because the price rose
+// and nothing was paying it. Every generation goes through here now, so they
+// pay like every other expensive call.
+export async function streamWithWork(
+  purpose: WorkPurpose,
+  path: string,
+  body: unknown,
+  handlers: { onEvent: (event: string, data: any) => void; signal?: AbortSignal },
+): Promise<void> {
+  return withWork(purpose, (work) => apiStream(path, body, { ...handlers, headers: work }), handlers.signal);
 }
 
 async function unwrap<T>(res: Response): Promise<T> {

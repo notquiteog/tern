@@ -266,7 +266,7 @@ function ExtractedPart({ part, onQuote }: { part: AttachmentPart; onQuote: (text
 
 // ---------- Why this conversation is near the top ----------
 
-export interface TriageWhy { priority: number | null; reasons: string[]; note: string }
+export interface TriageWhy { priority: number | null; reasons: string[]; note: string; feedback: 'up' | 'down' | null }
 
 // Priority ordering moves mail up a list on the strength of a guess, and
 // until now gave no way to ask why. The server has always been able to
@@ -278,6 +278,35 @@ export function useTriageWhy(emailId: number | null) {
     queryFn: () => api.get<TriageWhy>(`/api/discover/triage/why/${emailId}`),
     enabled: Boolean(emailId),
     staleTime: 60_000,
+  });
+}
+
+// Disagreeing with it.
+//
+// The panel could explain the ordering and not be argued with, which is the
+// worse half of the pair: an explanation you cannot answer is a lecture. The
+// model only ever learned by watching — archive, star, reply, junk — and none
+// of those can say "this is fine, it just does not belong at the top". This
+// can, and it retrains on the spot so the correction is visible rather than
+// filed for later.
+export function useTriageFeedback(emailId: number | null, onDone?: () => void) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: (label: 0 | 1) =>
+      api.post<{ trained: boolean; samples: number; minSamples: number }>('/api/discover/triage/feedback', { emailId, label }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['triage-why', emailId] });
+      qc.invalidateQueries({ queryKey: ['threads'] });
+      // Being honest about the case where nothing happened yet. A silent
+      // success after a correction that could not be acted on is how people
+      // conclude the control does nothing.
+      toast.success(r.trained
+        ? 'Noted, and the ordering has been worked out again'
+        : `Noted. Priority ordering needs ${r.minSamples} decisions to learn from and has ${r.samples}.`);
+      onDone?.();
+    },
+    onError: (e) => toast.error(e as Error),
   });
 }
 

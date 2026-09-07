@@ -3,7 +3,8 @@ import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight, Archive } from 'lucide-react';
-import { api, apiStream } from '../api';
+import { api } from '../api';
+import { streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
@@ -376,7 +377,7 @@ export function AiPlayground({ enabled }: { enabled: boolean }) {
   const [playDraft, setPlayDraft] = useState('');
   async function test() {
     setTesting(true); setTestOut(''); thinking.reset();
-    try { await apiStream('/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
+    try { await streamWithWork('ai', '/api/ai/draft', { mode: playMode, instruction: playInstruction || undefined, draft: playDraft || undefined, length: 'short' }, { onEvent: (ev, d) => { if (thinking.onEvent(ev, d)) return; if (ev === 'token') setTestOut((o) => o + d.t); if (ev === 'error') toast.error(d.error); } }); } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
   return (
     <div className="card mb-16">

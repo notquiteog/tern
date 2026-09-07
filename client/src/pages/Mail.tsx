@@ -10,7 +10,7 @@ import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm, Progress } from '../components/ui';
 import { SemanticResults } from '../components/SearchExtras';
-import { useTriageWhy } from '../components/ThreadAside';
+import { useTriageFeedback, useTriageWhy } from '../components/ThreadAside';
 import { useCan } from '../state/features';
 
 // The words out of a search, with the operators taken off. Meaning search
@@ -512,7 +512,9 @@ export default function MailPage() {
 // easy to imply the model read the message and understood it, and it did
 // not; it counted signals, and the words behind them cannot be shown.
 function WhyModal({ row, onClose }: { row: ThreadRow | null; onClose: () => void }) {
-  const { data, isLoading } = useTriageWhy(row?.latest?.id ?? null);
+  const emailId = row?.latest?.id ?? null;
+  const { data, isLoading } = useTriageWhy(emailId);
+  const say = useTriageFeedback(emailId);
   return (
     <Modal open={Boolean(row)} onClose={onClose} title="Why is this here?" footer={<Button onClick={onClose}>Close</Button>}>
       {isLoading && <div className="center pad-24"><Spinner size={20} /></div>}
@@ -535,6 +537,28 @@ function WhyModal({ row, onClose }: { row: ThreadRow | null; onClose: () => void
             </ul>
           ) : <p className="muted small">Nothing about this conversation moved it either way.</p>}
           <p className="muted small">{data.note}</p>
+
+          {/* The half that was missing. Explaining a guess and offering no way
+              to correct it is how an ordering stops being trusted the first
+              time it is wrong — and every other signal this model has is
+              inferred from an action taken for some other reason, so this is
+              the only place it can be told something outright. */}
+          <div className="why-say">
+            <span className="small muted">Is this right?</span>
+            {data.feedback ? (
+              <span className="small">
+                You said this {data.feedback === 'up' ? 'should be near the top' : 'does not belong at the top'}.{' '}
+                <button type="button" className="link-btn small" disabled={say.isPending} onClick={() => say.mutate(data.feedback === 'up' ? 0 : 1)}>
+                  Change that
+                </button>
+              </span>
+            ) : (
+              <span className="row gap-4">
+                <Button size="sm" icon={<ArrowUp size={13} />} loading={say.isPending} onClick={() => say.mutate(1)}>Should be higher</Button>
+                <Button size="sm" icon={<ArrowDown size={13} />} loading={say.isPending} onClick={() => say.mutate(0)}>Not important</Button>
+              </span>
+            )}
+          </div>
         </div>
       )}
     </Modal>
