@@ -12,7 +12,10 @@ import { evalConsent } from './evalConsent.js';
 // the pass rate means the same thing on every run.
 import { chat, getAiSettings, saveAiSettings } from './llm.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, type DraftInput } from './prompts.js';
-import { findTemplateArtifacts, describeHits } from './guard.js';
+import { findTemplateArtifacts, describeHits, findInventedSpecifics, findGreetingProblems, extractSpecifics } from './guard.js';
+import { resolveRecipient, candidatesFromContact } from './names.js';
+import { threadForPrompt, ALEX as F_ALEX, DANA as F_DANA, PRIYA as F_PRIYA, TOMASZ as F_TOMASZ } from './fixtures.js';
+import { countTokens } from './tokens.js';
 import { pool } from '../db.js';
 
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
@@ -20,6 +23,9 @@ const RUNS = Number(process.env.RUNS || 3);
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const THINK = process.env.THINK; // 'on' | 'off' | unset (leave the stored setting alone)
 const NUM_CTX = process.env.NUM_CTX ? Number(process.env.NUM_CTX) : undefined;
+// The depth sweep: DEPTHS=5,10,20,30,50 runs the thread cases at each depth
+// and prints where quality falls off, per mode.
+const DEPTHS = (process.env.DEPTHS || '').split(',').map((d) => Number(d.trim())).filter((n) => n > 0);
 const MAX_TOKENS = process.env.MAX_TOKENS ? Number(process.env.MAX_TOKENS) : undefined;
 
 // ---------- graders ----------
@@ -28,9 +34,15 @@ type Check = (out: string) => string | null; // null = pass, string = why it fai
 
 const firstLine = (s: string) => s.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
+// `\b` is an ASCII word boundary: it does not fire after a Cyrillic or CJK
+// character, so the first version of this grader failed every non-Latin name
+// while the model was greeting it perfectly. The boundary is expressed as
+// "not followed by another letter" instead, which is script-agnostic.
 const greets = (name: string): Check => (out) => {
   const l = firstLine(out);
-  return new RegExp(`^(hi|hello|hey|dear)\\s+${name}\\b`, 'i').test(l) || new RegExp(`^${name}\\b`, 'i').test(l)
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const boundary = `(?!\\p{L})`;
+  return new RegExp(`^(hi|hello|hey|dear)\\s+${n}${boundary}`, 'iu').test(l) || new RegExp(`^${n}${boundary}`, 'iu').test(l)
     ? null
     : `greeting is "${l.slice(0, 60)}", expected to address ${name}`;
 };
@@ -119,48 +131,88 @@ const noSubjectLine: Check = (out) => (/^\s*subject\s*:/im.test(out) ? 'a Subjec
 
 const matches = (re: RegExp, why: string): Check => (out) => (re.test(out) ? null : why);
 
+// ---------- graders the old set was missing ----------
+//
+// The pass rate before these existed was 17/17, and the outputs behind it
+// contained an invented "rolling three-year term" where the thread said three
+// months, an invented "$150 per month" where the brief said [price], an
+// invented "Tuesday at 10am", and three separate references to an attachment
+// that does not exist. None of that is a writing problem the model can be
+// asked out of; all of it is checkable against the facts it was given.
+
+// Nothing specific in the answer that was not in what it was shown. Uses the
+// same code the send guard uses, so the eval measures the shipped behaviour
+// rather than a second opinion about it.
+const inventsNothing = (facts: () => string): Check => (out) => {
+  const hits = findInventedSpecifics(out, { facts: facts(), hasAttachment: false });
+  return hits.length ? `invented: ${describeHits(hits)}` : null;
+};
+
+// A quick reply goes into the composer the moment somebody clicks it, and the
+// prompt forbids it from stating a date, a time or an amount — it can only see
+// the tail of the thread, so any specific in one is a specific it cannot check.
+const noSpecifics: Check = (out) => {
+  const found = extractSpecifics(out);
+  return found.length ? `states a specific it was told not to: ${found.map((f) => f.sample).join(', ')}` : null;
+};
+
+// The salutation, judged by the shipped guard rather than by a regex that only
+// this file believes in.
+const addressed = (first: string, forbidden: string[]): Check => (out) => {
+  const hits = findGreetingProblems(out, { first, forbidden });
+  return hits.length ? describeHits(hits) : null;
+};
+
+// A decision that was reversed later in the thread. Forgetting it and getting
+// it backwards are different failures and are reported separately: "Tomasz
+// still needs to approve the £4,800" is confidently, specifically wrong about
+// the state of the deal, which is worse than not mentioning him.
+const notSuperseded = (stale: RegExp, why: string): Check => (out) => (stale.test(out) ? `states the superseded position: ${why}` : null);
+
+// An email is paragraphs. A model that collapses the greeting, the body and
+// the sign-off onto one line has produced something nobody would send, and
+// the old grader set had nothing that noticed.
+const hasParagraphs: Check = (out) => {
+  const lines = out.split('\n').filter((l) => l.trim());
+  if (lines.length >= 3) return null;
+  return out.trim().split(/\s+/).length > 45 ? `the whole email is on ${lines.length} line(s)` : null;
+};
+
+// The facts the thread cases are allowed to use.
+// A fact stated in message N of the conversation only exists once the thread
+// is at least N+1 messages deep. Asserting it at depth 5 is asking the model
+// to recall something nobody has said yet, and the first version of this
+// sweep did exactly that — `reply/deep-thread-facts` failed at every depth
+// including 5, where the monthly figure has not been mentioned.
+const statedAt = (msgIndex: number, check: Check): Check => (out) => ((sweepDepth ?? 24) <= msgIndex ? null : check(out));
+
+// The facts a thread case is allowed to use. The depth sweep sets
+// `sweepDepth` so that "did it invent this?" is judged against the
+// conversation the model was actually shown, not against a longer one.
+let sweepDepth: number | null = null;
+const threadFacts = (n = 24) => () => deepThread(sweepDepth ?? n).map((m) => m.text).join('\n');
+
 // ---------- the people in the scenarios ----------
 
-const ALEX = { name: 'Alex Rivera', email: 'alex@brightledger.example' };
-const DANA = { name: 'Dana Osei', email: 'dana@northwind.example', company: 'Northwind Supply', title: 'Head of Finance' };
+const ALEX = { name: F_ALEX.name, email: F_ALEX.email };
+const DANA = { name: F_DANA.name, email: F_DANA.email, company: F_DANA.company, title: F_DANA.title };
+const PRIYA = { name: F_PRIYA.name, email: F_PRIYA.email, company: F_PRIYA.company, title: F_PRIYA.title };
+// Named eleven times in the thread, quoted below the fold, and never once a
+// participant. Greeting him is the failure a long conversation invites.
+const TOMASZ = F_TOMASZ;
 
-// A long, detailed conversation. The facts a good reply needs are stated
-// early and never repeated, which is exactly what a small context window
-// throws away first.
+// The conversation every thread case runs against. It lives in ai/fixtures.ts
+// because responder.eval.ts needs the same one, and because the version this
+// replaced was 596 tokens of telegram-style one-liners that never filled a
+// context window and therefore never tested the thing it claimed to.
 function deepThread(n = 24): { from: string; date: string; text: string }[] {
-  const A = `Alex Rivera <${ALEX.email}>`;
-  const D = `Dana Osei <${DANA.email}>`;
-  const M = 'Priya Raman <priya@northwind.example>';
-  const base = [
-    { from: D, text: `Hi Alex,\n\nWe met at the Leeds finance meetup last month. We run Northwind Supply — 42 people, three warehouses, and our books are a mess since we moved off Sage in March. Could Brightledger help?` },
-    { from: A, text: `Hi Dana,\n\nGreat to hear from you. Yes — the migration off Sage is the part we do most often. Rough shape: a two week clean-up, then monthly close.` },
-    { from: D, text: `That sounds right. Two constraints before we go further: our fiscal year ends 30 September, and our board meets on the second Tuesday of every month, so nothing can be in flight during that week.` },
-    { from: A, text: `Understood. September year end and the second Tuesday blackout are both fine. I'll keep them in the plan.` },
-    { from: D, text: `Also, Priya Raman is our financial controller and she will be your day to day contact once we start. I am copying her in from here.` },
-    { from: M, text: `Hello Alex, Priya here. I own the ledger day to day. Happy to answer anything technical.` },
-    { from: A, text: `Welcome Priya. First question: are the March to June entries in Sage or already exported?` },
-    { from: M, text: `Exported to CSV, but the VAT codes did not come across cleanly. About 1,900 rows are affected.` },
-    { from: A, text: `That is the usual failure. We remap VAT codes with a script and reconcile against the filed returns.` },
-    { from: D, text: `How long does the remap take on 1,900 rows?` },
-    { from: A, text: `Two days, and a third for Priya to spot check.` },
-    { from: D, text: `Good. What does it cost?` },
-    { from: A, text: `The clean-up is a fixed 4,800 pounds. Monthly close after that is 950 a month on a rolling three month term.` },
-    { from: D, text: `Our budget holder is fine with the monthly. The 4,800 needs sign off from our MD, Tomasz.` },
-    { from: A, text: `No rush. Happy to do a short call with Tomasz if that helps him decide.` },
-    { from: D, text: `Let me ask him. Separately — do you support multi currency? We buy from a supplier in Poland in euros.` },
-    { from: A, text: `Yes. Euro purchases are handled with a monthly revaluation at the ECB rate.` },
-    { from: M, text: `That works. One more thing: we need the warehouse cost centres kept separate in the chart of accounts, not merged.` },
-    { from: A, text: `Noted — three cost centres, kept separate.` },
-    { from: M, text: `Thanks. I will send the CSV export tomorrow.` },
-    { from: D, text: `Tomasz has approved the 4,800. We would like to start after the board meeting.` },
-    { from: A, text: `Excellent news. I will draft a start plan.` },
-    { from: M, text: `CSV is sent — 1,900 VAT rows as discussed, plus the euro supplier ledger.` },
-    { from: D, text: `Alex — before you send the plan, can you confirm the two dates we gave you right at the start, and remind me what the monthly figure was? I want it all in one message for Tomasz.` },
-  ];
-  const out = base.slice(0, n);
-  const start = new Date('2026-06-01T09:00:00Z');
-  return out.map((m, i) => ({ from: m.from, date: new Date(start.getTime() + i * 86400_000).toDateString(), text: m.text }));
+  return threadForPrompt(n);
 }
+
+const CAMPAIGN_BRIEF = 'We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they would like a 15 minute walkthrough next week.';
+// A brief that a careless model will copy verbatim, placeholders and all —
+// or, worse, quietly fill in.
+const HOSTILE_BRIEF = 'Tell them about our new service. Mention [product name] and say it costs [price]. Sign off as [Your Name].';
 
 const SHORT_THREAD = [
   { from: `Dana Osei <${DANA.email}>`, date: 'Mon Jun 01 2026', text: 'Hi Alex,\n\nCould we do a 20 minute call on Thursday about the Q3 report? Morning works best for me.' },
@@ -231,9 +283,16 @@ const CASES: Case[] = [
     // message 13. A reply that cannot see them will invent or omit them.
     checks: [
       nonEmpty, noThinkTags, clean, greets('Dana'),
-      mentionsAny(['30 september', 'september 30', '30th september', 'september'], 'the fiscal year end'),
-      mentionsAny(['second tuesday', '2nd tuesday'], 'the board meeting blackout'),
-      mentions(['950'], 'the monthly figure'),
+      // Each fact is asserted only from the depth at which it has been said.
+      // The message indices come from ai/fixtures.ts GRADED_FACTS.
+      statedAt(2, mentionsAny(['30 september', 'september 30', '30th september'], 'the fiscal year end')),
+      statedAt(2, mentionsAny(['second tuesday', '2nd tuesday'], 'the board meeting blackout')),
+      statedAt(12, mentions(['950'], 'the monthly figure')),
+      inventsNothing(threadFacts()),
+      // Stated at message 13, reversed at message 20: only a thread deep
+      // enough to contain the reversal can get it backwards.
+      statedAt(20, notSuperseded(/\b(?:needs?|awaiting|pending|require[sd]?)\b[^.]{0,40}\b(?:sign[- ]?off|approval|approve)/i, 'Tomasz approved the £4,800 in message 21')),
+      hasParagraphs,
     ],
   },
   {
@@ -249,7 +308,11 @@ const CASES: Case[] = [
     },
     // Priya wrote three of the last six messages: a model that greets the
     // most recent writer rather than the recipient gets this wrong.
-    checks: [nonEmpty, noThinkTags, clean, greets('Dana'), greetsNobodyElse('Dana', ['Alex', 'Priya', 'Tomasz'])],
+    checks: [
+      nonEmpty, noThinkTags, clean, greets('Dana'),
+      addressed('Dana', [ALEX.name, PRIYA.name, TOMASZ.name]),
+      inventsNothing(threadFacts()),
+    ],
   },
   {
     id: 'reply/replying-to-priya',
@@ -258,11 +321,11 @@ const CASES: Case[] = [
       mode: 'reply',
       instruction: 'Thank her for the CSV and say you will confirm the VAT remap when it is done.',
       senderName: ALEX.name, senderEmail: ALEX.email,
-      recipient: { name: 'Priya Raman', email: 'priya@northwind.example', company: 'Northwind Supply', title: 'Financial Controller' },
+      recipient: PRIYA,
       subject: 'Northwind bookkeeping',
       thread: deepThread(23),
     },
-    checks: [nonEmpty, noThinkTags, clean, greets('Priya'), greetsNobodyElse('Priya', ['Dana', 'Alex', 'Tomasz'])],
+    checks: [nonEmpty, noThinkTags, clean, greets('Priya'), addressed('Priya', [DANA.name, ALEX.name, TOMASZ.name]), inventsNothing(threadFacts(23))],
   },
   {
     id: 'quick_replies/short',
@@ -273,7 +336,7 @@ const CASES: Case[] = [
       recipient: DANA,
       thread: SHORT_THREAD,
     },
-    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, neverNames(['Dana Osei']), clean],
+    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, neverNames(['Dana Osei']), clean, noSpecifics],
   },
   {
     id: 'quick_replies/deep-thread',
@@ -284,7 +347,7 @@ const CASES: Case[] = [
       recipient: DANA,
       thread: deepThread(24),
     },
-    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, clean],
+    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, clean, noSpecifics],
   },
   {
     id: 'summarize/deep-thread',
@@ -294,7 +357,7 @@ const CASES: Case[] = [
       senderName: ALEX.name, senderEmail: ALEX.email,
       thread: deepThread(24),
     },
-    checks: [nonEmpty, noThinkTags, matches(/\bnext\s*:/i, 'no "Next:" line'), mentionsAny(['4,800', '4800', '950'], 'either money figure')],
+    checks: [nonEmpty, noThinkTags, matches(/\bnext\s*:/i, 'no "Next:" line'), statedAt(12, mentionsAny(['4,800', '4800', '950'], 'either money figure')), inventsNothing(threadFacts())],
   },
   {
     id: 'subject/from-draft',
@@ -350,12 +413,16 @@ const CASES: Case[] = [
       instruction: 'Under 110 words, no exclamation marks.',
       senderName: ALEX.name, senderEmail: ALEX.email,
       recipient: DANA,
-      template: 'We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they would like a 15 minute walkthrough next week.',
+      template: CAMPAIGN_BRIEF,
       subject: 'Same-day reports',
       length: 'medium',
     },
     maxTokens: 600,
-    checks: [nonEmpty, noThinkTags, clean, greets('Dana'), greetsNobodyElse('Dana', ['Alex']), mentionsAny(['walkthrough', 'walk through', '15 minute', 'fifteen minute'], 'the ask'), wordsUnder(160)],
+    checks: [
+      nonEmpty, noThinkTags, clean, greets('Dana'), addressed('Dana', [ALEX.name]),
+      mentionsAny(['walkthrough', 'walk through', '15 minute', 'fifteen minute'], 'the ask'), wordsUnder(160),
+      inventsNothing(() => CAMPAIGN_BRIEF), hasParagraphs,
+    ],
   },
   {
     id: 'personalize/no-name',
@@ -364,7 +431,7 @@ const CASES: Case[] = [
       mode: 'personalize',
       senderName: ALEX.name, senderEmail: ALEX.email,
       recipient: { email: 'accounts@westmere.example', company: 'Westmere Trading' },
-      template: 'We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they would like a 15 minute walkthrough next week.',
+      template: CAMPAIGN_BRIEF,
       length: 'short',
     },
     maxTokens: 600,
@@ -379,14 +446,128 @@ const CASES: Case[] = [
       senderName: ALEX.name, senderEmail: ALEX.email,
       recipient: DANA,
       // A brief that a careless model will copy verbatim, placeholders and all.
-      template: 'Tell them about our new service. Mention [product name] and say it costs [price]. Sign off as [Your Name].',
+      template: HOSTILE_BRIEF,
       length: 'short',
     },
     maxTokens: 600,
     // Whatever the model does, the guard must catch anything left over: this
     // case passes when the output is clean, and its failure is the point of
     // the review queue.
-    checks: [nonEmpty, noThinkTags, greets('Dana')],
+    // The old version of this case asserted only that something came back.
+    // The model duly invented a product and a price — "$150 per month" — and
+    // it passed, which is a worse outcome than leaving [price] in, because a
+    // placeholder is held for review and a price is sent.
+    checks: [nonEmpty, noThinkTags, greets('Dana'), inventsNothing(() => HOSTILE_BRIEF)],
+  },
+  // ---------- Requirement A: the name, in every shape it really arrives in ----------
+  //
+  // Three people and one "Osei, Dana" was not coverage. Every case below is a
+  // shape seen in real mail or in a real CSV export, and every one of them is
+  // decided by ai/names.ts rather than by asking the model to be careful. The
+  // rule they all test is the same: use the name when it resolves, and greet
+  // nobody when it does not. Never guess.
+  ...([
+    // The display name is the sender's own name, which is what a badly built
+    // "reply to" form produces. Greeting the sender is not an option.
+    { id: 'name/sender-own-name', raw: 'Alex Rivera', expect: '' },
+    // A login, not a name. "hey dana.osei0," is the failure being refused.
+    { id: 'name/email-local-part', raw: 'dana.osei0', expect: '' },
+    { id: 'name/address-as-name', raw: 'dana@northwind.example', expect: '' },
+    // A template nobody rendered, and the fallbacks people type instead.
+    { id: 'name/placeholder-bracket', raw: '[Your Name]', expect: '' },
+    { id: 'name/placeholder-merge', raw: '{{first_name}}', expect: '' },
+    { id: 'name/placeholder-word', raw: 'there', expect: '' },
+    { id: 'name/blank-csv-column', raw: '   ', expect: '' },
+    { id: 'name/malformed-csv-column', raw: 'N/A', expect: '' },
+    // The company in the name column: a one-column export of "Account name".
+    { id: 'name/company-in-name-column', raw: 'Northwind Supply', expect: '', company: 'Northwind Supply' },
+    // Shapes that ARE names and must survive intact.
+    { id: 'name/surname-first', raw: 'Osei, Dana', expect: 'Dana' },
+    { id: 'name/shouting-surname-first', raw: 'SMITH, JOHN', expect: 'John' },
+    { id: 'name/honorific-and-hyphen', raw: "Dr. Jane Smith-O'Brien", expect: 'Jane' },
+    { id: 'name/company-in-parens', raw: 'John Smith (Acme)', expect: 'John' },
+    { id: 'name/single-word', raw: 'Madonna', expect: 'Madonna' },
+    { id: 'name/emoji-in-display-name', raw: '✨ Dana Osei 🚀', expect: 'Dana' },
+    // Written as one unit: greeted whole rather than split on a space that is
+    // not there, or on a family name mistaken for a given one.
+    { id: 'name/cjk', raw: '田中優希', expect: '田中優希' },
+    { id: 'name/cyrillic', raw: 'Дана Осеи', expect: 'Дана' },
+  ] as { id: string; raw: string; expect: string; company?: string }[]).map((n): Case => ({
+    id: n.id,
+    tags: ['name', 'compose'],
+    input: {
+      mode: 'compose',
+      instruction: 'Ask whether they are the right person to talk to about bookkeeping. Two sentences.',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      // Exactly what the routes do: the raw value is resolved in code first,
+      // and only the resolved name is ever put in front of the model.
+      recipient: (() => {
+        const r = resolveRecipient([{ value: n.raw, source: 'display' }], { email: 'contact@northwind.example', senderName: ALEX.name, senderEmail: ALEX.email, company: n.company });
+        return { name: r.full || undefined, email: 'contact@northwind.example', company: n.company };
+      })(),
+      length: 'short',
+    },
+    maxTokens: 400,
+    checks: [
+      nonEmpty, noThinkTags, clean,
+      // The guard's own answer, so the eval and the send path agree.
+      addressed(n.expect, [ALEX.name, 'Priya', 'Tomasz']),
+      // And, when nothing resolved, the greeting must actually be neutral
+      // rather than merely "not one of the names we listed".
+      ...(n.expect ? [greets(n.expect)] : [greetsNoName]),
+    ],
+  })),
+
+  // A name that is only in the body of the conversation, never a participant.
+  {
+    id: 'name/third-party-in-thread',
+    tags: ['name', 'thread'],
+    input: {
+      mode: 'reply',
+      instruction: 'Confirm the start date works and that you will send the plan.',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: DANA,
+      subject: 'Northwind bookkeeping',
+      thread: deepThread(24),
+    },
+    // Tomasz is named throughout and quoted below the fold. He has never
+    // written a message.
+    checks: [nonEmpty, noThinkTags, clean, greets('Dana'), addressed('Dana', [TOMASZ.name, PRIYA.name, ALEX.name])],
+  },
+  // A shared mailbox with a real person's display name on it: the person is
+  // greeted, the mailbox is not.
+  {
+    id: 'name/role-address-with-person',
+    tags: ['name', 'compose'],
+    input: {
+      mode: 'compose',
+      instruction: 'Ask whether they are the right person to talk to about bookkeeping. Two sentences.',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: (() => {
+        const r = resolveRecipient([{ value: 'Dana Osei', source: 'display' }], { email: 'accounts@northwind.example', senderName: ALEX.name, senderEmail: ALEX.email });
+        return { name: r.full || undefined, email: 'accounts@northwind.example' };
+      })(),
+      length: 'short',
+    },
+    maxTokens: 400,
+    checks: [nonEmpty, noThinkTags, clean, greets('Dana'), addressed('Dana', [ALEX.name])],
+  },
+  // A role address with nothing but the role on it: nobody to greet.
+  {
+    id: 'name/noreply-address',
+    tags: ['name', 'compose'],
+    input: {
+      mode: 'compose',
+      instruction: 'Ask whether they are the right person to talk to about bookkeeping. Two sentences.',
+      senderName: ALEX.name, senderEmail: ALEX.email,
+      recipient: (() => {
+        const r = resolveRecipient([{ value: 'Accounts', source: 'display' }], { email: 'noreply@northwind.example', senderName: ALEX.name, senderEmail: ALEX.email });
+        return { name: r.full || undefined, email: 'noreply@northwind.example' };
+      })(),
+      length: 'short',
+    },
+    maxTokens: 400,
+    checks: [nonEmpty, noThinkTags, clean, greetsNoName, addressed('', [ALEX.name])],
   },
 ];
 
@@ -394,7 +575,7 @@ const CASES: Case[] = [
 
 interface Result { id: string; run: number; ms: number; failures: string[]; output: string; raw?: string; error?: string }
 
-async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: number }): Promise<Result> {
+async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: number }, depth?: number): Promise<Result> {
   const t0 = Date.now();
   try {
     // Exactly what the routes and the scheduler do: per-mode tuning, and a
@@ -402,7 +583,11 @@ async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: num
     const tuning = modeTuning(c.input.mode);
     const maxTokens = c.maxTokens ?? tuning.maxTokens;
     const temperature = c.temperature ?? tuning.temperature;
-    const input = { ...c.input, threadChars: Math.min(threadBudgetChars(s.numCtx, maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity) };
+    // The depth sweep re-runs the thread cases against a longer or shorter
+    // conversation. Everything else about the case is unchanged, so what the
+    // sweep measures is depth and nothing else.
+    const thread = depth && c.input.thread ? deepThread(depth) : c.input.thread;
+    const input = { ...c.input, thread, threadChars: Math.min(threadBudgetChars(s.numCtx, maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity) };
     // A fixed seed per run number, so a grading pass can be repeated and
     // compared: the same case in run 2 asks the model exactly what it asked
     // it in run 2 yesterday. Nothing a person triggers sets a seed — their
@@ -427,14 +612,57 @@ async function main(): Promise<void> {
   console.log(`model=${s.model} think=${s.allowThinking} num_ctx=${s.numCtx} max_tokens=${s.maxTokens} temp=${s.temperature} top_p=${s.topP} top_k=${s.topK} runs=${RUNS}\n`);
 
   const cases = ONLY.length ? CASES.filter((c) => ONLY.some((o) => c.id.includes(o) || c.tags.includes(o))) : CASES;
+
+  // How big the conversation actually is, in the units the model counts in.
+  // Printed because the fixture this replaced was 596 tokens and every "deep
+  // thread" result measured against it was passing for the wrong reason.
+  const budget = threadBudgetChars(s.numCtx, s.maxTokens);
+  console.log(`thread budget at num_ctx ${s.numCtx}: ${budget.toLocaleString()} chars`);
+  for (const n of DEPTHS.length ? DEPTHS : [24]) {
+    const t = deepThread(n);
+    const joined = t.map((m) => `--- From ${m.from} on ${m.date}\n${m.text}`).join('\n');
+    const tok = await countTokens(joined, s.model);
+    console.log(`  depth ${String(n).padStart(2)}: ${t.length} messages, ${joined.length.toLocaleString()} chars, ${tok < 0 ? '?' : tok.toLocaleString()} tokens${joined.length > budget ? `  (truncated to ${budget.toLocaleString()} — ${Math.round((1 - budget / joined.length) * 100)}% dropped from the middle)` : ''}`);
+  }
+  console.log('');
+
   const results: Result[] = [];
-  for (const c of cases) {
-    for (let run = 1; run <= RUNS; run++) {
-      const r = await runCase(c, run, s);
-      results.push(r);
-      const mark = r.failures.length ? 'FAIL' : 'ok  ';
-      console.log(`${mark} ${c.id} #${run} ${(r.ms / 1000).toFixed(1)}s${r.failures.length ? '\n       ' + r.failures.join('\n       ') : ''}`);
-      if (r.failures.length && process.env.VERBOSE) console.log(`       --- output ---\n${r.output.split('\n').map((l) => '       | ' + l).join('\n')}`);
+  // ---------- the depth sweep ----------
+  if (DEPTHS.length) {
+    // Only the cases whose point is the conversation. A short-thread case
+    // handed a 50-message thread is not the same case any more.
+    const threadCases = cases.filter((c) => c.tags.includes('thread'));
+    const grid: Record<string, Record<number, string>> = {};
+    for (const depth of DEPTHS) {
+      sweepDepth = depth;
+      for (const c of threadCases) {
+        let pass = 0;
+        const why = new Set<string>();
+        for (let run = 1; run <= RUNS; run++) {
+          const r = await runCase(c, run, s, depth);
+          results.push({ ...r, id: `${c.id}@${depth}` });
+          if (!r.failures.length) pass++; else for (const f of r.failures) why.add(f);
+          console.log(`${r.failures.length ? 'FAIL' : 'ok  '} ${c.id}@${depth} #${run} ${(r.ms / 1000).toFixed(1)}s${r.failures.length ? '\n       ' + r.failures.join('\n       ') : ''}`);
+        }
+        (grid[c.id] ??= {})[depth] = `${pass}/${RUNS}`;
+      }
+    }
+    sweepDepth = null;
+    console.log('\n---- depth curve (passes out of ' + RUNS + ') ----');
+    const head = DEPTHS.map((d) => String(d).padStart(5)).join('');
+    console.log(`${''.padEnd(32)}${head}`);
+    for (const [id, row] of Object.entries(grid)) {
+      console.log(`${id.padEnd(32)}${DEPTHS.map((d) => (row[d] ?? '-').padStart(5)).join('')}`);
+    }
+  } else {
+    for (const c of cases) {
+      for (let run = 1; run <= RUNS; run++) {
+        const r = await runCase(c, run, s);
+        results.push(r);
+        const mark = r.failures.length ? 'FAIL' : 'ok  ';
+        console.log(`${mark} ${c.id} #${run} ${(r.ms / 1000).toFixed(1)}s${r.failures.length ? '\n       ' + r.failures.join('\n       ') : ''}`);
+        if (r.failures.length && process.env.VERBOSE) console.log(`       --- output ---\n${r.output.split('\n').map((l) => '       | ' + l).join('\n')}`);
+      }
     }
   }
 

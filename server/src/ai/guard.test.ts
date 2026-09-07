@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertSendable, findTemplateArtifacts, TemplateGuardError, findGreetingProblems, findInventedSpecifics, extractSpecifics } from './guard.js';
+import { cleanOutput } from './prompts.js';
 
 const kinds = (r: ReturnType<typeof findTemplateArtifacts>) => [...new Set(r.map((h) => h.kind))];
 
@@ -122,4 +123,38 @@ test('a figure, date or term the message was never given is held back', () => {
   assert.deepEqual(findInventedSpecifics('Please find the plan attached.', { facts }).map((h) => h.kind), ['false_attachment']);
   // ...unless it does.
   assert.deepEqual(findInventedSpecifics('Please find the plan attached.', { facts, hasAttachment: true }), []);
+});
+
+test('a model arguing with its own prompt inside the email is caught', () => {
+  // Taken verbatim from a campaign preview the guard previously called ready
+  // to send.
+  const leaked = [
+    'Hi Dana,',
+    '',
+    'I am pleased to say our same-day reports are live.',
+    '',
+    '"Hi Dana," should not precede the text as per strict instruction about no other name usage but the prompt requires it exactly. Wait, re-reading rule: ... Okay. Proceeding.',
+  ].join('\n');
+  const hits = findTemplateArtifacts({ text: leaked });
+  assert.equal(hits.some((h) => h.kind === 'prompt_leak'), true, 'inline reasoning must be caught, not only line-anchored labels');
+  // Ordinary prose that happens to contain one of those words is not a leak.
+  assert.deepEqual(findTemplateArtifacts({ text: 'Hi Dana,\n\nI will check the rule about VAT on freight and come back to you.' }), []);
+  assert.deepEqual(findTemplateArtifacts({ text: 'Hi Dana,\n\nLet me know what works best and I will hold the slot.' }), []);
+});
+
+test('a whole email arriving as a subject line is cut down to one', () => {
+  const wholeEmail = 'Hi Dana, Same-day bookkeeping reports are now live through January for our Northwind Supply team. Given your experience managing Sage across multiple warehouses in Leeds, could we schedule a quick walk-through sometime next week?';
+  const subject = cleanOutput(wholeEmail, 'subject');
+  assert.ok(subject.length <= 90, `subject is ${subject.length} chars: ${subject}`);
+  assert.ok(!/^hi\b/i.test(subject), 'the greeting is dropped');
+  // A subject that is already a subject is left exactly as it is.
+  assert.equal(cleanOutput('Same-Day Bookkeeping Reports Free Until January', 'subject'), 'Same-Day Bookkeeping Reports Free Until January');
+});
+
+test('a weekday proposed with a time of day counts as a specific', () => {
+  const facts = 'Ask if they would like a 15 minute walkthrough next week.';
+  const kinds = (b: string) => findInventedSpecifics(b, { facts }).map((h) => h.kind);
+  assert.deepEqual(kinds('Would Tuesday afternoon work for the walkthrough?'), ['invented_date']);
+  // A weekday on its own is a pleasantry, not a proposal.
+  assert.deepEqual(kinds('Hope you have a good Monday.'), []);
 });

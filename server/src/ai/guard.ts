@@ -56,6 +56,31 @@ const BRACKET_RE = new RegExp(`\\[\\s*(?:${PLACEHOLDER_WORDS})(?:[\\s'’-][^\\]
 // Lines the prompt builder writes; if they show up in the output the model
 // echoed its instructions instead of answering them.
 const PROMPT_RE = /^(?:\s*(?:recipient facts|conversation so far|sender'?s voice|subject of this email|brief \/ template|extra direction|what the reply should do|write to |you are writing as|tone:|keep it to|goal:|direction:|draft:|email:|system prompt|user prompt|instruction(?:s)?:)|\s*-{3,}\s*from\b)/im;
+// The same leak, but mid-sentence rather than at the start of a line.
+//
+// The line-anchored pattern above catches a model that echoes its prompt as a
+// block. It does not catch one that argues with the prompt inside the email —
+// which is what a reasoning-capable model does when the instructions look
+// contradictory to it, and it produced this, in a campaign preview the guard
+// then called ready to send:
+//
+//   "Hi Dana," should not precede the text as per strict instruction about no
+//   other name usage but the prompt requires it exactly. Wait, re-reading
+//   rule: ... Okay. So start directly with Hi Dana,. Proceeding.
+//
+// Every phrase here is one that belongs to writing *about* the task rather
+// than doing it. They are matched anywhere, because that is where they turn up.
+const REASONING_RE = new RegExp(
+  [
+    // Talking about the instructions.
+    '\\b(?:as per (?:the )?(?:strict )?instructions?|per the (?:strict )?instructions?|the (?:prompt|instruction|rule|brief) (?:requires|says|states|asks|wants)|re-?reading (?:the )?(?:rule|prompt|instruction)|the user (?:wrote|said|asked)|user wrote:|as instructed above)\\b',
+    // Thinking out loud.
+    '\\b(?:wait,? (?:re-?read|let me|no|actually)|let me (?:check|re-?read|reconsider|think)|hold on,? (?:let me|that)|on second thought|okay[,.]? so\\b|alright[,.]? so\\b|hmm[,.]|i should (?:probably )?(?:start|write|use|avoid|make sure)|proceeding\\.|conflict resolved|that\\u2019?s fine[,.]? conflict)\\b',
+    // Naming the machinery.
+    '\\b(?:word limit|character limit|token limit|the system prompt|sender voice preference|voice preference:|output format|per the format)\\b',
+  ].join('|'),
+  'i',
+);
 const AI_RE = /\b(?:as an ai(?: language model| assistant)?|i am an ai\b|i'?m an ai\b|as a language model|i(?:'m| am) (?:just )?(?:a|an) (?:ai|artificial intelligence|language model|virtual assistant|chatbot)|this (?:message|email|reply) was (?:generated|written) by (?:an )?ai\b|\[assistant\]|\[end of (?:email|reply|message)\])/i;
 const FILLER_RE = /\blorem ipsum\b|\bplaceholder text\b|\bsample text\b/i;
 
@@ -137,7 +162,10 @@ export function findGreetingProblems(body: string, expect: GreetingExpectation):
   // Anyone else on the thread, greeted anywhere.
   for (const f of forbidden) {
     if (want && f.toLowerCase() === want.toLowerCase()) continue;
-    const re = new RegExp(`^\\s*(?:hi|hello|hey|dear)\\b[\\s,]*${f.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'im');
+    // "(?!\p{L})" rather than "\b": the ASCII word boundary never fires after
+    // a Cyrillic or CJK character, so a name in one of those scripts would
+    // never have matched here at all.
+    const re = new RegExp(`^\\s*(?:hi|hello|hey|dear)[\\s,]*${f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\p{L})`, 'imu');
     if (re.test(body)) hits.push({ kind: 'wrong_name', sample: `greets ${f}, who is not the recipient` });
   }
   return hits;
@@ -203,10 +231,16 @@ export function extractSpecifics(text: string): Specific[] {
   const add = (kind: SpecificKind, token: string, sample: string) => { out.push({ kind, token, sample: sample.trim() }); };
   const t = text.replace(/ /g, ' ');
 
-  // Money, digits: £4,800 / $150 / 4,800 pounds / 950 GBP
-  for (const m of t.matchAll(new RegExp(`([£$€]\\s?)(\\d[\\d,]*(?:\\.\\d+)?)|(\\d[\\d,]*(?:\\.\\d+)?)\\s*${CURRENCY_WORD}\\b`, 'gi'))) {
-    const digits = (m[2] ?? m[3] ?? '').replace(/,/g, '');
-    if (digits) add('figure', `money:${Number(digits)}`, m[0]);
+  // Money, digits: £4,800 / $150 / 4,800 pounds / 950 GBP / £11k / £1.2m.
+  // The k and m suffixes matter: a model paraphrasing "about eleven thousand
+  // pounds" as "£11k" is being accurate, and reading that as £11 would accuse
+  // it of inventing a figure it had just repeated correctly.
+  for (const m of t.matchAll(new RegExp(`([£$€]\\s?)(\\d[\\d,]*(?:\\.\\d+)?)\\s*([km])?(?![\\d\\p{L}])|(\\d[\\d,]*(?:\\.\\d+)?)\\s*([km])?\\s*${CURRENCY_WORD}\\b`, 'giu'))) {
+    const digits = (m[2] ?? m[4] ?? '').replace(/,/g, '');
+    const scale = (m[3] ?? m[5] ?? '').toLowerCase();
+    if (!digits) continue;
+    const n = Number(digits) * (scale === 'k' ? 1_000 : scale === 'm' ? 1_000_000 : 1);
+    add('figure', `money:${n}`, m[0]);
   }
   // Money, words: "four thousand eight hundred pounds"
   for (const m of t.matchAll(new RegExp(`((?:${NUM_WORD_RE}[\\s-]+){1,8})${CURRENCY_WORD}\\b`, 'gi'))) {
@@ -229,6 +263,16 @@ export function extractSpecifics(text: string): Specific[] {
   for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_RE})\\b`, 'gi'))) add('date', `day:${monthIndex(m[2])}-${Number(m[1])}`, m[0]);
   for (const m of t.matchAll(new RegExp(`\\b(${MONTH_RE})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi'))) add('date', `day:${monthIndex(m[1])}-${Number(m[2])}`, m[0]);
   for (const m of t.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) add('date', `day:${MONTHS[Number(m[2]) - 1] ?? m[2]}-${Number(m[3])}`, m[0]);
+  // A weekday on its own is usually a pleasantry ("have a good Monday") and
+  // matching it would cost more in false positives than it is worth. A
+  // weekday next to a part of the day is a proposal — "would Tuesday
+  // afternoon work?" — and a proposal the brief never made is one the sender
+  // has to honour.
+  for (const m of t.matchAll(/\b(mon|tues?|wednes|thurs?|fri|satur|sun)day\s+(morning|afternoon|evening)\b|\b(morning|afternoon|evening)\s+of\s+(mon|tues?|wednes|thurs?|fri|satur|sun)day\b/gi)) {
+    const day = (m[1] ?? m[4] ?? '').toLowerCase().slice(0, 3);
+    const part = (m[2] ?? m[3] ?? '').toLowerCase();
+    add('date', `when:${day}-${part}`, m[0]);
+  }
   // Terms and durations: 3 months / three-month / two days / a fortnight
   for (const m of t.matchAll(new RegExp(`\\b(\\d{1,3}|${NUM_WORD_RE})[\\s-]+(${UNIT_RE})s?\\b`, 'gi'))) {
     const n = /^\d/.test(m[1]) ? Number(m[1]) : wordsToNumber(m[1]);
@@ -311,6 +355,8 @@ export function findTemplateArtifacts(input: GuardInput): GuardHit[] {
   for (const m of text.matchAll(BRACKET_RE)) push('placeholder', m[0]);
   const prompt = text.match(PROMPT_RE);
   if (prompt) push('prompt_leak', prompt[0]);
+  const reasoning = bodyOnly.match(REASONING_RE);
+  if (reasoning) push('prompt_leak', reasoning[0]);
   const ai = text.match(AI_RE);
   if (ai) push('ai_disclosure', ai[0]);
   const filler = text.match(FILLER_RE);

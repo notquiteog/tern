@@ -5,7 +5,8 @@
 import { config } from '../config.js';
 import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
-import { recommendModel } from './models.js';
+import { recommendModel, recommendNumCtx } from './models.js';
+import { defaultTuningFor } from './presets.js';
 import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
@@ -64,16 +65,22 @@ export interface AiSettings {
   concurrency: boolean;
 }
 
-const DEFAULTS: AiSettings = {
+// Chosen before the defaults are built, because the sampling defaults depend
+// on which model this install is going to run.
+const DEFAULT_MODEL = config.aiModel || recommendModel(config.totalMemBytes).model;
+
+const BASE_DEFAULTS: AiSettings = {
   enabled: config.aiEnabled,
   provider: 'ollama',
   baseUrl: config.ollamaUrl,
   apiKey: '',
-  model: config.aiModel || recommendModel(config.totalMemBytes).model,
+  model: DEFAULT_MODEL,
   temperature: 0.7,
-  // Big enough to hold a long thread and still leave room for the answer;
-  // `threadBudgetChars` sizes the conversation to whatever this is set to.
-  numCtx: 8192,
+  // How much conversation the model is shown, sized to the machine rather
+  // than fixed at 8192 for everybody — see models.ts. `threadBudgetChars`
+  // sizes the thread to whatever this is, so on a box with the memory for it
+  // a long thread now arrives whole instead of being trimmed from the middle.
+  numCtx: recommendNumCtx(config.totalMemBytes),
   keepAlive: '10m',
   allowThinking: false,
   thinkEffort: 'low',
@@ -92,6 +99,11 @@ const DEFAULTS: AiSettings = {
   embedModel: config.aiEmbedModel,
   concurrency: true,
 };
+
+// The numbers above are the general-purpose ones; the model's own preset wins
+// where it has an opinion. See presets.ts for why this is not left to an
+// admin to notice and apply by hand.
+const DEFAULTS: AiSettings = { ...BASE_DEFAULTS, ...defaultTuningFor(DEFAULT_MODEL) };
 
 let cache: { at: number; value: AiSettings } | null = null;
 export async function getAiSettings(): Promise<AiSettings> {

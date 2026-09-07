@@ -312,6 +312,44 @@ So: the two dates, and what the ongoing monthly comes to. Nothing else, and plea
   },
 ];
 
+// ---------- the traffic a real thread accumulates ----------
+//
+// A depth sweep needs more messages than the spine has, and padding it with
+// copies would measure compression rather than recall. These are the messages
+// a real procurement thread fills up with between the decisions: scheduling,
+// invoices, an out-of-office, a question that answers itself, a supplier
+// nobody follows up on. Not one of them touches a graded fact, which is the
+// point — telling a load-bearing sentence from a pleasantry is the thing being
+// tested, and at depth 50 most of what the model can see is this.
+const FILLER: Draft[] = [
+  { who: PRIYA, sig: 'short', body: `Hi Alex,\n\nQuick administrative one: our finance system will be read-only on Thursday morning while IT patch the server. Nothing to do at your end, I just did not want you to try a load and think something had broken.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Priya,\n\nNoted, thank you. I will keep Thursday morning clear of anything that touches the ledger and pick it up in the afternoon.` },
+  { who: DANA, sig: 'full', body: `Hi Alex,\n\nOur purchasing manager has been asking again about a supplier scorecard. I have told him twice that it is not part of this and he keeps finding new ways to describe it as though it were. Ignore him if he writes; I am not asking you to build it.\n\nSeparately, do you have a preference for how we get you documents — the shared drive or attachments? No strong feeling either way here.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Dana,\n\nThe shared drive, if it is all the same to you. Attachments have a way of becoming the authoritative copy of something and then diverging from the real one.\n\nAnd understood about the scorecard. I will be friendly and unhelpful.` },
+  { who: PRIYA, sig: 'footer', body: `Hi Alex,\n\nOne of the euro invoices from the Poland supplier has come through with a different VAT number on it than the previous ones. I suspect they have re-registered rather than anything sinister, but I have parked it rather than posting it. Will chase them and let you know.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Priya,\n\nParking it is right. A changed VAT number mid-year is usually a re-registration or a group restructure, and posting it under the old one is much harder to unpick later than waiting a week.` },
+  { who: DANA, sig: 'none', body: `Out of office until Monday — back then, nothing urgent.\n\nSent from my phone` },
+  { who: PRIYA, sig: 'full', body: `Hi Alex,\n\nWhile Dana is out: our auditors have asked for a copy of the engagement letter for their file. Could you send one over when you get a moment? No rush, they will not look at it until the autumn.\n\nAlso, entirely unrelated, do you know whether anyone still supports the old Sage report format? Someone here has a spreadsheet that depends on it and I suspect the honest answer is that they should stop.` },
+  { who: ALEX, sig: 'full', quote: true, body: `Hi Priya,\n\nEngagement letter is on its way over to the shared drive this afternoon.\n\nOn the old report format — the honest answer is that they should stop. It is technically still produced but nothing validates it any more, so a spreadsheet built on it will break silently rather than loudly, which is the worst way for a spreadsheet to break.` },
+  { who: PRIYA, sig: 'short', quote: true, body: `Hi Alex,\n\nThat is roughly what I told them, but it lands better coming from someone external. Thank you.` },
+  { who: DANA, sig: 'full', body: `Morning Alex,\n\nBack, and catching up. Nothing has fallen over while I was away as far as I can tell, which is either a good sign or evidence that I am not needed.\n\nOne small thing: we are moving office in the spring, only across town, but it will mean a new registered address on everything at some point. Not your problem yet and possibly never, just flagging it so it is not a surprise.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Dana,\n\nWelcome back. A new registered address is a twenty minute job when it happens, so genuinely not a problem — but thank you for flagging it early rather than the week it changes.` },
+  { who: PRIYA, sig: 'full', body: `Hi Alex,\n\nThe Poland supplier came back: it was a re-registration, as you thought. New number is on the invoice and they have confirmed the old one is dead. I will post the parked one under the new number unless you would rather look at it first.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Priya,\n\nGo ahead and post it. That is exactly the outcome that needed confirming rather than assuming.` },
+  { who: DANA, sig: 'full', body: `Hi Alex,\n\nSomething I keep meaning to ask and keep forgetting: is there any value in us doing management accounts monthly rather than quarterly, or is that a solution looking for a problem at our size? Genuinely open question, no agenda.` },
+  { who: ALEX, sig: 'full', quote: true, body: `Hi Dana,\n\nAt 42 people, with three sites and a real inventory position, monthly is usually worth it — not because the numbers change that fast but because a quarter is long enough for a bad month to hide inside a decent one. The cost is a day of Priya's time a month, so it is a real trade rather than a free improvement.\n\nI would not change anything until the clean-up is done, though. Reporting more often on a ledger you do not trust yet just gives you more opportunities to be misled.` },
+  { who: DANA, sig: 'short', quote: true, body: `Hi Alex,\n\nThat is a sensible answer and I will park it until afterwards. Thank you for not simply saying yes.` },
+  { who: PRIYA, sig: 'full', body: `Hi Alex,\n\nOur bank has changed its statement export again — same data, different column order, because of course it has. I have updated the import mapping at our end. Mentioning it only in case you have a mapping of your own that will need the same treatment.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Priya,\n\nI do, and it will. Thank you — that would have surfaced as a very confusing reconciliation failure in about a fortnight.` },
+  { who: DANA, sig: 'full', body: `Hi Alex,\n\nA colleague asked me who we were using and I mentioned you. She runs a smaller wholesale business out of Sheffield, maybe fifteen people. I have not given her your address, I would rather ask first — happy to pass it on or not, entirely up to you.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Dana,\n\nPlease do pass it on, and thank you. That is much appreciated.` },
+  { who: PRIYA, sig: 'footer', body: `Hi Alex,\n\nThe IT patching I mentioned has been moved to the following week, so Thursday is fine after all. Sorry for the noise.\n\nWhile I have you: is there a sensible retention period for the raw export files once everything is reconciled, or do we keep them indefinitely? I have no idea what the right answer is here.` },
+  { who: ALEX, sig: 'full', quote: true, body: `Hi Priya,\n\nNo noise at all, better to know.\n\nOn retention — keep the raw exports until the year they cover has been audited and signed off, then they are just copies of data that exists in a better form elsewhere. Indefinitely is the default only because nobody ever decides otherwise.` },
+  { who: DANA, sig: 'short', body: `Hi Alex,\n\nOur board pack template is being redesigned by someone in marketing, which I mention only so that when you see it you know it was not my idea and I could not stop it.` },
+  { who: ALEX, sig: 'short', quote: true, body: `Hi Dana,\n\nUnderstood. I will admire the typography and say nothing about the numbers moving.` },
+  { who: PRIYA, sig: 'full', body: `Hi Alex,\n\nLast small thing from me before the weekend: one of the Castleford stock adjustments from May has a note on it that just says "per DM" and nobody knows who DM is or what they decided. I am going to treat it as unexplained rather than invent a reason for it.\n\nHave a good weekend.` },
+];
+
 // A quoted block the way a mail client writes one: an attribution line, then
 // the message being answered with "> " in front of every line, including one
 // level of whatever it was itself quoting.
@@ -331,12 +369,31 @@ export interface FixtureMessage { who: Person; from: string; date: string; at: D
 // The whole conversation, rendered. `n` keeps the first messages, exactly as
 // the fixture it replaces did, so a depth sweep sees the opening terms and
 // loses the middle rather than starting late.
+export function maxDepth(): number { return DRAFTS.length + FILLER.length; }
+
+// The conversation at a given depth.
+//
+// Up to the length of the spine this is simply the first `n` messages. Beyond
+// it, the filler is spliced in *before the closing question* — so however deep
+// the thread gets, it always opens with the terms that were agreed and always
+// ends with the message being answered, and what grows is the middle. That is
+// the shape the packing logic exists for, and the shape that decides whether
+// a fact stated in message 13 of 50 survives.
+function draftsAt(n: number): Draft[] {
+  if (n <= DRAFTS.length) return DRAFTS.slice(0, n);
+  const spine = DRAFTS.slice(0, DRAFTS.length - 1);
+  const ask = DRAFTS[DRAFTS.length - 1];
+  const wanted = Math.min(n - DRAFTS.length, FILLER.length);
+  return [...spine, ...FILLER.slice(0, wanted), ask];
+}
+
 export function realisticThread(n = DRAFTS.length): FixtureMessage[] {
   const start = new Date('2026-06-01T09:12:00Z');
   const out: FixtureMessage[] = [];
+  const drafts = draftsAt(n);
   let prev: { who: Person; rendered: string; date: Date } | null = null;
-  for (let i = 0; i < DRAFTS.length; i++) {
-    const d = DRAFTS[i];
+  for (let i = 0; i < drafts.length; i++) {
+    const d = drafts[i];
     const at = new Date(start.getTime() + i * 86400_000 + (i % 5) * 3600_000);
     const sig = d.sig === 'none' ? '' : signature(d.who, { footer: d.sig === 'footer', short: d.sig === 'short' });
     const own = [d.body.trim(), sig].filter(Boolean).join('\n\n');
@@ -344,7 +401,7 @@ export function realisticThread(n = DRAFTS.length): FixtureMessage[] {
     out.push({ who: d.who, from: `${d.who.name} <${d.who.email}>`, date: at.toDateString(), at, text });
     prev = { who: d.who, rendered: own, date: at };
   }
-  return out.slice(0, n);
+  return out;
 }
 
 // The shape `live.eval.ts` hands to `buildMessages`.

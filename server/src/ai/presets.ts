@@ -140,3 +140,41 @@ export async function deletePreset(id: string): Promise<AiPreset[]> {
   await put(left);
   return [...BUILT_IN_PRESETS, ...left];
 }
+
+
+// ---------- The tuning a fresh install starts with ----------
+//
+// The audit this exists for: Tern's shipped sampling defaults — temperature
+// 0.7, top-p 0.9, top-k 40, repeat penalty 1.1 — are qwen2.5's numbers, and
+// they were being applied to whatever model the install ended up running.
+// An install that picked qwen3.5:4b got a model tuned for a different one,
+// with no indication that anything was wrong and no reason for anybody to
+// open the tuning panel. That is precisely the failure the product rules
+// forbid: a default that is not good enough, hidden behind a knob.
+//
+// A preset already carries the right numbers per model. This makes the
+// shipped default *be* that preset, chosen by the model the install is
+// actually going to run, so the zero-config path gets the tuning its model
+// asks for and the panel stays something nobody has to open.
+//
+// Matching is on the family rather than the exact tag, because "qwen3.5:4b",
+// "qwen3.5:8b" and "qwen3.5:4b-instruct-q4_K_M" all want the same sampling.
+export function defaultTuningFor(model: string): PresetValues {
+  const m = String(model ?? '').toLowerCase();
+  const family = (id: string) => BUILT_IN_PRESETS.find((p) => p.id === id)!.values;
+  // Thinking stays off by default even on a model that can reason: on a
+  // CPU-only box it turns a ten-second draft into a two-minute one, and the
+  // preset that turns it on is one click away for anyone who wants it.
+  if (/^qwen3\.?5/.test(m)) return family('builtin-qwen35-fast');
+  return family('builtin-balanced');
+}
+
+// Which shipped preset an install is currently sitting on, if any, so the
+// settings route can tell whether the tuning has been touched by hand.
+export function matchesPreset(values: PresetValues, preset: PresetValues): boolean {
+  return PRESET_FIELDS.every((k) => {
+    const a = values[k], b = preset[k];
+    if (a === undefined || b === undefined) return a === b;
+    return a === b;
+  });
+}

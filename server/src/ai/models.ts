@@ -35,3 +35,39 @@ export const CURATED_MODELS = [
   { name: 'gemma3:4b', sizeGB: 3.3, note: 'medium alternative, good writer' },
   { name: 'phi4-mini', sizeGB: 2.5, note: 'medium alternative' },
 ];
+
+// ---------- How much conversation the model is given ----------
+//
+// `num_ctx` shipped as a flat 8192 whatever the machine was, and paired with
+// a 14,000-character ceiling on the thread that meant raising it changed
+// nothing anyone could see. Both are now real: the ceiling is an upper bound
+// (see prompts.ts) and this is the window.
+//
+// The number matters because it decides whether a long thread is shown whole
+// or trimmed from the middle. Measured on the fixture the evaluations use, a
+// realistic 24-message B2B thread is about 8,500 tokens and a 50-message one
+// about 12,500, so a window of 16k holds the deepest thread the sweep tests
+// with room for the instructions and the reply.
+//
+// It is not free. Every parallel slot Ollama serves holds its own copy of the
+// KV cache — measured on qwen3.5:4b, about 290 MB per 8k of window — and on a
+// CPU-only box the prompt has to be read before a single token comes back, so
+// a big window turns into a long wait rather than a better answer. Hence a
+// tier table rather than a constant, and a ceiling well below what the model
+// advertises: qwen3.5:4b claims 262k, which no box this ships to can afford
+// and no 4B model uses well.
+export interface CtxTier { minGiB: number; numCtx: number; note: string }
+
+export const CTX_TIERS: CtxTier[] = [
+  { minGiB: 0, numCtx: 4096, note: 'Small box: a short thread, trimmed from the middle beyond that.' },
+  { minGiB: 6, numCtx: 8192, note: 'Enough for most conversations; a long one is packed from both ends.' },
+  { minGiB: 12, numCtx: 16384, note: 'Holds a 50-message thread whole.' },
+  { minGiB: 24, numCtx: 32768, note: 'Room for the longest threads and several parallel slots.' },
+];
+
+export function recommendNumCtx(totalBytes: number): number {
+  const gib = totalBytes / 1024 ** 3;
+  let pick = CTX_TIERS[0];
+  for (const t of CTX_TIERS) if (gib >= t.minGiB) pick = t;
+  return pick.numCtx;
+}

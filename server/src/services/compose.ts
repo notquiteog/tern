@@ -15,7 +15,7 @@ import { allowed } from './capabilities.js';
 import { escapeHtml } from './merge.js';
 import { badRequest } from '../errors.js';
 import { scrubMedia } from './scrub.js';
-import { assertSendable } from '../ai/guard.js';
+import { assertSendable, type GuardInput } from '../ai/guard.js';
 import { buildAutocryptHeader, buildGossipHeader } from './autocrypt.js';
 import { openEmail } from './mailVault.js';
 
@@ -51,6 +51,10 @@ export interface ComposeInput {
   // A person read and approved this exact text (review queue). Automated
   // mail without this flag goes through the template/AI artifact guard.
   reviewed?: boolean;
+  // What the guard may assert about a generated message: who it is to, and
+  // the closed set of facts it was written from. Supplied by the scheduler
+  // for campaign and responder mail; absent for everything else.
+  guard?: Pick<GuardInput, 'greeting' | 'specifics'>;
 }
 
 const AUTOMATED_KINDS = new Set(['sequence', 'auto_reply']);
@@ -117,7 +121,18 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   // Hard stop for automated mail: leftover merge fields, placeholders or
   // prompt text never reach a recipient. The scheduler diverts such messages
   // to the review queue before getting here; this is the backstop.
-  if (AUTOMATED_KINDS.has(input.kind) && !input.reviewed) assertSendable({ subject: input.subject, html: input.html, text: input.text });
+  if (AUTOMATED_KINDS.has(input.kind) && !input.reviewed) assertSendable({ subject: input.subject, html: input.html, text: input.text, ...(input.guard ?? {}) });
+  // Nothing this install sends by itself goes to somebody who asked it to
+  // stop. The sequence worker checks this before it writes and again at the
+  // gate; this is the backstop that also covers the outbox, where an
+  // automatic reply can sit for minutes behind the account's pacing, and it
+  // is deliberately not waived by `reviewed`: an approval given ten minutes
+  // ago does not outrank an unsubscribe given five minutes ago.
+  if (AUTOMATED_KINDS.has(input.kind)) {
+    const addresses = [...to, ...cc, ...bcc].map((a) => a.email.toLowerCase());
+    const stopped = await query<{ email: string }>('SELECT email FROM suppressions WHERE user_id=$1 AND lower(email) = ANY($2)', [acc.user_id, addresses]);
+    if (stopped.length) throw badRequest(`Not sent: ${stopped.map((r) => r.email).join(', ')} asked not to be contacted`);
+  }
 
   let inReplyTo = input.inReplyTo ?? null;
   let references = input.references ?? [];
@@ -178,18 +193,29 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   if (mine.publicKey && mine.autocrypt.enabled) {
     try { headers['Autocrypt'] = await autocryptHeaderFor(acc.email, mine.autocrypt.prefer, mine.publicKey, mine.fingerprint); } catch (e) { /* a broken key must not block sending */ }
   }
-  if (input.unsubscribeFooter && input.contactId) {
+  // The header and the footer are two different obligations. A one-click
+  // unsubscribe header belongs on every piece of bulk mail this install
+  // sends, whatever the campaign's footer setting says — turning the visible
+  // footer off is a formatting choice, not permission to send bulk mail with
+  // no way out of it. A one-to-one automatic reply is not bulk mail and gets
+  // neither.
+  const bulk = input.kind === 'sequence';
+  if ((input.unsubscribeFooter || bulk) && input.contactId) {
     const s = await appSettings();
     const url = unsubscribeUrl(acc.user_id, input.contactId, acc.id);
     headers['List-Unsubscribe'] = `<${url}>`;
     headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
-    html += `<p style="margin-top:24px;font-size:12px;color:#6b7280">${escapeHtml(s.unsubscribeText)} <a href="${url}" style="color:#6b7280">${url}</a>${s.physicalAddress ? `<br>${escapeHtml(s.physicalAddress)}` : ''}</p>`;
+    if (input.unsubscribeFooter) html += `<p style="margin-top:24px;font-size:12px;color:#6b7280">${escapeHtml(s.unsubscribeText)} <a href="${url}" style="color:#6b7280">${url}</a>${s.physicalAddress ? `<br>${escapeHtml(s.physicalAddress)}` : ''}</p>`;
     // The plain-text alternative is derived from this HTML further down, but
     // only when the caller did not supply one of its own. When it did, the
     // footer has to be added to it here as well, or the text part of a
     // commercial message goes out with no way to unsubscribe from it.
-    if (input.text) input = { ...input, text: `${input.text}\n\n${s.unsubscribeText} ${url}${s.physicalAddress ? `\n${s.physicalAddress}` : ''}` };
+    if (input.text && input.unsubscribeFooter) input = { ...input, text: `${input.text}\n\n${s.unsubscribeText} ${url}${s.physicalAddress ? `\n${s.physicalAddress}` : ''}` };
   }
+  // Bulk mail with no unsubscribe path is not sent at all. This only fires on
+  // a code path that forgot to pass the contact, which is exactly when it
+  // matters: the alternative is quietly mailing a list with no way off it.
+  if (bulk && !input.contactId) throw badRequest('A campaign message needs a contact so it can carry an unsubscribe link');
 
   // OpenPGP: a browser-signed message arrives complete; otherwise encrypt here
   // when the recipients' public keys are on file (plus the sender's own, so

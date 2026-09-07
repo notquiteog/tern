@@ -9,11 +9,14 @@
 //   DEPTH=22 RUNS=3 npx tsx --env-file=../.env.dev src/ai/responder.eval.ts
 import { one, pool, query } from '../db.js';
 import { getAiSettings, saveAiSettings } from './llm.js';
-import { findTemplateArtifacts, describeHits } from './guard.js';
+import { findTemplateArtifacts, describeHits, findGreetingProblems } from './guard.js';
 import { sealEmail, openEmail } from '../services/mailVault.js';
 import { htmlToText } from '../services/merge.js';
 import { getAccount } from '../services/accounts.js';
 import { generateResponderReply } from '../workers/scheduler.js';
+import { threadForCache, DANA, PRIYA, TOMASZ, maxDepth } from './fixtures.js';
+import { countTokens } from './tokens.js';
+import { assertUndeliverable } from './sendGuard.js';
 
 const RUNS = Number(process.env.RUNS || 3);
 const DEPTH = Number(process.env.DEPTH || 22);
@@ -21,40 +24,20 @@ const MODEL = process.env.MODEL || 'qwen3.5:4b';
 
 // The other side writes from a client that puts the surname first — the
 // shape a responder has to survive without greeting anyone "Hi Osei,".
-const THEM = { name: 'Osei, Dana', email: 'dana@northwind.example' };
-const CC = { name: 'Priya Raman', email: 'priya@northwind.example' };
+const THEM = { name: 'Osei, Dana', email: DANA.email };
+const CC = { name: PRIYA.name, email: PRIYA.email };
 
+// The same conversation live.eval.ts uses, so a change to the fixture cannot
+// improve one measurement and quietly leave the other behind. The version
+// this replaced was 1,798 characters — 487 tokens over 24 messages — which
+// meant the "does it still know what was agreed twenty messages ago" check
+// was asking the model to recall something it could see in full.
 function conversation(us: { name: string; email: string }, n: number): { from: any; text: string }[] {
-  const D = THEM, P = CC, A = { name: us.name, email: us.email };
-  const base: { from: any; text: string }[] = [
-    { from: D, text: 'Hi, we met at the Leeds finance meetup. Northwind Supply, 42 people, three warehouses. Our books are a mess since we came off Sage in March. Can you help?' },
-    { from: A, text: 'Yes — coming off Sage is the job we do most. A two week clean-up, then monthly close.' },
-    { from: D, text: 'Two things to hold on to: our fiscal year ends 30 September, and the board meets on the second Tuesday of every month, so nothing can be in flight that week.' },
-    { from: A, text: 'Noted: 30 September year end, second Tuesday blackout. Both in the plan.' },
-    { from: D, text: 'Priya Raman is our financial controller and will be your day to day contact. Copying her in.' },
-    { from: P, text: 'Hello, Priya here. I own the ledger day to day.' },
-    { from: A, text: 'Welcome Priya. Are the March to June entries still in Sage or exported?' },
-    { from: P, text: 'Exported to CSV, but the VAT codes came across wrong. About 1,900 rows.' },
-    { from: A, text: 'The usual failure. We remap the VAT codes and reconcile against the filed returns.' },
-    { from: D, text: 'How long for 1,900 rows?' },
-    { from: A, text: 'Two days, and a third for Priya to spot check.' },
-    { from: D, text: 'And the cost?' },
-    { from: A, text: 'The clean-up is a fixed 4,800 pounds. Monthly close after that is 950 a month, rolling three month term.' },
-    { from: D, text: 'The monthly is fine. The 4,800 needs sign off from Tomasz, our MD.' },
-    { from: A, text: 'No rush. Happy to speak to Tomasz if it helps.' },
-    { from: D, text: 'Separately — multi currency? We buy from a supplier in Poland in euros.' },
-    { from: A, text: 'Yes, euro purchases revalue monthly at the ECB rate.' },
-    { from: P, text: 'Good. The three warehouse cost centres need to stay separate in the chart of accounts.' },
-    { from: A, text: 'Understood, three cost centres kept separate.' },
-    { from: P, text: 'Thanks. CSV export goes over tomorrow.' },
-    { from: D, text: 'Tomasz has approved the 4,800. We would like to start after the board meeting.' },
-    { from: A, text: 'Good news. I will draft a start plan.' },
-    { from: P, text: 'CSV is sent — the 1,900 VAT rows plus the euro supplier ledger.' },
-    { from: D, text: 'Before the plan goes out, can you put the two dates we gave you at the very start and the monthly figure in one message? I want to forward it to Tomasz.' },
-  ];
-  // Keep the opening and the closing question whatever depth is asked for.
-  if (n >= base.length) return base;
-  return [...base.slice(0, 4), ...base.slice(base.length - (n - 4))];
+  return threadForCache({ ...us, title: 'Founder', company: 'Brightledger' }, n)
+    // The fixture's own display name for the other side is "Dana Osei"; the
+    // responder path is specifically being tested against the surname-first
+    // form a directory export produces.
+    .map((m) => ({ from: m.from.email === DANA.email ? THEM : m.from, text: m.text }));
 }
 
 async function main(): Promise<void> {
@@ -64,7 +47,10 @@ async function main(): Promise<void> {
   if (!accRow) throw new Error('no account in the dev database');
   const acc = (await getAccount(accRow.id))!;
   const us = { name: acc.name, email: acc.email };
-  console.log(`account ${acc.email}  model ${s.model}  num_ctx ${s.numCtx}  think ${s.allowThinking}  thread depth ${DEPTH}  runs ${RUNS}\n`);
+  // Nothing here is sent, but the fixture addresses are asserted
+  // undeliverable rather than assumed to be.
+  assertUndeliverable([THEM.email, CC.email], 'the fixture participants');
+  console.log(`account ${acc.email}  model ${s.model}  num_ctx ${s.numCtx}  think ${s.allowThinking}  thread depth ${DEPTH} of ${maxDepth()}  runs ${RUNS}`);
 
   // ---------- seed the thread into the mail cache, sealed as sync would ----------
   const threadId = `respeval${Date.now().toString(36)}`;
@@ -94,7 +80,8 @@ async function main(): Promise<void> {
     );
     if (row) lastId = row.id;
   }
-  console.log(`seeded thread ${threadId}: ${msgs.length} messages, last db id ${lastId}`);
+  const joined = msgs.map((m) => m.text).join('\n');
+  console.log(`seeded thread ${threadId}: ${msgs.length} messages, ${joined.length.toLocaleString()} chars, ${await countTokens(joined, s.model)} tokens, last db id ${lastId}`);
 
   const responder = {
     id: 0, mode: 'review', instructions: 'Answer the question in the latest message.', tone: 'friendly', length: 'medium',
@@ -102,40 +89,59 @@ async function main(): Promise<void> {
   };
   const email = await openEmail(acc.user_id, 'ai.responders', (await one<any>('SELECT * FROM emails WHERE id=$1', [lastId]))!);
 
+  // Named checks, so a failure says which promise broke rather than only that
+  // one did — the same shape live.eval.ts and campaign.eval.ts use.
+  const CHECKS: { id: string; why: (g: Awaited<ReturnType<typeof generateResponderReply>>) => string | null }[] = [
+    {
+      id: 'greeting/uses-the-given-name',
+      why: (g) => {
+        const l = g.text.split('\n').map((x) => x.trim()).find(Boolean) ?? '';
+        if (!/^(hi|hello|hey|dear)\s+dana(?!\p{L})/iu.test(l)) return `greeting is "${l.slice(0, 60)}"`;
+        return /\bosei\b/i.test(l.split(',')[0]) ? 'greeting used the surname' : null;
+      },
+    },
+    // Tomasz is named throughout the conversation and quoted below the fold,
+    // and has never written a message. Greeting him is the failure a long
+    // thread invites; so is greeting Priya, who wrote three of the last six.
+    { id: 'greeting/nobody-else', why: (g) => { const h = findGreetingProblems(g.text, { first: 'Dana', forbidden: [TOMASZ.name, PRIYA.name] }); return h.length ? describeHits(h) : null; } },
+    { id: 'recall/fiscal-year-end', why: (g) => (/30 september|september 30|30th september/i.test(g.text) ? null : 'lost the fiscal year end') },
+    { id: 'recall/board-blackout', why: (g) => (/second tuesday|2nd tuesday/i.test(g.text) ? null : 'lost the board blackout') },
+    { id: 'recall/monthly-figure', why: (g) => (g.text.includes('950') ? null : 'lost the monthly figure') },
+    // Stated at message 14 and reversed at message 21. Getting it backwards is
+    // a different failure from forgetting it: "Tomasz still needs to sign off"
+    // is confidently, specifically wrong about the state of the deal.
+    { id: 'recall/not-superseded', why: (g) => (/\b(?:needs?|awaiting|pending|require[sd]?)\b[^.]{0,40}\b(?:sign[- ]?off|approval|approve)/i.test(g.text) ? 'says the £4,800 still needs approval; it was approved' : null) },
+    { id: 'facts/invents-nothing', why: (g) => { const h = findTemplateArtifacts({ subject: g.subject, html: g.html, specifics: g.guard.specifics }); const bad = h.filter((x) => x.kind.startsWith('invented') || x.kind === 'false_attachment'); return bad.length ? describeHits(bad) : null; } },
+    { id: 'recipients/to-is-the-writer', why: (g) => (g.to.map((a) => a.email.toLowerCase())[0] === THEM.email ? null : `first recipient is ${g.to[0]?.email}`) },
+    { id: 'recipients/reply-all-keeps-cc', why: (g) => (g.to.map((a) => a.email.toLowerCase()).includes(CC.email) ? null : 'reply-all did not keep Priya') },
+    { id: 'recipients/never-ourselves', why: (g) => (g.to.map((a) => a.email.toLowerCase()).includes(acc.email.toLowerCase()) ? 'addressed to ourselves' : null) },
+    { id: 'quote/original-included', why: (g) => (g.html.includes('tern-quote') ? null : 'the original was not quoted') },
+    { id: 'quote/not-as-its-own-html', why: (g) => (/<p>Before you send the start plan/.test(g.html) ? 'the original was quoted as its own HTML' : null) },
+    { id: 'guard/would-not-be-held', why: (g) => { const h = findTemplateArtifacts({ subject: g.subject, html: g.html, ...g.guard }); return h.length ? `send mode would hold this: ${describeHits(h)}` : null; } },
+    { id: 'subject/is-a-reply', why: (g) => (/^re:/i.test(g.subject) ? null : `subject is "${g.subject}"`) },
+  ];
+
+  const byCase = new Map<string, number>();
   let pass = 0;
   for (let run = 1; run <= RUNS; run++) {
     const t0 = Date.now();
     const gen = await generateResponderReply(responder, acc, email);
     const text = gen.text;
-    const firstLine = text.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
     const fails: string[] = [];
-
-    // 1. the greeting names Dana, tidied out of "Osei, Dana"
-    if (!/^(hi|hello|hey|dear)\s+dana\b/i.test(firstLine)) fails.push(`greeting: "${firstLine.slice(0, 60)}"`);
-    if (/\bosei\b/i.test(firstLine.split(',')[0])) fails.push('greeting used the surname');
-    // 2. the facts agreed at the start of a long thread
-    const hay = text.toLowerCase();
-    if (!/30 september|september 30|30th september/.test(hay)) fails.push('lost the fiscal year end');
-    if (!/second tuesday|2nd tuesday/.test(hay)) fails.push('lost the board blackout');
-    if (!hay.includes('950')) fails.push('lost the monthly figure');
-    // 3. reply-all recipients: Dana to, Priya cc'd, never ourselves
-    const addrs = gen.to.map((a) => a.email.toLowerCase());
-    if (addrs[0] !== THEM.email) fails.push(`first recipient is ${addrs[0]}`);
-    if (!addrs.includes(CC.email)) fails.push('reply-all did not keep Priya');
-    if (addrs.includes(acc.email.toLowerCase())) fails.push('addressed to ourselves');
-    // 4. the original is quoted as text, and the quote is not inspected as ours
-    if (!gen.html.includes('tern-quote')) fails.push('the original was not quoted');
-    if (gen.html.includes('<p>Before the plan goes out')) fails.push('the original was quoted as its own HTML');
-    // 5. the guard, as send mode would run it
-    const hits = findTemplateArtifacts({ subject: gen.subject, html: gen.html });
-    if (hits.length) fails.push(`guard would hold this: ${describeHits(hits)}`);
-    if (!/^re:/i.test(gen.subject)) fails.push(`subject is "${gen.subject}"`);
+    for (const c of CHECKS) {
+      const why = c.why(gen);
+      if (why) fails.push(`${c.id}: ${why}`);
+      else byCase.set(c.id, (byCase.get(c.id) ?? 0) + 1);
+    }
 
     if (!fails.length) pass++;
     console.log(`${fails.length ? 'FAIL' : 'ok  '} run ${run} ${((Date.now() - t0) / 1000).toFixed(1)}s${fails.length ? '\n      ' + fails.join('\n      ') : ''}`);
     if (fails.length || process.env.VERBOSE) console.log(text.split('\n').map((l) => '      | ' + l).join('\n'));
     if (run === 1 && !process.env.VERBOSE) console.log(`      to: ${gen.to.map((a) => a.email).join(', ')}\n      subject: ${gen.subject}\n${htmlToText(gen.html).split('\n').slice(0, 12).map((l) => '      | ' + l).join('\n')}`);
   }
+
+  console.log('\n---- per check ----');
+  for (const c of CHECKS) console.log(`${byCase.get(c.id) ?? 0}/${RUNS}  ${c.id}`);
   console.log(`\n${pass}/${RUNS} clean auto-replies   (thread ${threadId} left in the database)`);
   await pool.end();
   process.exit(pass === RUNS ? 0 : 1);

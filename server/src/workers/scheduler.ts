@@ -354,6 +354,35 @@ export function nextRunAfterSend(next: StepRow | undefined, acc: Pick<AccountRow
 // The same three facts are checked when a step is picked up; this is the
 // version that runs after the model has finished, because that is where the
 // gap was.
+// Park an enrollment on the review queue — but only while it is still running.
+//
+// Both callers used to write `status='waiting_review'` unconditionally, which
+// quietly resurrected an enrollment that had already ended: a contact replies
+// while the model is writing, the reply handler marks the enrollment
+// "replied", and the draft that was already in flight then drags it back into
+// the queue as "waiting_review". Approving it would send a campaign step to
+// somebody who had answered — the same damage as the send race, taking a
+// slower route through a person clicking Approve.
+//
+// So the status write is conditional, and when it matches nothing the review
+// row it was about to belong to is withdrawn again.
+async function parkForReview(enrollmentId: number, seq: any, acc: AccountRow): Promise<boolean> {
+  const still = await query<{ id: number }>(
+    `UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1 AND status='active' RETURNING id`,
+    [enrollmentId],
+  );
+  if (!still.length) {
+    const now = await one<{ status: string }>('SELECT status FROM enrollments WHERE id=$1', [enrollmentId]);
+    await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND status='pending'`, [enrollmentId]);
+    log.info(`enrollment ${enrollmentId} was not parked for review: it is "${now?.status ?? 'gone'}" now`, { account: acc.id });
+    return false;
+  }
+  const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
+  publish({ type: 'review', userId: seq.user_id, count: pending?.n ?? 0 });
+  publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId, status: 'waiting_review' });
+  return true;
+}
+
 async function suppressedNow(userId: number, contactId: number, email: string): Promise<'unsubscribed' | 'bounced' | 'suppressed' | null> {
   const c = await one<{ status: string }>('SELECT status FROM contacts WHERE id=$1', [contactId]);
   if (!c) return 'unsubscribed';
@@ -426,10 +455,7 @@ async function runEnrollment(enr: any): Promise<void> {
         `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [seq.user_id, enr.id, acc.id, contact.id, step.id, sealedReview.subject, sealedReview.body_html, gen.model],
       );
-      await query(`UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1`, [enr.id]);
-      const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
-      publish({ type: 'review', userId: seq.user_id, count: pending?.n ?? 0 });
-      publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'waiting_review' });
+      await parkForReview(enr.id, seq, acc);
       return;
     }
   } else {
@@ -448,11 +474,8 @@ async function runEnrollment(enr: any): Promise<void> {
         `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model, hold_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [seq.user_id, enr.id, acc.id, contact.id, step.id, heldReview.subject, heldReview.body_html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason],
       );
-      await query(`UPDATE enrollments SET status='waiting_review', updated_at=now() WHERE id=$1`, [enr.id]);
-      const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
-      publish({ type: 'review', userId: seq.user_id, count: pending?.n ?? 0 });
-      publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'waiting_review' });
       log.warn('sequence step held for review', { enrollment: enr.id, step: step.id, reason });
+      await parkForReview(enr.id, seq, acc);
       return;
     }
   }
@@ -570,7 +593,7 @@ export function campaignRecipient(acc: AccountRow, contact: any): ResolvedName {
   });
 }
 
-async function personalize(acc: AccountRow, step: StepRow, contact: any, rendered: { subject: string; html: string; brief: string }): Promise<{ subject: string; html: string; model: string; facts: string; greetingFirst: string }> {
+export async function personalize(acc: AccountRow, step: StepRow, contact: any, rendered: { subject: string; html: string; brief: string }): Promise<{ subject: string; html: string; model: string; facts: string; greetingFirst: string }> {
   const settings = await getAiSettings();
   const name = campaignRecipient(acc, contact);
   const brief = rendered.brief || htmlToText(rendered.html);
@@ -632,10 +655,28 @@ async function processAiJobs(): Promise<void> {
   }
 }
 
-export async function generateResponderReply(responder: any, acc: AccountRow, email: any): Promise<{ subject: string; html: string; text: string; to: { name: string | null; email: string }[]; model: string }> {
+export async function generateResponderReply(responder: any, acc: AccountRow, email: any): Promise<{ subject: string; html: string; text: string; to: { name: string | null; email: string }[]; model: string; guard: Pick<GuardInput, 'greeting' | 'specifics'> }> {
   const settings = await getAiSettings();
   const thread = await openEmails(acc.user_id, 'ai.responders', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]));
   const contact = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, String(email.from_addr?.[0]?.email ?? '').toLowerCase()]);
+  // Who we are answering, decided from the contact row and the From header
+  // rather than from whatever the model finds most memorable in the thread.
+  // Everybody else who wrote in the conversation is named as forbidden, which
+  // is what stops a reply opening "Hi Priya," because Priya wrote three of
+  // the last six messages — and stops it greeting somebody who is only
+  // quoted below the fold and never wrote at all.
+  const writer = email.from_addr?.[0] ?? {};
+  const participants = thread.map((m: any) => m.from_addr?.[0]?.name).filter(Boolean);
+  const name = resolveRecipient(
+    [...candidatesFromContact(contact), { value: writer.name, source: 'display' as const }],
+    {
+      email: writer.email ?? contact?.email,
+      senderName: acc.name,
+      senderEmail: acc.email,
+      company: contact?.company,
+      others: participants.filter((n: string) => n && n !== writer.name),
+    },
+  );
   const messages = buildMessages({
     mode: 'reply',
     instruction: responder.instructions || undefined,
@@ -646,11 +687,13 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
     subject: email.subject,
     systemPrompt: settings.systemPrompt,
     voice: acc.voice,
-    recipient: contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email },
+    recipient: contact
+      ? { name: name.full || undefined, email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields }
+      : { name: name.full || undefined, email: writer.email },
     thread: thread.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() })),
     threadChars: threadBudgetChars(settings.numCtx, settings.maxTokens),
   });
-  const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
+  const replyRecipient = { name: name.full || undefined, email: contact?.email ?? writer.email };
   const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens, stop: modeTuning('reply').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.responders' } }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
   // The same addressing rules as the Reply button in the browser.
   const r = replyRecipients({ from: email.from_addr, replyTo: email.reply_to, to: email.to_addr, cc: email.cc_addr }, acc.email, Boolean(responder.reply_all));
@@ -660,7 +703,18 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
   // the person opens in the editor) with its markup intact.
   const original = (email.body_text || htmlToText(email.body_html ?? '') || email.preview || '').slice(0, 20_000);
   const quote = `<div class="tern-quote" style="margin-top:16px"><div style="color:#5b6274;font-size:12.5px;margin-bottom:6px">On ${escapeHtml(new Date(email.received_at).toUTCString())}, ${escapeHtml(email.from_addr?.[0]?.email ?? '')} wrote:</div><blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:2px solid #d0d4e0"><div style="white-space:pre-wrap">${escapeHtml(original)}</div></blockquote></div>`;
-  return { subject: replySubject(email.subject), html: textToHtml(text) + quote, text, to, model: settings.model };
+  // The conversation is the whole of what this reply was allowed to know, so
+  // a figure or a date in it that is not in the thread was invented. An
+  // automatic reply never carries an attachment either.
+  const facts = thread.map((m: any) => m.body_text || htmlToText(m.body_html || '') || m.preview || '').join('\n');
+  return {
+    subject: replySubject(email.subject),
+    html: textToHtml(text) + quote,
+    text,
+    to,
+    model: settings.model,
+    guard: { greeting: { first: name.first, forbidden: [acc.name, ...participants] }, specifics: { facts, hasAttachment: false } },
+  };
 }
 
 async function runResponderJob(job: any): Promise<string> {
@@ -703,7 +757,7 @@ async function runResponderJob(job: any): Promise<string> {
   // Send mode still never sends something a person would wince at: leftover
   // placeholders, prompt text or an "as an AI" line park the reply in the
   // review queue instead.
-  const hits = findTemplateArtifacts({ subject: gen.subject, html: gen.html });
+  const hits = findTemplateArtifacts({ subject: gen.subject, html: gen.html, ...gen.guard });
   if (hits.length) {
     const reason = `Held for review: ${describeHits(hits)}`;
     const held = await sealReview(acc.user_id, { subject: gen.subject, body_html: gen.html, to_addr: gen.to, context: (email.body_text || email.preview || '').slice(0, 2000) });
@@ -718,11 +772,67 @@ async function runResponderJob(job: any): Promise<string> {
     return `held for review: ${describeHits(hits)}`;
   }
   // A reply to someone whose key is on file goes back encrypted.
-  const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible' };
+  const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible', guard: gen.guard };
   // Both paths queue. Sending straight from here would have skipped the
   // account's daily cap and send window along with the delay, which made
   // "no natural delay" quietly mean "no limits at all" — the one thing an
   // automated responder must not be able to do.
   await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, await seal(acc.user_id, JSON.stringify({ ...payload, humanize: Boolean(responder.humanize) }))]);
   return responder.humanize ? 'queued to send with natural delay' : 'queued to send';
+}
+
+
+// ---------- The preview a campaign is approved from ----------
+//
+// The golden path is: import a list, describe the campaign in a sentence, see
+// what the model actually wrote for the first few people, approve. Without
+// the third step "approve" means approving a description of an email rather
+// than an email, which for a 4B model is not the same thing at all — the
+// review queue then catches the problems one at a time, after the campaign is
+// live, which is a worse place to find out.
+//
+// This runs the real generation path, the real name resolution and the real
+// guard, so what the preview shows is what the campaign would send, including
+// whether it would have been held back.
+export interface CampaignPreview {
+  contact: { id: number; email: string; name: string; company: string | null };
+  subject: string;
+  html: string;
+  /** Why this one would not have been sent as written, if it would not have been. */
+  heldFor: string | null;
+}
+
+export async function previewCampaign(
+  acc: AccountRow,
+  opts: { brief: string; instructions?: string; contacts: any[] },
+): Promise<CampaignPreview[]> {
+  const out: CampaignPreview[] = [];
+  // A synthetic step: exactly the shape the scheduler builds from a saved
+  // campaign, so the preview cannot drift from what a send would do.
+  const step: StepRow = {
+    id: 0, sequence_id: 0, position: 0, kind: 'email', template_id: null,
+    subject: '', body_html: textToHtml(opts.brief), wait_days: 0, wait_hours: 0,
+    ai_personalize: true, ai_instructions: opts.instructions ?? '', reply_in_thread: false,
+  };
+  for (const contact of opts.contacts) {
+    const gen = await personalize(acc, step, contact, { subject: '', html: step.body_html, brief: opts.brief });
+    const hits = findTemplateArtifacts({
+      subject: gen.subject,
+      html: gen.html,
+      greeting: { first: gen.greetingFirst, forbidden: [acc.name] },
+      specifics: { facts: gen.facts, hasAttachment: false },
+    });
+    out.push({
+      contact: {
+        id: contact.id,
+        email: contact.email,
+        name: [contact.first_name, contact.last_name].filter(Boolean).join(' '),
+        company: contact.company ?? null,
+      },
+      subject: gen.subject,
+      html: gen.html,
+      heldFor: hits.length ? describeHits(hits) : null,
+    });
+  }
+  return out;
 }

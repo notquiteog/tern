@@ -3,6 +3,7 @@
 // gives the model the facts it is allowed to use instead of letting it guess.
 import type { ChatMessage } from './llm.js';
 import { cleanRecipientName, firstNameOf } from './names.js';
+import { extractSpecifics } from './guard.js';
 
 export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies' | 'gist' | 'reschedule' | 'nudge';
 
@@ -126,9 +127,21 @@ function recipientBlock(r?: DraftInput['recipient']): string {
 // where the terms were set. Only the middle is dropped, and the prompt says
 // how many messages went, so the model knows the conversation is longer than
 // what it can see rather than assuming it started late.
-export const THREAD_CHARS_DEFAULT = 14_000;
+// An upper bound rather than the operative limit. It used to be 14,000,
+// which is about 4,400 tokens — below that, `num_ctx` had no effect on how
+// much conversation the model was shown at all, so raising the context
+// window in Admin → AI model changed nothing a reader would notice. The
+// window is the control; this is only here so that a mistaken num_ctx of a
+// million does not try to build a megabyte prompt.
+export const THREAD_CHARS_DEFAULT = 60_000;
 const NEWEST_MSG_CHARS = 4_000; // the message being replied to, near enough in full
 const OLDER_MSG_CHARS = 1_400;
+// The share of the budget reserved for the start of the conversation, before
+// the newest messages are allowed to spend the rest. Without a reservation
+// the newest end takes everything — see `threadBlock` — and the terms that
+// were agreed in the first few messages are the ones a long thread refers
+// back to as "what we said at the start".
+const OPENING_SHARE = 0.45;
 
 // Characters of thread that fit alongside the instructions and the answer.
 // Roughly 3.2 characters per token, minus room for the prompt scaffolding and
@@ -151,20 +164,44 @@ function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = TH
 
   const keep = new Set<number>();
   let used = 0;
-  // Newest first: at least the last three, whatever they cost.
-  for (let i = t.length - 1; i >= 0; i--) {
-    const piece = render(i);
-    if (used + piece.length > budget && keep.size >= 3) break;
-    keep.add(i);
-    used += piece.length;
-  }
-  // Then the opening of the thread, oldest first, with whatever is left.
+  const take = (i: number, len: number) => { keep.add(i); used += len; };
+
+  // 1. The last three messages, whatever they cost. This is what is being
+  //    answered, and a reply that cannot see it is not a reply.
+  for (let i = t.length - 1; i >= 0 && keep.size < 3; i--) take(i, render(i).length);
+
+  // 2. The opening, oldest first, out of its own reserved share of the
+  //    budget.
+  //
+  //    The reservation is the whole point and it used to be missing: the
+  //    newest-first pass ran to exhaustion first, so on any thread long
+  //    enough to need trimming it took the entire budget and the opening
+  //    loop below never added a single message. "Packed from both ends" was
+  //    true of the code's intent and false of its behaviour, and the fixture
+  //    it was tested against was too short to ever find out — every message
+  //    fit, so nothing was ever dropped.
+  //
+  //    On a realistic 24-message thread the effect was total: only the last
+  //    ten messages survived, and the year end, the blackout and the monthly
+  //    figure — all agreed in the first half — were absent from the prompt
+  //    the model was asked to recall them from.
+  const openingCap = budget * OPENING_SHARE;
+  let opening = 0;
   for (let i = 0; i < t.length; i++) {
     if (keep.has(i)) continue;
-    const piece = render(i);
-    if (used + piece.length > budget) break;
-    keep.add(i);
-    used += piece.length;
+    const len = render(i).length;
+    if (opening + len > openingCap || used + len > budget) break;
+    take(i, len);
+    opening += len;
+  }
+
+  // 3. Whatever is left goes to the most recent messages still missing, so a
+  //    thread that fits entirely is shown entirely.
+  for (let i = t.length - 1; i >= 0; i--) {
+    if (keep.has(i)) continue;
+    const len = render(i).length;
+    if (used + len > budget) break;
+    take(i, len);
   }
 
   const shown = [...keep].sort((a, b) => a - b);
@@ -201,6 +238,77 @@ function addressingBlock(input: DraftInput): string {
   }
   if (r?.email) return `Write to ${r.email}. Their name is not known: the first line is exactly "Hi there," and no name is guessed or invented.`;
   return `The recipient's name is not known: the first line is exactly "Hi there," and no name is guessed or invented.`;
+}
+
+// The figures and dates the conversation has already settled, listed.
+//
+// This exists because of a measurement rather than a theory. With the context
+// window raised until a 50-message thread fitted whole — nothing truncated at
+// all — the model still could not reliably answer "what was the monthly
+// figure we agreed?" on a thread of 8,500 tokens. The fact was in front of it
+// and it wrote a different number. Depth defeats retrieval well before it
+// defeats the window.
+//
+// Extracting them is not a language problem. A money amount, a date, a clock
+// time and a contractual term all have shapes, and guard.ts already has to
+// recognise every one of them in order to tell an invented figure from a
+// repeated one. So the same extractor is run over the *whole* conversation —
+// including the middle that the character budget dropped — and what it finds
+// is put in front of the model as facts rather than left to be found.
+//
+// The model still writes the email. It is simply no longer asked to also be a
+// search index over twenty thousand characters of quoted mail.
+const FACT_CONTEXT_CHARS = 90;
+const MAX_FACTS = 14;
+
+// The scaffolding a mail client adds, which is not part of what anybody said.
+// Without this the extraction is swamped by the timestamps in quote
+// attribution lines — "On Wed, 03 Jun 2026 11:12:00, Dana Osei wrote:" — and
+// the figures that matter get pushed out by the dates of the emails
+// themselves.
+function saidAloud(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      if (t.startsWith('>')) return false;                                  // quoted text
+      if (/^On\b.{5,140}\bwrote:\s*$/i.test(t)) return false;              // attribution
+      if (/^-{2,}\s*(?:forwarded|original) message/i.test(t)) return false; // forward header
+      if (/^(?:from|to|cc|sent|date|subject):\s/i.test(t)) return false;    // pasted headers
+      if (/^\+?[\d\s()+-]{9,}$/.test(t)) return false;                     // a phone number in a signature
+      return true;
+    })
+    .join('\n');
+}
+
+// Money first, then a calendar date, then a contractual term, then a clock
+// time. When there are more facts than room, the ones that cost money or
+// commit to a day are the ones worth the space.
+const FACT_RANK: Record<string, number> = { money: 0, pct: 1, day: 2, when: 3, term: 4, time: 5 };
+const rankOf = (token: string) => FACT_RANK[token.split(':')[0]] ?? 9;
+
+export function agreedFactsBlock(thread: DraftInput['thread']): string {
+  if (!thread?.length) return '';
+  const seen = new Set<string>();
+  const found: { rank: number; line: string }[] = [];
+  for (const m of thread) {
+    const text = saidAloud(m.text);
+    for (const spec of extractSpecifics(text)) {
+      if (seen.has(spec.token)) continue;
+      seen.add(spec.token);
+      // The phrase around it, so a bare number is never offered without the
+      // thing it is the number of.
+      const at = text.indexOf(spec.sample);
+      const from = Math.max(0, at - FACT_CONTEXT_CHARS / 2);
+      const around = (at < 0 ? text.slice(0, FACT_CONTEXT_CHARS) : text.slice(from, at + spec.sample.length + FACT_CONTEXT_CHARS / 2))
+        .replace(/\s+/g, ' ')
+        .trim();
+      found.push({ rank: rankOf(spec.token), line: `- ${spec.sample.trim()} — "…${around}…"` });
+    }
+  }
+  if (!found.length) return '';
+  const lines = found.sort((a, b) => a.rank - b.rank).slice(0, MAX_FACTS).map((f) => f.line);
+  return `Figures, dates and terms already stated in this conversation, taken from it word for word. Use these exactly where the reply needs them, and state no others:\n${lines.join('\n')}`;
 }
 
 export function buildMessages(input: DraftInput): ChatMessage[] {
@@ -328,6 +436,12 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
   if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these${ab ? ', except where they contradict the first line stated above, which always wins' : ''}):\n${input.voice.trim()}`);
   const rb = recipientBlock(input.recipient); if (rb) parts.push(rb);
   const tb = threadBlock(input.thread, input.senderEmail, input.threadChars); if (tb) parts.push(tb);
+  // Only where the job is to answer from the conversation. A quick reply is
+  // forbidden from stating a figure at all, and an editing mode is working on
+  // the person's own draft.
+  if (['reply', 'summarize'].includes(input.mode)) {
+    const fb = agreedFactsBlock(input.thread); if (fb) parts.push(fb);
+  }
   if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
   if (input.template) parts.push(`Brief / template:\n${input.template}`);
   if (input.draft) parts.push(input.mode === 'subject' ? `Email:\n${input.draft}` : `Draft:\n${input.draft}`);
@@ -349,6 +463,36 @@ export function assertFreshConversation(messages: ChatMessage[]): void {
 }
 
 // Small models sometimes wrap output in quotes or add a label anyway.
+// A subject line, out of whatever came back.
+//
+// The prompt asks for at most seven words. Asked for a subject for a campaign
+// email, the model this ships with returned an entire email on one line —
+// greeting, body, closing question, 40 words of it — and because it was one
+// line, taking the first line kept all of it. It went into the preview as the
+// subject, which is what a recipient would have seen in their inbox.
+//
+// Nothing about that is fixable by asking more firmly, so it is cut here: the
+// first sentence, and failing that the first clause, and failing that a hard
+// truncation on a word boundary. A greeting at the front is dropped, because
+// a subject that opens "Hi Dana," is a subject that started life as an email.
+const SUBJECT_MAX_CHARS = 90;
+const SUBJECT_MAX_WORDS = 14;
+
+export function trimToSubject(raw: string): string {
+  let t = raw.trim().replace(/^(?:hi|hello|hey|dear)\b[^,!.]{0,40}[,!.]\s*/i, '').trim();
+  if (!t) return '';
+  const short = (v: string) => v.length <= SUBJECT_MAX_CHARS && v.split(/\s+/).length <= SUBJECT_MAX_WORDS;
+  if (short(t)) return t;
+  // The first sentence.
+  const sentence = t.split(/(?<=[.!?])\s+/)[0]?.trim() ?? t;
+  if (sentence && short(sentence)) return sentence.replace(/[.!]+$/, '');
+  // The first clause.
+  const clause = (sentence || t).split(/\s+[—–-]\s+|[;:,]\s+/)[0]?.trim() ?? t;
+  if (clause && short(clause)) return clause.replace(/[.!]+$/, '');
+  // Whatever is left, cut on a word boundary.
+  return (clause || t).split(/\s+/).slice(0, SUBJECT_MAX_WORDS).join(' ').slice(0, SUBJECT_MAX_CHARS).replace(/\s+\S*$/, '').replace(/[.!,;:]+$/, '').trim();
+}
+
 export function cleanOutput(text: string, mode: DraftMode): string {
   let t = text.trim();
   // Ollama hands reasoning back on its own field, but an OpenAI-compatible
@@ -370,6 +514,7 @@ export function cleanOutput(text: string, mode: DraftMode): string {
   if (echo > 0) t = t.slice(0, echo).trim();
   if (mode === 'subject') {
     t = t.split('\n')[0].replace(/^subject:\s*/i, '').replace(/^["'“”]+|["'“”]+$/g, '').replace(/[.!]+$/, '').trim();
+    t = trimToSubject(t);
   }
   return t.trim();
 }

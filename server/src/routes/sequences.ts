@@ -3,9 +3,11 @@ import { one, query, withTx } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { idParam, parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { getUserAccount } from '../services/accounts.js';
-import { renderStep } from '../workers/scheduler.js';
+import { getAccount, getUserAccount } from '../services/accounts.js';
+import { previewCampaign, renderStep } from '../workers/scheduler.js';
 import { publish } from '../events.js';
+import { campaignMetrics } from '../services/campaigns.js';
+import { requireCapability } from '../services/capabilities.js';
 
 export const sequencesRouter = Router();
 sequencesRouter.use(requireAuth);
@@ -79,7 +81,8 @@ sequencesRouter.get('/:id', async (req, res) => {
   if (!s) throw notFound('Sequence not found');
   const steps = await query<any>('SELECT st.*, t.name AS template_name FROM sequence_steps st LEFT JOIN templates t ON t.id=st.template_id WHERE st.sequence_id=$1 ORDER BY st.position, st.id', [id]);
   const stepStats = await query<any>(`SELECT step_id, count(*)::int AS sent, count(*) FILTER (WHERE replied_at IS NOT NULL)::int AS replied, count(*) FILTER (WHERE bounced_at IS NOT NULL)::int AS bounced FROM send_log WHERE sequence_id=$1 AND status='sent' GROUP BY step_id`, [id]);
-  res.json({ sequence: s, steps, stepStats });
+  // What the campaign has done, as opposed to where everybody is in it.
+  res.json({ sequence: s, steps, stepStats, metrics: await campaignMetrics(id) });
 });
 
 sequencesRouter.put('/:id', async (req, res) => {
@@ -216,4 +219,32 @@ sequencesRouter.get('/:id/preview', async (req, res) => {
     out.push({ step: st, kind: 'email', subject: r.subject, html: r.html, brief: r.brief });
   }
   res.json({ preview: out });
+});
+
+// The third step of the golden path: see what the model actually wrote for the
+// first few people on the list, before the campaign exists. Nothing is stored
+// and nothing is enrolled — this is the look before the leap.
+sequencesRouter.post('/campaign-preview', requireCapability('ai.campaigns'), async (req, res) => {
+  const b = parse(z.object({
+    account_id: z.number().int(),
+    brief: z.string().min(10).max(4000),
+    instructions: z.string().max(2000).optional(),
+    tag: z.string().max(120).optional(),
+    contactIds: z.array(z.number().int()).max(10).optional(),
+    // Three is the number the golden path calls for. Capped rather than
+    // exposed as a setting: more than a handful is a slow page, and the
+    // question a preview answers — "is this right?" — is answered by three.
+    count: z.number().int().min(1).max(5).optional(),
+  }), req.body);
+  const acc = await getUserAccount(req.user!.id, b.account_id);
+  if (!acc) throw notFound('Account not found');
+  const count = b.count ?? 3;
+  const contacts = b.contactIds?.length
+    ? await query<any>('SELECT * FROM contacts WHERE user_id=$1 AND id = ANY($2) LIMIT $3', [req.user!.id, b.contactIds, count])
+    : b.tag
+      ? await query<any>(`SELECT * FROM contacts WHERE user_id=$1 AND $2 = ANY(tags) AND status='active' ORDER BY id LIMIT $3`, [req.user!.id, b.tag, count])
+      : await query<any>(`SELECT * FROM contacts WHERE user_id=$1 AND status='active' ORDER BY id LIMIT $2`, [req.user!.id, count]);
+  if (!contacts.length) throw badRequest('There is nobody in that audience to preview');
+  const full = (await getAccount(acc.id))!;
+  res.json({ previews: await previewCampaign(full, { brief: b.brief, instructions: b.instructions, contacts }) });
 });

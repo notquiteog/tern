@@ -1089,4 +1089,15 @@ CREATE TABLE IF NOT EXISTS triage_feedback (
 CREATE INDEX IF NOT EXISTS triage_feedback_user_idx ON triage_feedback(user_id);
 `,
   },
+  {
+    // What a reply to a campaign said, so that "they answered" stops being one
+    // undifferentiated pile. The label set is small and closed
+    // (services/replyIntent.ts); anything a model returns that is not on the
+    // list is stored as 'unclear', which routes to a person.
+    id: '20260907_0600_reply_intent',
+    up: `
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS reply_intent TEXT;
+CREATE INDEX IF NOT EXISTS send_log_reply_intent_idx ON send_log(sequence_id, reply_intent) WHERE reply_intent IS NOT NULL;
+`,
+  },
 ];

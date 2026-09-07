@@ -9,6 +9,7 @@ import * as actions from '../jmap/actions.js';
 import { autocryptHeadersOf, updatePeerFromMessage } from './autocrypt.js';
 import { maybeVacationReply, vacationActive } from './vacation.js';
 import { openEmails } from './mailVault.js';
+import { classifyReply } from './replyIntent.js';
 
 const log = logger('automation');
 
@@ -163,8 +164,21 @@ async function handleBounce(acc: AccountRow, e: any, logs: SendLogRow[]): Promis
 
 async function handleReply(acc: AccountRow, e: any, logs: SendLogRow[], contact: any, enrollmentIds: number[], text: string): Promise<void> {
   for (const l of logs) await query(`UPDATE send_log SET replied_at=now() WHERE id=$1 AND replied_at IS NULL`, [l.id]);
+  // What the reply actually said. Deterministic where it can be — an
+  // unsubscribe and an out-of-office are recognised in code — and a five-word
+  // closed label set where it cannot. The label decides whether a person is
+  // asked to look at this or whether the sequence simply stops.
+  const { intent, route, byModel } = await classifyReply(acc.user_id, {
+    subject: e.subject ?? '',
+    text,
+    autoSubmitted: e['header:Auto-Submitted:asText'] ?? null,
+  });
+  for (const l of logs) await query(`UPDATE send_log SET reply_intent=$2 WHERE id=$1`, [l.id, intent]);
   const contactId: number | null = contact?.id ?? logs.find((l) => l.contact_id)?.contact_id ?? null;
-  const wantsStop = STOP_RE.test(firstLines(text));
+  // The classifier's own deterministic stop detection and this one agree by
+  // construction; both are kept because the suppression below must not depend
+  // on the classifier having run at all.
+  const wantsStop = STOP_RE.test(firstLines(text)) || intent === 'stop';
   // "Stop" is the strongest opt-out there is, so it is recorded first and
   // without needing a contact row: a reply can arrive on a send whose contact
   // was deleted since, or on mail composed by hand, and dropping the request
@@ -194,7 +208,7 @@ async function handleReply(acc: AccountRow, e: any, logs: SendLogRow[], contact:
       publish({ type: 'enrollment', userId: acc.user_id, sequenceId: enr.sequence_id, enrollmentId: id, status: 'replied' });
     }
   }
-  log.info('reply recorded', { account: acc.id, contact: contactId, enrollments: enrollmentIds.length, stop: wantsStop });
+  log.info('reply recorded', { account: acc.id, contact: contactId, enrollments: enrollmentIds.length, stop: wantsStop, intent, route, byModel });
 }
 
 // ---------- Rules ----------
