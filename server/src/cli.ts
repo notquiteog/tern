@@ -187,13 +187,62 @@ async function main(): Promise<void> {
       console.log(`Encrypted ${total} messages.`);
       break;
     }
+    // Rebuilding ENCRYPTION_KEY from printed recovery shares. Here rather
+    // than in the web app because the situation this exists for is one where
+    // the web app cannot start: the key is gone, so nothing decrypts, so
+    // nobody can sign in to ask for it back.
+    //
+    // Nothing is read from the database and nothing is written to it. The
+    // shares are typed in, combined in memory, and the result is printed
+    // once. If the database is reachable the stored check value is used to
+    // say whether the key is the right one, which turns "I think this is it"
+    // into an answer.
+    case 'recover-key': {
+      const { combine, decodeShare, secretCheck } = await import('./services/shamir.js');
+      const shares: { index: number; data: Buffer }[] = [];
+      let threshold = 0;
+      console.log('Type each recovery share, one per line. An empty line finishes.\n');
+      const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout });
+      for await (const line of rl) {
+        const text = String(line).trim();
+        if (!text) break;
+        try {
+          const { share, threshold: k } = decodeShare(text);
+          if (shares.some((s) => s.index === share.index)) { console.log('  that is a share you have already given'); continue; }
+          shares.push(share);
+          threshold = k;
+          console.log(`  share ${share.index} accepted (${shares.length} of ${k})`);
+          if (shares.length >= k) break;
+        } catch (e) {
+          console.log(`  ${(e as Error).message}`);
+        }
+      }
+      rl.close();
+      if (!shares.length || shares.length < Math.max(2, threshold)) {
+        throw new Error(`Not enough shares: ${shares.length} given, ${threshold || 2} needed.`);
+      }
+      const key = combine(shares as any);
+      const hex = key.toString('hex');
+      // Only if the database happens to be up. It usually is — the key is
+      // what was lost, not Postgres — and being told the answer is right is
+      // worth the query.
+      let verdict = '';
+      try {
+        const rows = await query<{ value: { check?: string } }>(`SELECT value FROM settings WHERE key='vault_recovery'`);
+        const want = rows[0]?.value?.check;
+        if (want) verdict = want === secretCheck(key) ? '\n  This matches the key this install was using.' : '\n  WARNING: this does not match the key this install recorded. Check the shares.';
+      } catch { /* no database: the key is still the key */ }
+      console.log(`\nENCRYPTION_KEY=${hex}${verdict}\n\nPut that line in .env, then restart: ./bin/tern restart`);
+      key.fill(0);
+      break;
+    }
     case 'encryption-status': {
       const r = await query(`SELECT (SELECT count(*) FROM emails WHERE sealed) AS encrypted, (SELECT count(*) FROM emails WHERE NOT sealed) AS plaintext, (SELECT count(*) FROM users WHERE dek_wrapped IS NOT NULL) AS users_with_keys`);
       console.table(r);
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status | recover-key');
   }
   await pool.end();
 }

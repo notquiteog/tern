@@ -29,6 +29,9 @@ import { brandRouter, bimiRouter } from './routes/brand.js';
 import { pgpRouter } from './routes/pgp.js';
 import { passkeysRouter } from './routes/passkeys.js';
 import { featuresRouter, adminFeaturesRouter } from './routes/features.js';
+import { discoverRouter } from './routes/discover.js';
+import { assistRouter } from './routes/assist.js';
+import { vaultRouter } from './routes/vault.js';
 
 const log = logger('http');
 
@@ -83,6 +86,9 @@ export function createApp(): express.Express {
   app.use('/api/passkeys', passkeysRouter);
   app.use('/api/ai', aiRouter);
   app.use('/api/features', featuresRouter);
+  app.use('/api/discover', discoverRouter);
+  app.use('/api/assist', assistRouter);
+  app.use('/api/admin/vault', vaultRouter);
   app.use('/api/admin/features', adminFeaturesRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/push', pushRouter);

@@ -43,6 +43,16 @@ function keyBytes(): Buffer {
   return createHash('sha256').update(k).digest();
 }
 
+// The 32 bytes everything is actually encrypted with, whatever shape
+// ENCRYPTION_KEY was written in. Recovery (services/shamir.ts) splits these
+// rather than the environment string, so a set of shares restores an install
+// whether the original was 64 hex characters or a passphrase: the recovered
+// bytes go back in as `ENCRYPTION_KEY=<hex>` and the branch above returns
+// them unchanged.
+export function keyMaterial(): Buffer {
+  return keyBytes();
+}
+
 export function encrypt(plain: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', keyBytes(), iv);

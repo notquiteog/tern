@@ -20,6 +20,8 @@ import { pushDirtyDrafts } from '../services/draftSync.js';
 import { openEmail, openEmails, openReview, sealReview } from '../services/mailVault.js';
 import { open, seal } from '../services/vault.js';
 import { backfillBatch, backfillDraftsAndOutbox, backfillPending, categorizeBatch, categorizePending } from '../services/backfill.js';
+import { enrichmentTick } from './enrichment.js';
+import { retentionSettings } from '../services/retentionPolicy.js';
 
 const log = logger('scheduler');
 let timer: NodeJS.Timeout | null = null;
@@ -48,6 +50,7 @@ export async function tick(): Promise<void> {
     await processOutbox();
     await processEnrollments();
     await processAiJobs();
+    await enrichment();
   } catch (e) {
     log.error('tick failed', { err: (e as Error).message });
   } finally {
@@ -77,20 +80,43 @@ let lastHousekeeping = 0;
 export async function housekeeping(force = false): Promise<Record<string, number>> {
   if (!force && Date.now() - lastHousekeeping < 3600_000) return {};
   lastHousekeeping = Date.now();
+  // Every window is a setting with a low default, and each is the shortest
+  // the feature can actually work with. See services/retentionPolicy.ts for
+  // what each one costs to shorten.
+  const r = await retentionSettings();
   const jobs: [string, string][] = [
+    // A finished AI job still holds the prompt it was given, which is a copy
+    // of somebody's mail sitting in a queue table for no reason. It is
+    // emptied the moment the job stops running, before the row is anywhere
+    // near old enough to delete.
+    // The immediate wipe happens where a job finishes; this is the safety
+    // net for a row that was left behind by a crash or an older build.
+    // `result` is a one-line outcome and is kept — it is what an admin reads
+    // when a responder did nothing and they want to know why.
+    ['ai_job_payloads', `UPDATE ai_jobs SET payload='{}'::jsonb WHERE status IN ('done','failed','skipped') AND payload <> '{}'::jsonb`],
     // Staged files live a day unless a draft still refers to them, as an
     // attachment or as an image inserted into the body.
     ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR u.id = ANY(d.inline_upload_ids)) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND u.id = ANY(o.upload_ids))`],
-    ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - interval '7 days'`],
-    ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - interval '30 days'`],
-    ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '30 days'`],
+    ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - ($1 || ' days')::interval`],
+    ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - ($2 || ' days')::interval`],
+    ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - ($3 || ' hours')::interval`],
     ['sessions', `DELETE FROM sessions WHERE expires_at < now()`],
     ['invites', `DELETE FROM invites WHERE (used_at IS NOT NULL AND used_at < now() - interval '30 days') OR (used_at IS NULL AND expires_at < now() - interval '30 days')`],
-    ['audit_log', `DELETE FROM audit_log WHERE created_at < now() - interval '365 days'`],
+    ['audit_log', `DELETE FROM audit_log WHERE created_at < now() - ($4 || ' days')::interval`],
+    // A brief is a cache of a page. Past its window it is a description of a
+    // mailbox that has moved on, and keeping it is only a copy of mail.
+    ['briefs', `DELETE FROM briefs WHERE generated_at < now() - ($5 || ' days')::interval`],
+    // Closed commitments are history nobody asked for.
+    ['commitments', `DELETE FROM commitments WHERE status <> 'open' AND closed_at < now() - ($6 || ' days')::interval`],
+    // A finished or abandoned import leaves only its counts.
+    ['mail_imports', `DELETE FROM mail_imports WHERE status IN ('done','failed','cancelled') AND updated_at < now() - interval '7 days'`],
+    // Invitations to meetings that are long past.
+    ['calendar_events', `DELETE FROM calendar_events WHERE starts_at IS NOT NULL AND starts_at < now() - ($7 || ' days')::interval`],
   ];
+  const params = [r.outboxDays, r.reviewDays, r.aiJobHours, r.auditDays, r.briefDays, r.commitmentDays, r.calendarDays];
   const counts: Record<string, number> = {};
   for (const [name, sql] of jobs) {
-    try { const r = await query(`WITH d AS (${sql} RETURNING 1) SELECT count(*)::int AS n FROM d`); counts[name] = (r[0] as any)?.n ?? 0; } catch (e) { log.warn(`housekeeping ${name} failed`, { err: (e as Error).message }); }
+    try { const rows = await query(`WITH d AS (${sql} RETURNING 1) SELECT count(*)::int AS n FROM d`, params); counts[name] = (rows[0] as any)?.n ?? 0; } catch (e) { log.warn(`housekeeping ${name} failed`, { err: (e as Error).message }); }
   }
   if (Object.values(counts).some((n) => n > 0)) log.info('housekeeping', counts);
   return counts;
@@ -139,6 +165,20 @@ async function fileCategories(): Promise<void> {
     if (p.finished) { categorizeDone = true; log.info('every message has a category'); }
   } catch (e) {
     log.error('categorisation pass failed', { err: (e as Error).message });
+  }
+}
+
+// ---------- Building what the new features read ----------
+// One pass per tick, chosen by workers/enrichment.ts, so the meaning index,
+// the priority scores, the guard, the attachment reader, the commitments
+// scanner and the invitation finder take turns instead of competing for a
+// box with one model on it.
+async function enrichment(): Promise<void> {
+  try {
+    const r = await enrichmentTick();
+    if (r?.count) log.debug('enrichment', { ...r });
+  } catch (e) {
+    log.error('enrichment pass failed', { err: (e as Error).message });
   }
 }
 
@@ -450,11 +490,18 @@ async function processAiJobs(): Promise<void> {
     if (!job) return;
     try {
       const result = job.kind === 'responder' ? await runResponderJob(job) : 'unknown job kind';
-      await query(`UPDATE ai_jobs SET status='done', result=$2, updated_at=now() WHERE id=$1`, [job.id, result]);
+      // The payload is the message the model was asked about. The job is
+      // over, so it goes now rather than at the next housekeeping sweep:
+      // there is no window in which a finished job is holding somebody's
+      // mail. `result` is a one-line outcome ("sent", "responder gone"), not
+      // the generated text, which was never stored.
+      await query(`UPDATE ai_jobs SET status='done', result=$2, payload='{}'::jsonb, updated_at=now() WHERE id=$1`, [job.id, result]);
     } catch (e) {
       const msg = (e as Error).message;
       log.error('ai job failed', { job: job.id, err: msg });
-      if (job.attempts >= 3) await query(`UPDATE ai_jobs SET status='failed', error=$2, updated_at=now() WHERE id=$1`, [job.id, msg.slice(0, 500)]);
+      // A job that has given up keeps its error and loses its prompt; one
+      // that will be retried has to keep the prompt to retry with.
+      if (job.attempts >= 3) await query(`UPDATE ai_jobs SET status='failed', error=$2, payload='{}'::jsonb, updated_at=now() WHERE id=$1`, [job.id, msg.slice(0, 500)]);
       else await query(`UPDATE ai_jobs SET status='pending', error=$2, updated_at=now() WHERE id=$1`, [job.id, msg.slice(0, 500)]);
     }
   }

@@ -2,6 +2,7 @@
 # Operator wrapper around podman-compose for a Tern install.
 #   ./bin/tern up | down | restart [service] | ps | logs [service] | build
 #   ./bin/tern cli <args>            run tern-cli inside the app container
+#   ./bin/tern recover-key           rebuild ENCRYPTION_KEY from printed recovery shares
 #   ./bin/tern pull-model <name>     download an Ollama model
 #   ./bin/tern ai-slots [n]          how many people the model answers at once (default: one slot each)
 #   ./bin/tern dns-check [--port25]  verify the mail domain's DNS records from this box
@@ -52,6 +53,12 @@ case "$cmd" in
   build)     compose build app "$@" ;;
   compose)   compose "$@" ;;
   cli)       compose exec -T app tern-cli "$@" ;;
+  # Interactive: the shares are typed in, so this one keeps its terminal.
+  # Nothing is read from or written to the database; the key is printed once
+  # and goes into .env by hand.
+  recover-key)
+    if [ ! -t 0 ]; then echo "recover-key needs a terminal: run it directly, not through a pipe." >&2; exit 1; fi
+    compose exec app tern-cli recover-key ;;
   pull-model) compose exec -T ollama ollama pull "${1:?model name}" ;;
   ai-slots)
     # Ollama serves OLLAMA_NUM_PARALLEL requests per model at once and queues

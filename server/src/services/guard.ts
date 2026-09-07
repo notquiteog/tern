@@ -390,6 +390,23 @@ function sealDetail(dek: Buffer, detail: GuardDetail): string | null {
   return sealWith(dek, json);
 }
 
+// One message's flags, opened. Lives here rather than in the route so the
+// raw data key stays inside the handful of files that are allowed to touch
+// it — capabilities.test.ts enforces that list.
+export async function guardFor(userId: number, emailId: number): Promise<{ flags: GuardFlag[]; detail: GuardDetail } | null> {
+  const row = await one<{ guard_flags: string[]; guard_detail: string | null }>(
+    `SELECT e.guard_flags, e.guard_detail FROM emails e JOIN accounts a ON a.id=e.account_id
+      WHERE e.id=$1 AND a.user_id=$2`,
+    [emailId, userId],
+  );
+  if (!row) return null;
+  let detail: GuardDetail = {};
+  if (row.guard_detail) {
+    try { detail = JSON.parse(openWith(await dataKey(userId), row.guard_detail) ?? '{}'); } catch { /* unreadable */ }
+  }
+  return { flags: (row.guard_flags ?? []) as GuardFlag[], detail };
+}
+
 // The sentence shown above a message. Built here rather than in the browser
 // so the wording is the same in a notification, a digest and the reading
 // pane, and so a flag that has no safe phrasing simply produces nothing.

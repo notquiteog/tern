@@ -333,7 +333,12 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .nav-item { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 9px; color: var(--text-2); font-weight: 500; font-size: 13.5px; text-decoration: none; cursor: pointer; user-select: none; border: 0; background: transparent; width: 100%; text-align: left; }
 .nav-item:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .1); }
-.nav-item { transition: background .15s, color .15s, box-shadow .15s; }
+.nav-item { transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+.nav-item.active { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .18), 0 1px 10px rgba(var(--accent-rgb), .12); }
+/* The accent edge that marks the section you are in, drawn rather than
+   implied by the fill alone. */
+.nav-item.active::before { content: ""; position: absolute; left: -6px; top: 50%; width: 3px; height: 16px; border-radius: 3px; transform: translateY(-50%); background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .55); }
+.nav-item { position: relative; }
 .nav-item svg { flex: none; opacity: .9; }
 .nav-item .count { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--text-3); }
 .nav-item.active .count { color: var(--accent-text); }
@@ -359,7 +364,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .mail-toolbar .pager { margin-left: auto; display: flex; align-items: center; gap: 2px; color: var(--text-2); font-size: 12.5px; }
 .mail-body { min-height: 0; display: grid; grid-template-columns: 1fr; }
 .mail-body.split { grid-template-columns: minmax(360px, 5fr) minmax(420px, 7fr); }
-.thread-list { overflow-y: auto; min-height: 0; border-right: 1px solid var(--glass-border); }
+.thread-list { overflow-y: auto; min-height: 0; border-right: 1px solid var(--glass-border); container-type: inline-size; container-name: threadlist; }
 .list-filters { display: flex; align-items: center; gap: 6px; padding: 8px 12px; position: sticky; top: 0; z-index: 2; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border-bottom: 1px solid var(--glass-border); }
 .list-filters .segmented { background: rgba(var(--accent-rgb), .06); }
 .mail-body:not(.split) .thread-list { border-right: 0; }
@@ -943,9 +948,16 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
    scroll sideways on a narrow screen rather than wrapping into two rows. */
 .cat-tabs { display: flex; gap: 4px; padding: 8px 12px 0; position: sticky; top: 0; z-index: 3; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); overflow-x: auto; scrollbar-width: none; }
 .cat-tabs::-webkit-scrollbar { display: none; }
-.cat-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px 9px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-3); font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; border-radius: 10px 10px 0 0; transition: color .14s, background .14s, border-color .14s; }
+/* Below this the labels stop fitting, whatever the window is doing; the tab
+   you are on keeps its name so the row still says where you are. */
+@container threadlist (max-width: 560px) {
+  .cat-tab-label { display: none; }
+  .cat-tab.on .cat-tab-label { display: inline; }
+  .cat-tab { padding: 7px 11px 9px; }
+}
+.cat-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px 9px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-3); font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; border-radius: 10px 10px 0 0; transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
 .cat-tab:hover { color: var(--text); background: rgba(var(--accent-rgb), .06); }
-.cat-tab.on { color: var(--accent-text); border-bottom-color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.cat-tab.on { color: var(--accent-text); border-bottom-color: var(--accent); background: rgba(var(--accent-rgb), .08); box-shadow: 0 2px 12px -6px rgba(var(--accent-rgb), .9); }
 .cat-tab.has-unread { color: var(--text); font-weight: 600; }
 .cat-tab-icon { display: inline-flex; opacity: .85; }
 .cat-tab-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
