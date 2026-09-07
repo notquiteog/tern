@@ -1021,4 +1021,41 @@ CREATE INDEX IF NOT EXISTS contacts_email_blind_idx ON contacts(user_id, email_b
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS auth_results TEXT;
 `,
   },
+  {
+    // Three columns that were storing content in the clear beside sealed
+    // ones. Found by walking the schema rather than by spot-checking, which
+    // is the only way this kind of mistake shows up.
+    //
+    // `emails.auth_results` is the Authentication-Results header, which is
+    // not just a verdict: it routinely carries `smtp.mailfrom=ana@corp.example`
+    // and `header.d=corp.example`. That is the sender's address, sitting in
+    // plaintext next to a `from_addr` that is sealed. It is sealed now, and
+    // the existing rows are dropped rather than converted — the guard
+    // re-reads them on its next pass, and a value that was written in the
+    // clear should not be left to look as though it never was.
+    //
+    // `calendar_events.uid` is an iCalendar UID. Most are random, but plenty
+    // of systems build them out of the event title. It cannot simply be
+    // sealed because a unique index depends on it, so it gains a blind
+    // companion — the same trick `emails.from_blind` uses — and the readable
+    // half is sealed.
+    //
+    // `mail_imports.filename` is a name the person chose for an export of
+    // their own mail, which is not nothing.
+    id: '20260908_0031_seal_leftovers',
+    up: `
+UPDATE emails SET auth_results = NULL WHERE auth_results IS NOT NULL;
+UPDATE emails SET guard_checked = false WHERE guard_checked;
+
+ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS uid_blind BYTEA;
+DROP INDEX IF EXISTS calendar_events_email_uid_idx;
+-- Rows written before this have a plaintext uid and no blind companion;
+-- there is no key here to convert them with, and an invitation is cheap to
+-- find again, so they go.
+DELETE FROM calendar_events WHERE uid_blind IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_email_uid_idx ON calendar_events(email_id, uid_blind);
+
+UPDATE mail_imports SET filename = NULL WHERE filename IS NOT NULL;
+`,
+  },
 ];

@@ -21,6 +21,10 @@ export interface Addr { name?: string | null; email: string }
 // The columns sealEmail produces, in the order the sync writer uses them.
 export interface SealedContent {
   subject: string; preview: string; body_text: string | null; body_html: string | null;
+  // Not a body, but not a verdict either: an Authentication-Results header
+  // names the sending domain and usually the envelope address, which is the
+  // same thing `from_addr` is sealed for.
+  auth_results: string | null;
   from_addr: string; to_addr: string; cc_addr: string; bcc_addr: string; reply_to: string;
   attachments: string;
   search_terms: Buffer[]; address_terms: Buffer[]; from_terms: Buffer[];
@@ -32,6 +36,7 @@ export interface SealedContent {
 
 export interface PlainContent {
   subject: string; preview: string; body_text: string | null; body_html: string | null;
+  auth_results?: string | null;
   from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[];
   attachments: unknown[];
 }
@@ -56,6 +61,7 @@ export async function sealEmail(userId: number, c: PlainContent): Promise<Sealed
   return {
     subject: s(c.subject ?? '')!,
     preview: s(c.preview ?? '')!,
+    auth_results: s(c.auth_results ?? null),
     body_text: s(c.body_text ?? null),
     body_html: s(c.body_html ?? null),
     from_addr: j(c.from_addr), to_addr: j(c.to_addr), cc_addr: j(c.cc_addr), bcc_addr: j(c.bcc_addr), reply_to: j(c.reply_to),
@@ -131,7 +137,7 @@ export async function openEmail<T extends Record<string, any>>(userId: number, r
 
 export function openEmailWith<T extends Record<string, any>>(dek: Buffer, row: T): Opened<T> {
   const out: Record<string, any> = { ...row };
-  for (const k of ['subject', 'preview', 'body_text', 'body_html'] as const) {
+  for (const k of ['subject', 'preview', 'body_text', 'body_html', 'auth_results'] as const) {
     if (k in out) out[k] = openWith(dek, out[k]) ?? (k === 'subject' || k === 'preview' ? '' : null);
   }
   for (const k of ['from_addr', 'to_addr', 'cc_addr', 'bcc_addr', 'reply_to', 'attachments'] as const) {

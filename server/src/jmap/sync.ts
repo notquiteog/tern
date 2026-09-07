@@ -245,6 +245,7 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
       body_text: text, body_html: html,
       from_addr: e.from ?? [], to_addr: e.to ?? [], cc_addr: e.cc ?? [], bcc_addr: e.bcc ?? [], reply_to: e.replyTo ?? [],
       attachments,
+      auth_results: (e['header:Authentication-Results:asText'] ?? null) && String(e['header:Authentication-Results:asText']).slice(0, 2000),
     });
     // Worked out here, the one moment the subject and sender are readable;
     // only the four-value answer is stored beside the ciphertext.
@@ -281,7 +282,7 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
           sealed.from_addr, sealed.to_addr, sealed.cc_addr, sealed.bcc_addr, sealed.reply_to,
           sealed.subject, sealed.preview, Boolean(e.hasAttachment), sealed.body_text, sealed.body_html, sealed.attachments, e['header:Auto-Submitted:asText'] ?? null,
           (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e), autocryptHeadersOf(e).length > 0,
-          (e['header:Authentication-Results:asText'] ?? null) && String(e['header:Authentication-Results:asText']).slice(0, 2000),
+          sealed.auth_results,
           sealed.search_terms, sealed.address_terms, sealed.from_terms, sealed.from_blind, sealed.recipient_count, category,
         ],
       );

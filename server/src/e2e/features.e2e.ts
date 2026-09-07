@@ -276,6 +276,163 @@ const retentionGroup = group('retention', async () => {
   });
 });
 
+
+// ======================================================================
+// The plaintext sweep.
+//
+// Spot-checking a column you remember to check is how a leak survives. This
+// puts a distinctive nonsense word into every position a person's words can
+// reach — subject, body, attachment name, attachment text, commitment,
+// invitation, import filename, the Authentication-Results header — runs every
+// feature that writes something derived from them, and then searches *every
+// text and bytea column of every table in the database* for those words.
+//
+// It found three real leaks the first time it ran: emails.auth_results (which
+// carries `smtp.mailfrom=someone@their-domain`), calendar_events.uid (which
+// some systems build out of the event title) and mail_imports.filename.
+//
+// Columns that are legitimately readable are listed below with the reason.
+// Anything not on that list must come back sealed, and adding to the list is
+// a deliberate act.
+
+// Words that will not occur anywhere else in a database of test mail.
+const CANARY = {
+  subject: 'ZQXJPRICING',
+  body: 'VBNMKQUARTERLY',
+  sender: 'WXYZDUARTE',
+  attachmentName: 'PLQRINVOICE',
+  attachmentText: 'HGFDCONTRACT',
+  commitment: 'TREWQDECKSEND',
+  invitation: 'MNBVREVIEWCALL',
+  filename: 'YUIOTAKEOUT',
+  authDomain: 'KJHGFCORP',
+};
+
+// Every column that may hold readable text, and why. `emails` is the existing
+// design and is documented in ENCRYPTION.md; the rest are the new tables.
+const READABLE_BY_DESIGN: Record<string, string> = {
+  'emails.jmap_id': 'an opaque id the mail server chose',
+  'emails.blob_id': 'an opaque id the mail server chose',
+  'emails.thread_id': 'an opaque id the mail server chose',
+  'emails.mailbox_ids': 'ids, not names',
+  'emails.keywords': 'a fixed vocabulary ($seen, $flagged)',
+  'emails.message_id': 'a random token plus a domain; threading is impossible without it',
+  'emails.in_reply_to': 'as message_id',
+  'emails.references_ids': 'as message_id',
+  'emails.list_id': 'the identity of a mailing list, used to detect bulk mail',
+  'emails.list_unsubscribe': 'a URL the sender published for anyone to use',
+  'emails.auto_submitted': 'a fixed vocabulary (auto-replied, auto-generated)',
+  'emails.category': 'a fixed vocabulary of four',
+  'emails.guard_flags': 'a fixed vocabulary of six',
+  'emails.search_terms': 'HMAC under the owner key',
+  'emails.address_terms': 'HMAC under the owner key',
+  'emails.from_terms': 'HMAC under the owner key',
+  'emails.from_blind': 'HMAC under the owner key',
+  'email_vectors.vec': 'a keyed projection; see ENCRYPTION.md layer 1b',
+  'email_vectors.model': 'the name of a model, not anybody’s words',
+  'user_capabilities.capability': 'a fixed vocabulary',
+  'attachment_text.part_id': 'an opaque blob id the mail server chose',
+  'attachment_text.content_type': 'a media type',
+  'attachment_text.error': 'a parser or transport message, never file content',
+  'commitments.thread_id': 'an opaque id the mail server chose',
+  'commitments.kind': 'a fixed vocabulary',
+  'commitments.status': 'a fixed vocabulary',
+  'commitments.source': 'a fixed vocabulary',
+  'commitment_scans.thread_id': 'an opaque id the mail server chose',
+  'briefs.model': 'the name of a model',
+  'calendar_events.uid_blind': 'HMAC under the owner key',
+  'calendar_events.method': 'a fixed vocabulary (REQUEST, REPLY, CANCEL)',
+  'calendar_events.reply': 'a fixed vocabulary of three',
+  'mail_imports.status': 'a fixed vocabulary',
+  'mail_imports.error': 'an internal message, never mail content',
+};
+
+// Every text-ish column in the database, asked of Postgres rather than
+// listed by hand — a column added later is swept without anybody
+// remembering to add it here.
+async function textColumns(): Promise<{ table: string; column: string; type: string }[]> {
+  return query<{ table: string; column: string; type: string }>(
+    `SELECT table_name AS table, column_name AS column, data_type AS type
+       FROM information_schema.columns
+      WHERE table_schema='public'
+        AND data_type IN ('text','character varying','jsonb','bytea','ARRAY')
+      ORDER BY table_name, column_name`,
+  );
+}
+
+// Where a canary turns up, if anywhere. Casting to text covers arrays,
+// jsonb and bytea alike; bytea renders as \x hex, so a word hidden in bytes
+// is searched for in hex too.
+async function findCanary(word: string): Promise<string[]> {
+  const hits: string[] = [];
+  const hex = Buffer.from(word, 'utf8').toString('hex');
+  for (const c of await textColumns()) {
+    const key = `${c.table}.${c.column}`;
+    let rows: { n: number }[];
+    try {
+      rows = await query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM "${c.table}" WHERE position($1 in upper(coalesce("${c.column}"::text, ''))) > 0 OR position($2 in lower(coalesce("${c.column}"::text, ''))) > 0`,
+        [word.toUpperCase(), hex],
+      );
+    } catch { continue; } // a column that will not cast to text holds no words
+    if ((rows[0]?.n ?? 0) > 0) hits.push(key);
+  }
+  return hits;
+}
+
+const plaintextGroup = group('plaintext', async () => {
+  const f = await makeMailbox();
+  for (const c of ['semantic', 'guard', 'triage', 'attachments', 'commitments', 'brief', 'calendar', 'import'] as const) {
+    await grant(f.userId, c);
+  }
+
+  // One message carrying a canary in every position the sync path fills.
+  const emailId = await put(f, {
+    subject: `Re: ${CANARY.subject} for Q3`,
+    body: `We agreed the ${CANARY.body} figure. I will send the deck on Friday.`,
+    from: { name: `Ana ${CANARY.sender}`, email: `ana@${CANARY.authDomain.toLowerCase()}.example` },
+    authResults: `mx.example; dkim=pass header.d=${CANARY.authDomain.toLowerCase()}.example; spf=pass smtp.mailfrom=ana@${CANARY.authDomain.toLowerCase()}.example`,
+  });
+
+  // The rows the other features write, through the same helpers they use.
+  const dek = await dataKeyFor(f.userId);
+  await query(
+    `INSERT INTO attachment_text (email_id, account_id, part_id, name, content_type, text, chars)
+     VALUES ($1,$2,'blob-1',$3,'application/pdf',$4,20)`,
+    [emailId, f.accountId, sealWith(dek, `${CANARY.attachmentName}.pdf`), sealWith(dek, `Total due under the ${CANARY.attachmentText}`)],
+  );
+  await addCommitment(f.userId, { accountId: f.accountId, kind: 'owed', text: `Send the ${CANARY.commitment} deck`, counterparty: `Ana ${CANARY.sender}` });
+  await storeInvitation(f.userId, f.accountId, emailId, {
+    uid: `${CANARY.invitation}-1234@corp.example`,
+    summary: `${CANARY.invitation} with Ana`,
+    location: `Room ${CANARY.invitation}`,
+    description: null, organizer: { email: 'ana@corp.example', name: `Ana ${CANARY.sender}` },
+    attendees: [], start: new Date(Date.now() + 86_400_000), end: null, allDay: false,
+    sequence: 0, status: null, recurrence: null, approximate: false,
+  });
+  await startImport(f.userId, f.accountId, `${CANARY.filename}-personal.mbox`);
+
+  // And the derived indexes.
+  for (let i = 0; i < 3 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+  await guardBatch(f.userId, f.accountId);
+  await scorePending(f.userId);
+
+  for (const [where, word] of Object.entries(CANARY)) {
+    await test(`nothing readable is left of the ${where}`, async () => {
+      const hits = (await findCanary(word)).filter((k) => !(k in READABLE_BY_DESIGN));
+      if (hits.length) throw new Error(`"${word}" is readable in ${hits.join(', ')}`);
+    });
+  }
+
+  await test('every column that is readable is readable on purpose', async () => {
+    // The mirror of the sweep: the allow-list must not have grown stale
+    // entries pointing at columns that no longer exist.
+    const live = new Set((await textColumns()).map((c) => `${c.table}.${c.column}`));
+    const gone = Object.keys(READABLE_BY_DESIGN).filter((k) => !live.has(k));
+    if (gone.length) throw new Error(`the allow-list names columns that no longer exist: ${gone.join(', ')}`);
+  });
+});
+
 // ======================================================================
 async function main() {
   await waitForDb(30);
@@ -286,7 +443,7 @@ async function main() {
   await saveAiSettings({ enabled: true, embedModel: process.env.E2E_EMBED_MODEL ?? 'all-minilm' });
 
   const t0 = Date.now();
-  for (const g of [gateGroup, semanticGroup, guardGroup, triageGroup, retentionGroup]) {
+  for (const g of [gateGroup, semanticGroup, guardGroup, triageGroup, retentionGroup, plaintextGroup]) {
     try { await g(); } catch (e) { console.log(`  GROUP FAILED: ${(e as Error).message}`); results.push({ group: current, name: '(group)', ok: false, detail: (e as Error).message }); }
   }
 

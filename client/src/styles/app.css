@@ -459,7 +459,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .aside-count { display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px; background: var(--bg-sunken); color: var(--text-2); font-size: 10.5px; letter-spacing: 0; }
 
 .aside-commit { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 6px 0; border-top: 1px solid var(--border); }
-.aside-card > .aside-commit:first-of-type { border-top: 0; padding-top: 0; }
+.aside-head + .aside-commit { border-top: 0; padding-top: 0; }
 .aside-commit-kind { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: var(--bg-sunken); color: var(--text-2); }
 .aside-commit-kind.owed { color: var(--warning-text); }
 .aside-commit-text { line-height: 1.4; }

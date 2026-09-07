@@ -372,7 +372,9 @@ export async function guardBatch(userId: number, accountId: number, limit = 200)
         fromEmail: String(from?.email ?? ''),
         fromName: from?.name ?? null,
         replyToEmails: replyTo.map((a: any) => String(a?.email ?? '')).filter(Boolean),
-        authResults: r.auth_results ?? null,
+        // Sealed like the addresses beside it: an Authentication-Results
+        // header names the sending domain and usually the envelope address.
+        authResults: openWith(dek, r.auth_results),
         threadId: r.thread_id,
         accountId,
         mine,

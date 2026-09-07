@@ -467,10 +467,13 @@ function WhyModal({ row, onClose }: { row: ThreadRow | null; onClose: () => void
       {isLoading && <div className="center pad-24"><Spinner size={20} /></div>}
       {!isLoading && data && (
         <div className="stack-12">
+          {/* The model stores 0..100, so it is already a percentage. warnAt
+              is pushed past 1 because a high score is the good case here —
+              the amber "running out" styling would read as a warning. */}
           <div className="row gap-8">
             <span className="muted small">Score</span>
-            <Progress value={Math.round(100 * (data.priority ?? 0))} max={100} />
-            <span className="small">{data.priority === null ? 'not scored yet' : `${Math.round(100 * data.priority)}%`}</span>
+            <Progress value={data.priority ?? 0} max={100} warnAt={2} />
+            <span className="small">{data.priority === null ? 'not scored yet' : `${data.priority} of 100`}</span>
           </div>
           {data.reasons.length > 0 ? (
             <ul className="why-list">

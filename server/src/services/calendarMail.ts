@@ -14,7 +14,7 @@
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { clientFor } from './accounts.js';
-import { dataKey, openWith, sealWith } from './vault.js';
+import { addressKey, addressTermsWith, dataKey, openWith, sealWith } from './vault.js';
 import { openEmails } from './mailVault.js';
 import { parseIcalendar, type IcalEvent } from './icalendar.js';
 import { allowed } from './capabilities.js';
@@ -93,19 +93,29 @@ export async function scanForInvitations(userId: number, acc: AccountRow, limit 
   return found;
 }
 
+// An iCalendar UID is usually random, but plenty of systems build one out of
+// the event's title, so it is content and travels sealed. A sealed value
+// cannot carry a unique index — the IV is random, so the same UID seals
+// differently every time — so it gains a deterministic blind companion, the
+// same trick emails.from_blind uses, and the index is on that.
+function uidBlind(dek: Buffer, uid: string | null): Buffer | null {
+  if (!uid) return null;
+  return addressTermsWith(addressKey(dek), [`ical:${uid}`])[0] ?? null;
+}
+
 async function store(userId: number, acc: AccountRow, emailId: number, method: string, ev: IcalEvent, dek: Buffer): Promise<void> {
   await query(
     `INSERT INTO calendar_events
-       (user_id, account_id, email_id, uid, summary, location, organizer, attendees, description,
+       (user_id, account_id, email_id, uid, uid_blind, summary, location, organizer, attendees, description,
         starts_at, ends_at, all_day, method, sequence)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-     ON CONFLICT (email_id, uid) DO UPDATE SET
+     VALUES ($1,$2,$3,$4,$15,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     ON CONFLICT (email_id, uid_blind) DO UPDATE SET
        summary=EXCLUDED.summary, location=EXCLUDED.location, organizer=EXCLUDED.organizer,
        attendees=EXCLUDED.attendees, description=EXCLUDED.description,
        starts_at=EXCLUDED.starts_at, ends_at=EXCLUDED.ends_at, all_day=EXCLUDED.all_day,
        method=EXCLUDED.method, sequence=EXCLUDED.sequence`,
     [
-      userId, acc.id, emailId, ev.uid,
+      userId, acc.id, emailId, ev.uid ? sealWith(dek, ev.uid) : null,
       // Everything a person would read is sealed; the times are not, because
       // the list is ordered by them and a clash is found with them.
       ev.summary ? sealWith(dek, ev.summary) : null,
@@ -114,6 +124,7 @@ async function store(userId: number, acc: AccountRow, emailId: number, method: s
       ev.attendees.length ? sealWith(dek, JSON.stringify(ev.attendees)) : null,
       ev.description ? sealWith(dek, ev.description.slice(0, 4000)) : null,
       ev.start, ev.end, ev.allDay, method, ev.sequence,
+      uidBlind(dek, ev.uid),
     ],
   );
 }
@@ -170,7 +181,7 @@ async function openAll(userId: number, rows: any[]): Promise<Invitation[]> {
 
     return {
       id: r.id,
-      uid: r.uid,
+      uid: r.uid ? openWith(dek, r.uid) : null,
       summary: r.summary ? openWith(dek, r.summary) : null,
       location: r.location ? openWith(dek, r.location) : null,
       description: r.description ? openWith(dek, r.description) : null,
