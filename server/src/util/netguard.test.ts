@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertPublicUrl, isPrivateAddress } from './netguard.js';
+import { assertPublicUrl, isLocalReach, isPrivateAddress } from './netguard.js';
 
 test('private, loopback, link-local and metadata addresses are recognised', () => {
   for (const ip of ['127.0.0.1', '127.8.8.8', '10.0.0.1', '10.89.0.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::', 'fe80::1', 'fc00::1', 'fd12::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1']) {
@@ -28,4 +28,16 @@ test('a public literal address passes without a lookup', async () => {
 test('allowPrivate lets the bundled mail server through', async () => {
   const u = await assertPublicUrl('http://stalwart:8080/.well-known/jmap', { allowPrivate: true });
   assert.equal(u.hostname, 'stalwart');
+});
+
+// Not a gate — an admin may point the assistant or the transcriber wherever
+// they like — but the admin page says which of the two they picked, so it has
+// to be right about the bundled container as well as about a public host.
+test('an admin-set provider address is judged local or not', async () => {
+  for (const u of ['http://ollama:11434', 'http://whisper:8080', 'http://127.0.0.1:11434', 'http://localhost:8080', 'http://[::1]:8080', 'http://box.local:11434']) {
+    assert.equal(await isLocalReach(u), true, u);
+  }
+  for (const u of ['https://api.openai.com', 'https://ollama.example.com', 'not a url']) {
+    assert.equal(await isLocalReach(u), false, u);
+  }
 });

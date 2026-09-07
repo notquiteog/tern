@@ -584,6 +584,38 @@ box beside a chat model; `small` is 500 MB and better on accents and names).
 Without the container the Dictation switch says so rather than failing at the
 microphone.
 
+#### A transcriber on another machine
+
+A 4.5 GB box holding a chat model has no room for a speech model as well, and
+the usual answer is the machine with the spare cores rather than a bigger VPS.
+**Admin → AI model → Dictation** takes the address of anything speaking
+OpenAI's `/v1/audio/transcriptions` — whisper.cpp's own server, faster-whisper,
+speaches, or a hosted API — with an optional bearer token for one behind a
+reverse proxy, a model name for a server that hosts several, and a **Test
+connection** button that tries the address before it is saved. It overrides
+`WHISPER_URL` without a restart, and clearing it turns dictation off.
+
+The audio still never touches disk on this side, but it does leave the box:
+the card says so whenever the address is not on this machine or this network.
+Put such a transcriber on a private network or behind TLS, and prefer one you
+run — a hosted transcription API is a company keeping your people's voices,
+which is the thing the local container exists to avoid.
+
+### A model on another machine
+
+The same applies to the assistant itself. **Admin → AI model** has taken a
+base URL for a while; what it now also has is an **API key** field for the
+Ollama provider, because Ollama has no authentication of its own — a remote
+one belongs behind a proxy that wants a token, and that token is sent on every
+request Tern makes to it, management calls included. The bundled container on
+the compose network needs nothing there.
+
+A remote provider is the one setting that decides whether mail leaves your
+server: everything the assistant is shown — the text of the emails it drafts
+replies to — is sent wherever that URL points. The card says so plainly when
+the address is not local. It is a supported choice, and the right one when the
+model is on your own hardware elsewhere; it is not one to make by accident.
+
 ### Importing an archive
 
 **Settings → Import.** The file is held in memory for the length of the run

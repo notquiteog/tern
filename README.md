@@ -192,7 +192,10 @@ build. A test then walks the source for the one hole types cannot close.
   folded lines, escapes, time zones — shown in your own time, with a warning
   when it clashes, and Yes/Maybe/No that sends a real `METHOD:REPLY`.
 - **Dictation** (optional container). Speak into any text box. The recording
-  never touches disk on either side and the transcript is never stored.
+  never touches disk on either side and the transcript is never stored. The
+  transcriber can be the bundled whisper.cpp container or one on another
+  machine, set in Admin → AI model with a key and a connection test — as can
+  the language model, for a box too small to hold one.
 - **Link cleaning.** Tracking parameters stripped from links you are shown and
   links you send, and redirect wrappers unwrapped by reading the destination
   they carry — never by following them.

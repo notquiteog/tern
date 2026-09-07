@@ -197,9 +197,16 @@ const SCALE_WORDS: Record<string, number> = { hundred: 100, thousand: 1_000, mil
 // "four thousand eight hundred" -> 4800. Used so that a model paraphrasing a
 // figure correctly is not accused of inventing it.
 function wordsToNumber(phrase: string): number | null {
+  const words = phrase.toLowerCase().split(/[\s-]+/).filter((w) => w && w !== 'and');
+  // The spoken price. "nine fifty" is £950 and "three thirty" is £330 —
+  // formally ungrammatical, universally understood, and read by a naive
+  // left-to-right parser as 59 and 33. Accusing the model of inventing a
+  // figure it had just repeated correctly is the wrong way to be wrong.
+  if (words.length === 2 && NUM_WORDS[words[0]] >= 1 && NUM_WORDS[words[0]] <= 9 && NUM_WORDS[words[1]] >= 10 && NUM_WORDS[words[1]] % 10 === 0) {
+    return NUM_WORDS[words[0]] * 100 + NUM_WORDS[words[1]];
+  }
   let total = 0, current = 0, seen = false;
-  for (const w of phrase.toLowerCase().split(/[\s-]+/)) {
-    if (w === 'and' || !w) continue;
+  for (const w of words) {
     if (w in NUM_WORDS) { current += NUM_WORDS[w]; seen = true; continue; }
     if (w in SCALE_WORDS) {
       const scale = SCALE_WORDS[w];
@@ -312,7 +319,10 @@ export function findInventedSpecifics(body: string, expect: SpecificsExpectation
     seen.add(s.token);
     hits.push({ kind: kindOf[s.kind], sample: s.sample.slice(0, 60) });
   }
-  if (!expect.hasAttachment) {
+  // A message that promises a document it cannot send. Skipped when the facts
+  // themselves are about an attachment: a summary of a thread in which
+  // somebody attached a CSV is describing their attachment, not inventing one.
+  if (!expect.hasAttachment && !ATTACHMENT_CLAIM_RE.test(expect.facts)) {
     const m = body.match(ATTACHMENT_CLAIM_RE);
     if (m) hits.push({ kind: 'false_attachment', sample: m[0] });
   }

@@ -122,6 +122,19 @@ export async function saveAiSettings(patch: Partial<AiSettings>): Promise<AiSett
 }
 export function aiDefaults(): AiSettings { return { ...DEFAULTS }; }
 
+// The key, on every request to either provider.
+//
+// Ollama has no authentication of its own, so anybody who runs one anywhere
+// but on this box has put it behind a proxy that wants a token — and until
+// this was sent on the Ollama path too, "remote Ollama" meant "an Ollama
+// open to whoever finds it". It is the same stored key the OpenAI-compatible
+// provider uses; an install with an empty key sends nothing, which is the
+// bundled container over the compose network.
+export async function providerHeaders(s?: AiSettings): Promise<Record<string, string>> {
+  const cfg = s ?? (await getAiSettings());
+  return cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {};
+}
+
 // Ollama's keep_alive is either a duration string ("10m", "1h") or a number
 // of seconds, where -1 means "keep it loaded" and 0 "unload at once". A bare
 // number sent as a string is refused with `missing unit in duration`, which
@@ -200,7 +213,7 @@ async function describeModel(baseUrl: string, model: string): Promise<{ capabili
   if (known !== undefined) return known;
   let out: { capabilities: string[]; info: Record<string, unknown> } | null = null;
   try {
-    const res = await fetch(`${baseUrl}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) });
+    const res = await fetch(`${baseUrl}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders()) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) });
     if (res.ok) {
       const j: any = await res.json();
       out = { capabilities: Array.isArray(j.capabilities) ? j.capabilities : [], info: j.model_info ?? {} };
@@ -307,7 +320,7 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
   const reply = opts.maxTokens ?? s.maxTokens;
   const res = await fetch(`${s.baseUrl}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
       model,
       messages: opts.messages, // one system + one user message; never a `context` from a previous answer
@@ -466,7 +479,7 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
     }
     const res = await fetch(`${s.baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
       body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
       signal,
     });
@@ -492,7 +505,7 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
 export async function ollamaHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
   const s = await getAiSettings();
   try {
-    const res = await fetch(`${s.baseUrl}/api/version`, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${s.baseUrl}/api/version`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const j: any = await res.json();
     return { ok: true, version: j.version };
@@ -503,7 +516,7 @@ export async function ollamaHealth(): Promise<{ ok: boolean; version?: string; e
 
 export async function listModels(): Promise<{ name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string }[]> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/tags`, { signal: AbortSignal.timeout(8000) });
+  const res = await fetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`);
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at, family: m.details?.family, parameterSize: m.details?.parameter_size, quantization: m.details?.quantization_level }));
@@ -515,7 +528,7 @@ export async function listModels(): Promise<{ name: string; size: number; modifi
 // figure there makes a resident 3 GB model look free.
 export async function loadedModels(): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
+  const res = await fetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) });
   if (!res.ok) return [];
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
@@ -523,7 +536,7 @@ export async function loadedModels(): Promise<{ name: string; size: number; size
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: name, stream: true }), signal });
+  const res = await fetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name, stream: true }), signal });
   if (!res.ok || !res.body) throw new Error(`Ollama returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -549,7 +562,7 @@ export async function deleteModel(name: string): Promise<void> {
   // copy that is already resident stays in RAM holding exactly the memory
   // the deletion was meant to give back.
   await unloadModel(s.baseUrl, name).catch(() => {});
-  const res = await fetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: name }) });
+  const res = await fetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name }) });
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     if (res.status === 404) throw new Error(`Ollama has no model called "${name}"`);
@@ -574,7 +587,7 @@ export function sameModel(a: string, b: string): boolean {
 async function setResidency(baseUrl: string, model: string, keepAlive: string | number): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders()) },
       body: JSON.stringify({ model, keep_alive: keepAlive }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -587,7 +600,7 @@ async function setResidency(baseUrl: string, model: string, keepAlive: string | 
 // Which of the models Ollama is holding right now matches `model`.
 async function residentAt(baseUrl: string, model: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/api/ps`, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${baseUrl}/api/ps`, { headers: await providerHeaders(), signal: AbortSignal.timeout(4000) });
     if (!res.ok) return false;
     const j: any = await res.json();
     return (j.models ?? []).some((m: any) => sameModel(String(m.name ?? ''), model));

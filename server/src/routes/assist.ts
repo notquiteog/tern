@@ -160,8 +160,8 @@ assistRouter.post('/invitations/:id/reply', requireCapability('calendar'), async
 
 // ---------- F9: dictation ----------
 
-assistRouter.get('/voice', async (req, res) => {
-  res.json({ configured: voiceConfigured(), maxBytes: MAX_AUDIO_BYTES, types: AUDIO_TYPES });
+assistRouter.get('/voice', async (_req, res) => {
+  res.json({ configured: await voiceConfigured(), maxBytes: MAX_AUDIO_BYTES, types: AUDIO_TYPES });
 });
 
 // The clip arrives as the request body with its own content type — no

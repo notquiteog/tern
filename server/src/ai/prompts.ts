@@ -421,7 +421,14 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
         // of the thread is shown, so a suggestion that states a date or a
         // figure is stating one it cannot see — and it goes into the
         // composer the moment someone clicks it.
-        `Do not state any date, time, amount or other specific fact in a suggestion, even if you think you know it. Say "I will confirm the dates" rather than naming them.`,
+        // The rule used to be "never state a specific", which is safe and
+        // needlessly unhelpful: when the other person has just proposed
+        // Thursday, "Thursday morning works" is the reply somebody wants to
+        // click. What must not happen is a suggestion inventing a specific
+        // out of the part of the thread it cannot see — so the rule is about
+        // provenance rather than about specifics, and `findInventedSpecifics`
+        // checks it afterwards rather than trusting it.
+        `Do not state any date, time or amount that is not already written in the conversation above. If it is not there, say "I will confirm the dates" rather than naming them.`,
         tone,
       );
       break;

@@ -412,6 +412,92 @@ function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch:
   );
 }
 
+// Where dictation is transcribed (F9).
+//
+// Its own card because it is its own server. The bundled overlay puts
+// whisper.cpp on the compose network and fills this in; an install that
+// cannot spare the memory — a 4.5 GB box already holding a chat model — puts
+// it on another machine and types the address here instead of editing
+// compose files and restarting.
+function AiVoiceCard() {
+  const toast = useToast();
+  const { data, refetch } = useQuery({ queryKey: ['ai-voice'], queryFn: () => api.get<any>('/api/ai/voice') });
+  const [f, setF] = useState<any>(null);
+  const [key, setKey] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState<{ ok: boolean; error?: string; models?: string[] } | null>(null);
+  useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
+  if (!data || !f) return null;
+
+  async function save(patch: any) {
+    try {
+      const r = await api.put<any>('/api/ai/voice', patch);
+      setF({ ...r.settings });
+      setKey('');
+      setTested(null);
+      refetch();
+      toast.success('Saved');
+    } catch (e) { toast.error(e); }
+  }
+  async function test() {
+    setTesting(true);
+    try {
+      const r = await api.post<any>('/api/ai/voice/test', { baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model || undefined });
+      setTested({ ...r.health });
+    } catch (e) { toast.error(e); } finally { setTesting(false); }
+  }
+
+  const health = tested ?? data.health;
+  return (
+    <div className="card mb-16">
+      <div className="card-title">
+        <h2>Dictation</h2>
+        <div className="row">
+          <Toggle checked={Boolean(f.enabled)} disabled={!f.baseUrl} onChange={(v) => { setF({ ...f, enabled: v }); void save({ enabled: v }); }} />
+          <span className="small">{f.baseUrl ? 'Enabled' : 'No transcriber'}</span>
+        </div>
+      </div>
+      <p className="muted small">
+        Speech to text for the microphone buttons, on a server that speaks OpenAI&rsquo;s{' '}
+        <code>/v1/audio/transcriptions</code> — the bundled whisper.cpp container, or one of your own on
+        another machine. The recording is never written to disk on this side and the transcript is never
+        stored, whichever you choose.
+      </p>
+      <div className="form-row">
+        <Field label="Transcriber URL" hint={data.envUrl ? `The bundled container is at ${data.envUrl}. Clearing this box turns dictation off.` : 'Empty means dictation is unavailable and says so, rather than failing at the microphone.'}>
+          <Input value={f.baseUrl ?? ''} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setTested(null); }} placeholder="http://whisper:8080" />
+        </Field>
+        <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : 'Only needed for a remote transcriber behind a proxy that wants one.'}>
+          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={data.settings.hasApiKey ? '••••••••' : ''} />
+        </Field>
+        <Field label="Model" hint="Leave empty for whatever the transcriber was started with, which is right for the bundled container. A server hosting several needs the name.">
+          <Input value={f.model ?? ''} onChange={(e) => setF({ ...f, model: e.target.value })} placeholder="whisper-1" />
+        </Field>
+        <Field label="Language" hint="An ISO code (en, de, fr) to stop the model guessing, or empty to let it detect. What the browser sends for a particular clip still wins.">
+          <Input value={f.language ?? ''} onChange={(e) => setF({ ...f, language: e.target.value })} placeholder="auto" />
+        </Field>
+      </div>
+      {f.baseUrl && data.local === false && (
+        <Callout kind="warning">
+          That address is not on this box. Every dictated clip will be uploaded to it, so it should be a
+          machine you run, reached over a private network or TLS — and if it is somebody else&rsquo;s
+          service, your people&rsquo;s voices are going to it.
+        </Callout>
+      )}
+      <div className="row mt-8 gap-8">
+        <Button variant="primary" onClick={() => save({ baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model, language: f.language })}>Save</Button>
+        <Button variant="ghost" loading={testing} disabled={!f.baseUrl} onClick={test}>Test connection</Button>
+        {data.settings.hasApiKey && <Button size="sm" variant="ghost" onClick={() => save({ apiKey: null })}>Clear key</Button>}
+        {health && (
+          health.ok
+            ? <Badge kind="success">reachable{health.models?.length ? ` · ${health.models.slice(0, 3).join(', ')}` : ''}</Badge>
+            : <Badge kind="warning">{health.error ?? 'not reachable'}</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AiAdminSettings() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -471,11 +557,19 @@ function AiAdminSettings() {
         <div className="form-row">
           <Field label="Provider"><Select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option></Select></Field>
           <Field label="Base URL"><Input value={f.baseUrl} onChange={(e) => setF({ ...f, baseUrl: e.target.value })} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
-          {f.provider === 'openai' && <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => setF({ ...f, apiKey: e.target.value })} /></Field>}
+          <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it. The bundled container needs nothing here.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => setF({ ...f, apiKey: e.target.value })} /></Field>
           <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
+        {data.local === false && (
+          <Callout kind="warning">
+            That address is not on this box. Everything the assistant is given — the text of the emails it
+            drafts replies to, and whatever people type into it — will be sent there. That is a supported
+            choice, and the right one when the model runs on your own hardware elsewhere; it is worth
+            knowing that it is the setting where mail starts leaving your server.
+          </Callout>
+        )}
         <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
       </div>
       <div className="card mb-16">
@@ -542,6 +636,7 @@ function AiAdminSettings() {
             onConfirm={() => { const n = del!.name; setDel(null); return doDelete(n); }} />
         </div>
       )}
+      <AiVoiceCard />
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
     </div>
   );

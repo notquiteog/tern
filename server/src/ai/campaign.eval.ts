@@ -145,11 +145,16 @@ const CASES: Case[] = [
         const hay = `${i.subject}\n${i.text}`.toLowerCase();
         for (const other of items) {
           if (other.email === i.email) continue;
-          const mine = new Set([i.contact.first_name, i.contact.last_name, i.contact.company].filter(Boolean).map((s: string) => s.toLowerCase()));
+          // This contact's own material, which includes their notes: a CRM
+          // note that says "intro'd by Dana at Northwind" makes Dana a
+          // legitimate thing to mention in *this* person's email, and
+          // counting it as a leak from the contact who happens to be called
+          // Dana would be measuring the fixture rather than the code.
+          const own = `${i.contact.first_name ?? ''} ${i.contact.last_name ?? ''} ${i.contact.company ?? ''} ${i.contact.title ?? ''} ${i.contact.notes ?? ''}`.toLowerCase();
           for (const [what, value] of [['first name', other.contact.first_name], ['company', other.contact.company]] as [string, string][]) {
             const v = String(value ?? '').trim().toLowerCase();
             // Only distinctive values, and never one this contact shares.
-            if (v.length < 4 || mine.has(v)) continue;
+            if (v.length < 4 || own.includes(v)) continue;
             if (new RegExp(`(?<!\\p{L})${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\p{L})`, 'u').test(hay)) {
               out.push(`${i.email}: contains ${other.email}'s ${what} "${value}"`);
             }

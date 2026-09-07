@@ -19,6 +19,8 @@ import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
 import { requireCapability } from '../services/capabilities.js';
 import { powGuard } from '../services/workGuard.js';
+import { getVoiceSettings, saveVoiceSettings, voiceDefaults, voiceHealth, type VoiceSettings } from '../services/voice.js';
+import { isLocalReach } from '../util/netguard.js';
 
 const log = logger('ai');
 
@@ -55,6 +57,12 @@ aiRouter.get('/status', async (req, res) => {
   const { apiKey, ...safe } = s;
   res.json({
     settings: { ...safe, hasApiKey: Boolean(apiKey) },
+    // Whether the model this install uses is on this box or somewhere else.
+    // The page says so plainly: a remote provider is a supported choice and
+    // an admin's to make, but it is the one setting that decides whether
+    // email text leaves the building, so it is never left to be inferred
+    // from a URL.
+    local: await isLocalReach(s.baseUrl),
     health,
     models,
     loaded,
@@ -174,6 +182,65 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
   res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) } });
+});
+
+// ---------- The transcriber (F9) ----------
+//
+// Dictation's own provider settings, kept apart from the model's because
+// they are a different server: the usual small install has the chat model on
+// this box and no transcriber at all, and the usual larger one has whisper
+// on whichever machine has the spare cores. WHISPER_URL from
+// compose.voice.yml is the default, and saving here overrides it without a
+// restart.
+aiRouter.get('/voice', requireAdmin, async (_req, res) => {
+  const v = await getVoiceSettings();
+  const { apiKey, ...safe } = v;
+  const health = v.baseUrl ? await voiceHealth(v) : { ok: false, error: 'No transcriber address is set' };
+  res.json({
+    settings: { ...safe, hasApiKey: Boolean(apiKey) },
+    health,
+    local: v.baseUrl ? await isLocalReach(v.baseUrl) : true,
+    defaults: (({ apiKey: _k, ...d }) => d)(voiceDefaults()),
+    envUrl: config.whisperUrl || null,
+  });
+});
+
+const voiceBody = z.object({
+  enabled: z.boolean().optional(),
+  baseUrl: z.string().url().max(300).or(z.literal('')).optional(),
+  // Blank leaves the stored key alone; clearing one is asking for it to be
+  // cleared, which is what `null` says here.
+  apiKey: z.string().max(500).nullable().optional(),
+  model: z.string().max(120).optional(),
+  language: z.string().max(8).optional(),
+});
+
+aiRouter.put('/voice', requireAdmin, async (req, res) => {
+  const b = parse(voiceBody, req.body);
+  const patch: Partial<VoiceSettings> = { ...b, apiKey: undefined };
+  // Blank means "leave the stored key alone", null means "clear it". A form
+  // that posted the key back would have to be given it first, and a stored
+  // key is never sent to a browser.
+  if (b.apiKey === null) patch.apiKey = '';
+  else if (b.apiKey) patch.apiKey = b.apiKey;
+  else delete patch.apiKey;
+  const next = await saveVoiceSettings(patch);
+  const { apiKey, ...safe } = next;
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.voice_updated',$2)`, [
+    req.user!.id,
+    JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : b.apiKey === null ? '(cleared)' : undefined }),
+  ]);
+  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, local: next.baseUrl ? await isLocalReach(next.baseUrl) : true, health: await voiceHealth(next) });
+});
+
+// Try an address before saving it, so a wrong one is a message on the form
+// rather than a microphone button that fails for everybody.
+aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
+  const b = parse(voiceBody.partial(), req.body);
+  const current = await getVoiceSettings();
+  const trial = { ...current, ...b, apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey) };
+  if (!trial.baseUrl) throw badRequest('Give the transcriber address first');
+  res.json({ health: await voiceHealth(trial), local: await isLocalReach(trial.baseUrl) });
 });
 
 aiRouter.post('/models/pull', requireAdmin, async (req, res) => {

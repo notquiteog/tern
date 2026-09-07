@@ -148,12 +148,13 @@ const inventsNothing = (facts: () => string): Check => (out) => {
   return hits.length ? `invented: ${describeHits(hits)}` : null;
 };
 
-// A quick reply goes into the composer the moment somebody clicks it, and the
-// prompt forbids it from stating a date, a time or an amount — it can only see
-// the tail of the thread, so any specific in one is a specific it cannot check.
-const noSpecifics: Check = (out) => {
-  const found = extractSpecifics(out);
-  return found.length ? `states a specific it was told not to: ${found.map((f) => f.sample).join(', ')}` : null;
+// A quick reply goes into the composer the moment somebody clicks it, and it
+// is shown only the tail of a thread. Repeating a date the other person just
+// proposed is exactly what a useful suggestion does; introducing one that is
+// nowhere in the conversation is a commitment nobody made.
+const noUnseenSpecifics = (facts: () => string): Check => (out) => {
+  const hits = findInventedSpecifics(out, { facts: facts(), hasAttachment: true });
+  return hits.length ? `states a specific that is nowhere in the conversation: ${describeHits(hits)}` : null;
 };
 
 // The salutation, judged by the shipped guard rather than by a regex that only
@@ -336,7 +337,7 @@ const CASES: Case[] = [
       recipient: DANA,
       thread: SHORT_THREAD,
     },
-    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, neverNames(['Dana Osei']), clean, noSpecifics],
+    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, neverNames(['Dana Osei']), clean, noUnseenSpecifics(() => SHORT_THREAD.map((m) => m.text).join('\n'))],
   },
   {
     id: 'quick_replies/deep-thread',
@@ -347,7 +348,7 @@ const CASES: Case[] = [
       recipient: DANA,
       thread: deepThread(24),
     },
-    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, clean, noSpecifics],
+    checks: [linesBetween(2, 3), everyLineUnder(18), noGreetingLine, clean, noUnseenSpecifics(threadFacts())],
   },
   {
     id: 'summarize/deep-thread',

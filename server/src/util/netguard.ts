@@ -90,5 +90,21 @@ export async function assertPublicUrl(url: string, opts: GuardOptions = {}): Pro
   return u;
 }
 
+// Whether a URL an admin typed stays on this box or this network.
+//
+// This is not a security check and must never be used as one: an admin is
+// allowed to point the assistant or the transcriber wherever they like, and
+// that is the whole feature. It exists so the page can say which of the two
+// they have chosen, because "nothing leaves your server" stops being true
+// the moment somebody types a public address, and an admin should be told
+// that by the form rather than discover it later.
+export async function isLocalReach(url: string): Promise<boolean> {
+  let u: URL;
+  try { u = new URL(url); } catch { return false; }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (isLocalName(host)) return true;
+  try { return (await resolveHost(host)).every(isPrivateAddress); } catch { return false; }
+}
+
 // For tests: forget cached lookups.
 export function clearHostCache(): void { cache.clear(); }

@@ -122,13 +122,17 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   // prompt text never reach a recipient. The scheduler diverts such messages
   // to the review queue before getting here; this is the backstop.
   if (AUTOMATED_KINDS.has(input.kind) && !input.reviewed) assertSendable({ subject: input.subject, html: input.html, text: input.text, ...(input.guard ?? {}) });
-  // Nothing this install sends by itself goes to somebody who asked it to
-  // stop. The sequence worker checks this before it writes and again at the
-  // gate; this is the backstop that also covers the outbox, where an
-  // automatic reply can sit for minutes behind the account's pacing, and it
-  // is deliberately not waived by `reviewed`: an approval given ten minutes
-  // ago does not outrank an unsubscribe given five minutes ago.
-  if (AUTOMATED_KINDS.has(input.kind)) {
+  // Nothing this install sends *of its own accord* goes to somebody who asked
+  // it to stop. The sequence worker checks this before it writes and again at
+  // the gate; this is the backstop, and it is deliberately not waived by
+  // `reviewed` — an approval given ten minutes ago does not outrank an
+  // unsubscribe given five minutes ago.
+  //
+  // Only outreach. An automatic reply and an out-of-office are answers to
+  // something the other person just sent us, and declining to answer somebody
+  // because they once asked to be taken off a mailing list would be a
+  // different and worse kind of rude.
+  if (input.kind === 'sequence') {
     const addresses = [...to, ...cc, ...bcc].map((a) => a.email.toLowerCase());
     const stopped = await query<{ email: string }>('SELECT email FROM suppressions WHERE user_id=$1 AND lower(email) = ANY($2)', [acc.user_id, addresses]);
     if (stopped.length) throw badRequest(`Not sent: ${stopped.map((r) => r.email).join(', ')} asked not to be contacted`);

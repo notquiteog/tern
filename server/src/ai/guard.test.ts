@@ -158,3 +158,25 @@ test('a weekday proposed with a time of day counts as a specific', () => {
   // A weekday on its own is a pleasantry, not a proposal.
   assert.deepEqual(kinds('Hope you have a good Monday.'), []);
 });
+
+test('a figure said the way people say it out loud is not an invention', () => {
+  const tok = (v: string) => extractSpecifics(v).map((x) => x.token);
+  // The spoken price. Both of these mean £950.
+  assert.deepEqual(tok('nine fifty pounds'), ['money:950']);
+  assert.deepEqual(tok('£950'), ['money:950']);
+  assert.deepEqual(tok('three thirty pounds'), ['money:330']);
+  // The formal form still parses formally.
+  assert.deepEqual(tok('nine hundred and fifty pounds'), ['money:950']);
+  assert.deepEqual(tok('four thousand eight hundred pounds'), ['money:4800']);
+  assert.deepEqual(findInventedSpecifics('It is nine fifty pounds a month.', { facts: 'The monthly close is £950 a month.' }), []);
+});
+
+test('describing somebody else\'s attachment is not claiming one of our own', () => {
+  const facts = 'Priya wrote: the CSV is attached, four files, March through June.';
+  assert.deepEqual(findInventedSpecifics('Priya has sent the CSV as an attachment.', { facts }), []);
+  // But promising one out of nowhere still is.
+  assert.deepEqual(
+    findInventedSpecifics('I have attached the plan.', { facts: 'The clean-up is a fixed fee.' }).map((h) => h.kind),
+    ['false_attachment'],
+  );
+});

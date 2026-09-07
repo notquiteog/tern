@@ -253,9 +253,12 @@ test('three replies written as one paragraph are still recovered', () => {
   assert.deepEqual(parseQuickReplies('Sounds good to me.\nCould we do Friday instead?'), ['Sounds good to me.', 'Could we do Friday instead?']);
 });
 
-test('the quick replies prompt refuses to let a suggestion state facts', () => {
+test('a quick reply may repeat a date from the thread but never invent one', () => {
   const m = buildMessages({ mode: 'quick_replies', thread: [{ from: 'Dana <d@x.test>', date: 'Mon', text: 'Can you confirm the dates?' }] })[1].content;
-  assert.match(m, /Do not state any date, time, amount/);
+  // The rule is about provenance, not about specifics. Forbidding every date
+  // outright made the suggestions useless in the commonest case there is —
+  // somebody proposes Thursday and the reply worth clicking says Thursday.
+  assert.match(m, /not already written in the conversation above/);
 });
 
 test('a voice note that fights the greeting rule is told which one wins', () => {

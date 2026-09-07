@@ -149,6 +149,30 @@ async function main(): Promise<void> {
     check('and a failed send gives the step back rather than skipping it', (cur?.current_step ?? 9) === 0, `current_step is ${cur?.current_step}`);
   }
 
+  // ---------- a paused campaign resumes without re-sending ----------
+  //
+  // The failure this guards against is a campaign that is paused after step
+  // one and, on resume, starts again from the beginning — every contact gets
+  // the first email twice. It is the same conditional claim that stops the
+  // reply race: the step number is advanced as part of claiming the send, so
+  // a resume continues from where it stopped rather than from zero.
+  if (want('resume')) {
+    const f = await fixture(userId, acc.id, 'resume');
+    await tick();
+    const afterFirst = await one<{ current_step: number }>(`SELECT current_step FROM enrollments WHERE id=$1`, [f.enrollmentId]);
+    const sentFirst = await sendsFor(f);
+    await query(`UPDATE enrollments SET status='paused', updated_at=now() WHERE id=$1`, [f.enrollmentId]);
+    await tick();
+    check('a paused campaign sends nothing', (await sendsFor(f)) === sentFirst, `send_log went from ${sentFirst} to ${await sendsFor(f)} while paused`);
+    // Exactly what the "resume" button does.
+    await query(`UPDATE enrollments SET status='active', next_run_at=COALESCE(next_run_at, now()), error=NULL, updated_at=now() WHERE id=$1 AND status IN ('paused','error')`, [f.enrollmentId]);
+    await query(`UPDATE enrollments SET next_run_at=now() WHERE id=$1`, [f.enrollmentId]);
+    await tick();
+    const afterResume = await one<{ current_step: number }>(`SELECT current_step FROM enrollments WHERE id=$1`, [f.enrollmentId]);
+    check('and on resume it carries on rather than starting again', (afterResume?.current_step ?? 0) >= (afterFirst?.current_step ?? 0),
+      `current_step went ${afterFirst?.current_step} -> ${afterResume?.current_step}`);
+  }
+
   console.log('');
   const failed = results.filter((r) => !r.ok);
   console.log(`${results.length - failed.length}/${results.length} checks passed${failed.length ? `\n\nfailed:\n${failed.map((f) => `  - ${f.name}${f.detail ? `: ${f.detail}` : ''}`).join('\n')}` : ''}`);
