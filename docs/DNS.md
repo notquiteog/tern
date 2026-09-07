@@ -126,14 +126,45 @@ Tern hosts and prepares the logo for you; three things are needed:
 |---|---|---|
 | TXT | `default._bimi.example.com` | `v=BIMI1; l=https://outreach.example.com/bimi/example.com.svg; a=;` |
 
-Yahoo, Fastmail, La Poste and others display the logo from this alone.
-Gmail and Apple Mail also require a Verified Mark Certificate (VMC) or
-Common Mark Certificate (CMC) from DigiCert or Entrust, a paid certificate
-tied to a registered trademark (VMC) or a logo in use for a year (CMC). If
-you buy one, host the `.pem` at a public https address and paste the URL
-into the Brand logo tab; it fills the `a=` part of the record. Without it
-the logo still appears in the clients that do not require one, and inside
-Tern for every message from your domain.
+Yahoo, Fastmail, La Poste and others display the logo from this alone, and
+so does Tern, on every message from your domain.
+
+### Gmail and Apple Mail: the mark certificate
+
+Those two want proof that the logo is yours, in the form of a **Verified Mark
+Certificate** (VMC) or **Common Mark Certificate** (CMC). Admin → Mail server
+→ Brand logo walks through it in five steps and then checks each one against
+the live internet; **Check BIMI now** on that page runs every check below.
+
+1. **A logo the authority will accept.** Square, under 32 KB, SVG Tiny
+   Portable/Secure, no bitmaps and no metadata — which is what Tern produces
+   from whatever you upload. **Download the result before applying**: that
+   exact file is what goes inside the certificate, and a fresh export from
+   Illustrator or Figma will not be the same bytes.
+2. **DMARC that enforces**, as above: `p=quarantine` or `p=reject` over all
+   mail. Nothing else in this section matters until that is true.
+3. **The BIMI record**, published as shown above.
+4. **The certificate.** Only DigiCert and Entrust issue them. A VMC needs the
+   logo registered as a trademark at an office they recognise (USPTO, EUIPO,
+   UKIPO, CIPO, IP Australia, JPO and a few more); a CMC takes a logo used
+   publicly for at least a year instead, and Gmail accepts it. Both are paid,
+   renewed yearly, and take weeks rather than minutes — identity checks, a
+   signed subscriber agreement, usually a video call. Give the authority the
+   SVG downloaded in step 1. They return a `.pem` holding the certificate and
+   its chain; host that at a public https address and paste the URL into the
+   Brand logo tab, which fills the `a=` part of the record.
+5. **Check that the certificate describes this logo.** A mark certificate
+   carries a copy of the logo sealed inside it, and mail clients compare that
+   copy against the file the record points at, byte for byte. Re-uploading,
+   re-tracing or even reformatting the logo after the certificate was issued
+   breaks the match, and Gmail then drops the logo with no bounce, no header
+   and nothing in the reports to say so. Tern opens the certificate, unpacks
+   the logo out of its logotype extension and holds the two files against
+   each other, along with who it was issued to, whether it names this domain,
+   whether the chain is complete and when it expires.
+
+Without a certificate the logo still appears in every client that does not
+require one.
 
 ## 5. Mail apps configure themselves
 
@@ -156,6 +187,27 @@ the domain says so.
 | SRV | `_caldavs._tcp.example.com` | `0 1 443 mx1.example.com` | calendars |
 | SRV | `_carddavs._tcp.example.com` | `0 1 443 mx1.example.com` | contacts |
 
+### Where each part of an SRV record goes
+
+Hardly any DNS host takes an SRV record as a name and a value; nearly all of
+them ask for seven separate boxes, and the two numbers in the middle are the
+ones that get transposed. Each SRV row in Admin → Mail server → DNS setup
+says which piece belongs in which box, and each value copies on click. The
+`_jmap` row above splits like this:
+
+| Field | Value |
+|---|---|
+| Service | `_jmap` |
+| Protocol | `_tcp` |
+| Name | `@` (the domain itself) |
+| Priority | `0` |
+| Weight | `1` |
+| Port | `443` |
+| Target | `mx1.example.com` |
+
+A host that asks only for a name and a value wants the whole
+`_jmap._tcp.example.com` and `0 1 443 mx1.example.com` instead.
+
 The three CNAMEs get their certificates from Caddy on first request, so add
 them before testing a client. Check them with:
 
@@ -175,6 +227,9 @@ do not need it.
   or differs, with what the resolver returned.
 - `./bin/tern dns-check --port25` does the same from the terminal and also
   tests whether the hosting provider allows outbound port 25.
+- Admin → Mail server → Brand logo → **Check BIMI now**: the logo, the DMARC
+  policy under it, the published record and the mark certificate, including
+  whether that certificate still describes the logo you serve.
 - Send a message to a Gmail address and open "Show original": SPF, DKIM and
   DMARC should all say PASS.
 - Send to a mail-tester.com address for a score out of ten.

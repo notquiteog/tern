@@ -12,6 +12,7 @@ import pg from 'pg';
 import { createHash, randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { openEmails } from '../services/mailVault.js';
+import { grant } from '../services/capabilities.js';
 
 const BASE = process.env.TERN_BASE ?? 'http://127.0.0.1:3090';
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? 'postgres://tern:tern@127.0.0.1:5480/tern' });
@@ -542,6 +543,11 @@ const emptyGroup = group('empty', async () => {
 const aiGroup = group('ai', async () => {
   const status = await api('GET', '/api/ai/status');
   if (!status.data?.settings?.enabled || !status.data?.health?.ok) { console.log('  (AI not reachable, skipping)'); return; }
+  // The consent gate arrived after these checks were written. Everything below
+  // reaches the model on this user's behalf, and nothing is on for an account
+  // until its owner says so, so without this every one of them comes back
+  // refused with capability_not_granted rather than an answer.
+  for (const cap of ['ai.compose', 'ai.responders', 'ai.summaries'] as const) await grant(USER, cap);
   const s = `Pricing question ${uid()}`;
   let a!: Email, b!: Email;
   await test('an AI reply to bob greets Bob, not Alice, and ends without a signature line', async () => {
@@ -597,7 +603,14 @@ const aiGroup = group('ai', async () => {
   await test('the responder never answers list mail or its own outbound mail', async () => {
     const jobs = await sql(`SELECT count(*)::int AS n FROM ai_jobs WHERE kind='responder' AND status IN ('pending','running')`);
     ok(jobs[0].n >= 0);
-    const own = await sql(`SELECT 1 FROM drafts d JOIN emails e ON e.id=d.reply_to_email_id WHERE d.source='ai' AND e.from_email = (SELECT lower(email) FROM accounts WHERE id=e.account_id)`);
+    // from_email was a generated column over the plaintext sender and has been
+    // dropped, so who a draft is answering can only be seen by opening the row.
+    const cand = await sql<any>(`SELECT e.*, a.email AS acct_email FROM drafts d JOIN emails e ON e.id=d.reply_to_email_id JOIN accounts a ON a.id=e.account_id WHERE d.source='ai'`);
+    const own: any[] = [];
+    for (const row of cand) {
+      const [opened] = await openEmails<any>(await userOf(Number(row.account_id)), 'owner', [row]);
+      if (String(opened?.from_email ?? '') === String(row.acct_email ?? '').toLowerCase()) own.push(row);
+    }
     eq(own.length, 0, 'no AI draft replying to our own message');
   });
   await test('invalid modes are refused', async () => {

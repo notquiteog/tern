@@ -199,7 +199,7 @@ export function inspectVmc(pem: string, opts: { domain: string; logo: Buffer | n
   let logoMatch: VmcInfo['logoMatch'] = 'unknown';
   if (logotype && opts.logo) {
     if (logotype.image && logotype.image.equals(opts.logo)) logoMatch = 'exact';
-    else if (logotype.hashes.some((h) => h.alg === 'sha256' && hashesOf(opts.logo!).includes(h.hex))) logoMatch = 'hash';
+    else if (matchesHash(logotype.hashes, opts.logo)) logoMatch = 'hash';
     else if (logotype.image && strip(logotype.image.toString('utf8')) === strip(opts.logo.toString('utf8'))) logoMatch = 'similar';
     else if (logotype.image || logotype.hashes.length) logoMatch = 'different';
   }
@@ -222,13 +222,16 @@ export function inspectVmc(pem: string, opts: { domain: string; logo: Buffer | n
   };
 }
 
-// The certificate may hash the file as served or as gzipped; try both rather
-// than guess which the certificate authority chose.
-function hashesOf(logo: Buffer): string[] {
-  const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
-  const out = [sha(logo)];
-  try { out.push(sha(zlib.gzipSync(logo))); } catch { /* hashing the plain bytes is enough */ }
-  return out;
+// A certificate that carries no copy of the image still carries a hash of it.
+// Which algorithm is up to the authority — the VMCs in the wild use SHA-1 —
+// and whether it covers the file as served or as gzipped is equally
+// unstated, so follow what the certificate names and try both forms.
+function matchesHash(hashes: { alg: string; hex: string }[], logo: Buffer): boolean {
+  const forms = [logo];
+  try { forms.push(zlib.gzipSync(logo)); } catch { /* the plain bytes are enough */ }
+  return hashes.some((h) => {
+    try { return forms.some((f) => createHash(h.alg).update(f).digest('hex') === h.hex.toLowerCase()); } catch { return false; }
+  });
 }
 
 // ---------- fetching what the world sees ----------

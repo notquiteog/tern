@@ -21,7 +21,7 @@ import { openEmail, openEmails, openReview, sealReview } from '../services/mailV
 import { open, seal } from '../services/vault.js';
 import { backfillBatch, backfillDraftsAndOutbox, backfillPending, categorizeBatch, categorizePending } from '../services/backfill.js';
 import { enrichmentTick } from './enrichment.js';
-import { retentionSettings } from '../services/retentionPolicy.js';
+import { retentionSettings, type RetentionPolicy } from '../services/retentionPolicy.js';
 
 const log = logger('scheduler');
 let timer: NodeJS.Timeout | null = null;
@@ -76,6 +76,45 @@ export function wakeOutboxAt(when: Date): void {
 // Nothing is kept longer than the feature that needs it. Staged attachments
 // live a day, sent outbox copies a week (the mailbox has the real copy),
 // decided reviews and finished AI jobs a month, audit entries a year.
+// Each sweep carries its own parameters. They used to share one array of
+// seven, which meant every statement was handed seven values whatever it
+// used: the ones with no placeholder were rejected outright, and the ones
+// numbered from $2 up asked for a $1 that was never referenced. Postgres
+// refused all twelve, so housekeeping silently deleted nothing at all.
+// Exported so a test can check the two halves still agree.
+export function housekeepingJobs(r: RetentionPolicy): [string, string, unknown[]][] {
+  return [
+      // A finished AI job still holds the prompt it was given, which is a copy
+      // of somebody's mail sitting in a queue table for no reason. It is
+      // emptied the moment the job stops running, before the row is anywhere
+      // near old enough to delete.
+      // The immediate wipe happens where a job finishes; this is the safety
+      // net for a row that was left behind by a crash or an older build.
+      // `result` is a one-line outcome and is kept — it is what an admin reads
+      // when a responder did nothing and they want to know why.
+      ['ai_job_payloads', `UPDATE ai_jobs SET payload='{}'::jsonb WHERE status IN ('done','failed','skipped') AND payload <> '{}'::jsonb`, []],
+      // Staged files live a day unless a draft still refers to them, as an
+      // attachment or as an image inserted into the body.
+      ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR u.id = ANY(d.inline_upload_ids)) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND u.id = ANY(o.upload_ids))`, []],
+      ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - ($1 || ' days')::interval`, [r.outboxDays]],
+      ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - ($1 || ' days')::interval`, [r.reviewDays]],
+      ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - ($1 || ' hours')::interval`, [r.aiJobHours]],
+      ['sessions', `DELETE FROM sessions WHERE expires_at < now()`, []],
+      ['invites', `DELETE FROM invites WHERE (used_at IS NOT NULL AND used_at < now() - interval '30 days') OR (used_at IS NULL AND expires_at < now() - interval '30 days')`, []],
+      ['audit_log', `DELETE FROM audit_log WHERE created_at < now() - ($1 || ' days')::interval`, [r.auditDays]],
+      // A brief is a cache of a page. Past its window it is a description of a
+      // mailbox that has moved on, and keeping it is only a copy of mail.
+      ['briefs', `DELETE FROM briefs WHERE generated_at < now() - ($1 || ' days')::interval`, [r.briefDays]],
+      // Closed commitments are history nobody asked for.
+      ['commitments', `DELETE FROM commitments WHERE status <> 'open' AND closed_at < now() - ($1 || ' days')::interval`, [r.commitmentDays]],
+      // A finished or abandoned import leaves only its counts.
+      ['mail_imports', `DELETE FROM mail_imports WHERE status IN ('done','failed','cancelled') AND updated_at < now() - interval '7 days'`, []],
+      // Invitations to meetings that are long past.
+      ['calendar_events', `DELETE FROM calendar_events WHERE starts_at IS NOT NULL AND starts_at < now() - ($1 || ' days')::interval`, [r.calendarDays]],
+  
+  ];
+}
+
 let lastHousekeeping = 0;
 export async function housekeeping(force = false): Promise<Record<string, number>> {
   if (!force && Date.now() - lastHousekeeping < 3600_000) return {};
@@ -83,40 +122,10 @@ export async function housekeeping(force = false): Promise<Record<string, number
   // Every window is a setting with a low default, and each is the shortest
   // the feature can actually work with. See services/retentionPolicy.ts for
   // what each one costs to shorten.
-  const r = await retentionSettings();
-  const jobs: [string, string][] = [
-    // A finished AI job still holds the prompt it was given, which is a copy
-    // of somebody's mail sitting in a queue table for no reason. It is
-    // emptied the moment the job stops running, before the row is anywhere
-    // near old enough to delete.
-    // The immediate wipe happens where a job finishes; this is the safety
-    // net for a row that was left behind by a crash or an older build.
-    // `result` is a one-line outcome and is kept — it is what an admin reads
-    // when a responder did nothing and they want to know why.
-    ['ai_job_payloads', `UPDATE ai_jobs SET payload='{}'::jsonb WHERE status IN ('done','failed','skipped') AND payload <> '{}'::jsonb`],
-    // Staged files live a day unless a draft still refers to them, as an
-    // attachment or as an image inserted into the body.
-    ['uploads', `DELETE FROM uploads u WHERE u.created_at < now() - interval '1 day' AND NOT EXISTS (SELECT 1 FROM drafts d WHERE u.id = ANY(d.attachment_ids) OR u.id = ANY(d.inline_upload_ids)) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.status IN ('scheduled','sending') AND u.id = ANY(o.upload_ids))`],
-    ['outbox', `DELETE FROM outbox WHERE status IN ('sent','cancelled') AND created_at < now() - ($1 || ' days')::interval`],
-    ['review_queue', `DELETE FROM review_queue WHERE status <> 'pending' AND decided_at < now() - ($2 || ' days')::interval`],
-    ['ai_jobs', `DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - ($3 || ' hours')::interval`],
-    ['sessions', `DELETE FROM sessions WHERE expires_at < now()`],
-    ['invites', `DELETE FROM invites WHERE (used_at IS NOT NULL AND used_at < now() - interval '30 days') OR (used_at IS NULL AND expires_at < now() - interval '30 days')`],
-    ['audit_log', `DELETE FROM audit_log WHERE created_at < now() - ($4 || ' days')::interval`],
-    // A brief is a cache of a page. Past its window it is a description of a
-    // mailbox that has moved on, and keeping it is only a copy of mail.
-    ['briefs', `DELETE FROM briefs WHERE generated_at < now() - ($5 || ' days')::interval`],
-    // Closed commitments are history nobody asked for.
-    ['commitments', `DELETE FROM commitments WHERE status <> 'open' AND closed_at < now() - ($6 || ' days')::interval`],
-    // A finished or abandoned import leaves only its counts.
-    ['mail_imports', `DELETE FROM mail_imports WHERE status IN ('done','failed','cancelled') AND updated_at < now() - interval '7 days'`],
-    // Invitations to meetings that are long past.
-    ['calendar_events', `DELETE FROM calendar_events WHERE starts_at IS NOT NULL AND starts_at < now() - ($7 || ' days')::interval`],
-  ];
-  const params = [r.outboxDays, r.reviewDays, r.aiJobHours, r.auditDays, r.briefDays, r.commitmentDays, r.calendarDays];
+  const jobs = housekeepingJobs(await retentionSettings());
   const counts: Record<string, number> = {};
-  for (const [name, sql] of jobs) {
-    try { const rows = await query(`WITH d AS (${sql} RETURNING 1) SELECT count(*)::int AS n FROM d`, params); counts[name] = (rows[0] as any)?.n ?? 0; } catch (e) { log.warn(`housekeeping ${name} failed`, { err: (e as Error).message }); }
+  for (const [name, sql, args] of jobs) {
+    try { const rows = await query(`WITH d AS (${sql} RETURNING 1) SELECT count(*)::int AS n FROM d`, args); counts[name] = (rows[0] as any)?.n ?? 0; } catch (e) { log.warn(`housekeeping ${name} failed`, { err: (e as Error).message }); }
   }
   if (Object.values(counts).some((n) => n > 0)) log.info('housekeeping', counts);
   return counts;

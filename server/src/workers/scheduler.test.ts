@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deferUntil, MAX_DEFER_MS, nextRunAfterSend } from './scheduler.js';
+import { deferUntil, housekeepingJobs, MAX_DEFER_MS, nextRunAfterSend } from './scheduler.js';
 
 test('a deferral inside the cap keeps its own time, plus a little jitter', () => {
   const soon = new Date(Date.now() + 60_000);
@@ -49,5 +49,22 @@ test('a following email waits out the randomised gap, never under a minute', () 
     const at = nextRunAfterSend({ kind: 'email' } as any, { jitter_enabled: true, jitter_min_s: 120, jitter_max_s: 180 })!;
     const gap = at.getTime() - Date.now();
     assert.ok(gap >= 119_000 && gap <= 181_000, `gap ${gap} inside the jitter range`);
+  }
+});
+
+test('every housekeeping sweep is given exactly the parameters it uses', () => {
+  // The whole set used to share one array of seven, so a statement with no
+  // placeholder was handed seven values and Postgres refused it. Nothing was
+  // deleted and the only sign was a warning line per sweep, per hour.
+  const jobs = housekeepingJobs({
+    outboxDays: 1, reviewDays: 2, aiJobHours: 3, auditDays: 4,
+    briefDays: 5, commitmentDays: 6, calendarDays: 7,
+  } as any);
+  assert.ok(jobs.length >= 10, 'the sweeps are all still here');
+  for (const [name, sql, args] of jobs) {
+    const used = [...sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+    const highest = used.length ? Math.max(...used) : 0;
+    assert.equal(highest, args.length, `${name} references $1..$${highest} but is given ${args.length} value(s)`);
+    for (let i = 1; i <= highest; i++) assert.ok(used.includes(i), `${name} skips $${i}, which Postgres will not accept`);
   }
 });

@@ -1147,6 +1147,41 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .t-snippet.gist svg { flex: none; opacity: .7; }
 .tc-gist { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 5px; padding: 5px 9px; border-radius: 8px; background: rgba(var(--accent-rgb), .07); border-left: 2px solid rgba(var(--accent-rgb), .35); color: var(--accent-text); font-size: 12.5px; line-height: 1.45; }
 .tc-gist svg { flex: none; margin-top: 2px; opacity: .7; }
+/* While one is being written, at the reader's request. */
+.t-snippet.gist .spin, .tc-gist .spin { animation: spin 1s linear infinite; }
+
+/* The offer to write the line for a conversation that has not got one. It
+   takes the sparkle's place at the head of the snippet, so the mark is in the
+   same column whether a row has its summary or is being asked for one.
+   The space is held in every state, so nothing on the row moves when the
+   offer appears. */
+.gist-ask { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-right: 5px; padding: 0; border: 0; border-radius: 6px; background: rgba(var(--accent-rgb), .14); color: var(--accent-text); cursor: pointer; vertical-align: -4px; }
+.gist-ask:hover { background: rgba(var(--accent-rgb), .28); }
+/* Where there is a pointer, the offer waits to be looked for: it is there,
+   holding its place, but invisible until the row is hovered or something in
+   it takes focus — a list of fifty rows is not fifty sparkles. */
+@media (hover: hover) {
+  .gist-ask { visibility: hidden; }
+  .thread-row:hover .gist-ask, .thread-row:focus-within .gist-ask { visibility: visible; }
+}
+/* A touch screen has no hover, and nothing to discover by hovering, so the
+   offer is simply there — and the size of the row's other targets, the star
+   and the checkbox, rather than the size of the mark it draws. It cannot
+   usefully reach past that: the snippet it sits in clips its overflow, which
+   is what keeps a long preview to one line. */
+@media (hover: none) {
+  .gist-ask { width: 24px; height: 24px; }
+  .gist-ask svg { width: 13px; height: 13px; }
+}
+
+/* The same offer on a card, which has the room to say it in words. */
+.tc-gist.ask { width: 100%; border: 0; border-left: 2px dashed rgba(var(--accent-rgb), .35); background: transparent; color: var(--text-3); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.tc-gist.ask:hover { background: rgba(var(--accent-rgb), .07); color: var(--accent-text); }
+.tc-gist.ask svg { margin-top: 1px; }
+@media (hover: hover) {
+  .tc-gist.ask { visibility: hidden; }
+  .thread-card:hover .tc-gist.ask, .thread-card:focus-within .tc-gist.ask { visibility: visible; }
+}
 
 /* The undo window, drawn as a ring that empties with the seconds left inside.
    The ring is a CSS animation so it stays smooth while React only redraws the

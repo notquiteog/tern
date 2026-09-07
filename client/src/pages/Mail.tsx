@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers, Wrench, Gauge, ArrowUp, ArrowDown } from 'lucide-react';
+import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers, Wrench, Gauge, ArrowUp, ArrowDown, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose, seedFromDraft } from '../state/compose';
@@ -88,6 +88,7 @@ export default function MailPage() {
   // nothing is hidden on the strength of a guess.
   const sort = params.get('sort') ?? '';
   const canTriage = useCan('triage');
+  const canSummaries = useCan('ai.summaries');
   const cat = (params.get('cat') ?? 'primary') as Category;
   const page = Math.max(1, Number(params.get('page') ?? 1));
   const [ctx, setCtx] = useState<{ x: number; y: number; row: ThreadRow } | null>(null);
@@ -160,7 +161,33 @@ export default function MailPage() {
     },
     staleTime: 60_000,
   });
-  const summaries = summaryData?.summaries ?? {};
+  // Lines the reader asked for by hand, laid over what the page's own request
+  // brought back. A row the list never got round to — or one the model
+  // declined when it swept the page — is not a dead end: hovering it offers
+  // to write the line now, and a touch screen, which has no hover, simply
+  // shows the offer.
+  const [asked, setAsked] = useState<Record<string, string>>({});
+  const [asking, setAsking] = useState<Set<string>>(new Set());
+  const summaries = { ...(summaryData?.summaries ?? {}), ...asked };
+  // The assistant is on, this person has consented, and they want summaries
+  // in the list at all. Any of those missing and there is nothing to offer.
+  const canAskSummary = prefs.summaries && canSummaries && summaryData?.enabled !== false;
+  async function askSummary(t: ThreadRow) {
+    if (asking.has(t.key)) return;
+    setAsking((s) => new Set(s).add(t.key));
+    try {
+      const r = await api.post<{ key: string; summary: string }>('/api/ai/summaries/one', { key: t.key });
+      // An empty answer is the model declining, and it is recorded here the
+      // same way the server records it: the row stops offering, because
+      // pressing again would buy the same nothing more slowly.
+      setAsked((a) => ({ ...a, [t.key]: r.summary }));
+      if (!r.summary) toast.toast('Nothing worth summarising in that conversation');
+    } catch (e) {
+      toast.error(e, 'Could not write a summary');
+    } finally {
+      setAsking((s) => { const n = new Set(s); n.delete(t.key); return n; });
+    }
+  }
 
   const mailboxName = box.startsWith('mailbox:') ? mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === box)?.name ?? 'Label' : BOX_TITLES[box] ?? box;
   const roleOf = useMemo(() => new Map(mailboxes.map((m) => [`${m.account_id}:${m.jmap_id}`, m])), [mailboxes]);
@@ -419,7 +446,9 @@ export default function MailPage() {
                         dragRows={() => (selected.has(t.key) ? selectedRows : [t])}
                         onOpen={() => openThread(t)} onSelect={() => toggleSelect(t)} onFocus={() => setFocus(i)}
                         onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'archived')} onTrash={() => act('trash', [t], {}, 'moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box}
-                        onSwipeArchive={() => act('archive', [t], {}, 'archived')} onSwipeTrash={() => act('trash', [t], {}, 'moved to trash')} summary={summaries[t.key]} />
+                        onSwipeArchive={() => act('archive', [t], {}, 'archived')} onSwipeTrash={() => act('trash', [t], {}, 'moved to trash')} summary={summaries[t.key]}
+                        summarizing={asking.has(t.key)}
+                        onSummarize={canAskSummary && !summaries[t.key] && !(t.key in asked) ? () => { void askSummary(t); } : undefined} />
                     );
                   })}
                   {stacked && (
@@ -449,6 +478,9 @@ export default function MailPage() {
               priority model to account for itself. */}
           {ctx.row.latest?.from?.[0]?.email && <MenuItem icon={<Wrench size={15} />} onClick={() => { nav(`/rules?from=${encodeURIComponent(ctx.row.latest.from[0].email)}`); setCtx(null); }}>Make a rule from this sender…</MenuItem>}
           {canTriage && sort === 'priority' && <MenuItem icon={<Gauge size={15} />} onClick={() => { setWhy(ctx.row); setCtx(null); }}>Why is this here?</MenuItem>}
+          {/* The same offer as the one on the row, for anyone who arrived by
+              long-pressing or right-clicking rather than by hovering. */}
+          {canAskSummary && !summaries[ctx.row.key] && !(ctx.row.key in asked) && !asking.has(ctx.row.key) && <MenuItem icon={<Sparkles size={15} />} onClick={() => { void askSummary(ctx.row); setCtx(null); }}>Summarize</MenuItem>}
           <div className="menu-sep" />
           <MenuItem icon={ctx.row.unread ? <MailOpen size={15} /> : <Mail size={15} />} onClick={() => { void act(ctx.row.unread ? 'read' : 'unread', [ctx.row]); setCtx(null); }}>{ctx.row.unread ? 'Mark as read' : 'Mark as unread'}</MenuItem>
           <MenuItem icon={<Star size={15} />} onClick={() => { void act(ctx.row.starred ? 'unstar' : 'star', [ctx.row]); setCtx(null); }}>{ctx.row.starred ? 'Unstar' : 'Star'}</MenuItem>
@@ -524,6 +556,12 @@ interface RowViewProps {
   // The AI's one-line summary, when it has been written and the reader asked
   // for summaries at all.
   summary?: string;
+  // Given only where a line could be written and has not been: the row draws
+  // the offer itself. Absent means there is nothing to offer — summaries are
+  // off, the assistant is, this conversation already has its line, or it was
+  // asked once and the model had nothing to say.
+  onSummarize?: () => void;
+  summarizing: boolean;
 }
 
 // What a screen reader should hear instead of the row's dozen loose fragments:
@@ -570,6 +608,26 @@ function TrustMarks({ t }: { t: ThreadRow }) {
   );
 }
 
+// The offer to write a line for a conversation that has none.
+//
+// It sits exactly where the summary would go, and it holds that space whether
+// or not it can be seen: on a pointer it is invisible until the row is
+// hovered or something in it takes focus, so a list of fifty rows is not a
+// list of fifty sparkles, and nothing moves sideways when it appears. A touch
+// screen has no hover to wait for and no way to discover what a hover would
+// have revealed, so there it is simply visible — the CSS decides that, from
+// whether the device hovers at all, rather than from a guess made here about
+// screen width.
+function GistAsk({ onAsk }: { onAsk: () => void }) {
+  return (
+    <button type="button" className="gist-ask" title="Summarize this conversation"
+      aria-label="Summarize this conversation"
+      onClick={(e) => { e.stopPropagation(); onAsk(); }}>
+      <Sparkles size={11} />
+    </button>
+  );
+}
+
 // Swiping a conversation sideways on a touch screen: right archives, left
 // deletes. Only touch — a mouse drag is the drag-onto-a-label gesture — and a
 // mostly vertical move is the list scrolling, so it is handed back at once.
@@ -607,7 +665,7 @@ function useSwipe(onRight: () => void, onLeft: () => void) {
   };
 }
 
-function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary, onSummarize, summarizing }: RowViewProps) {
   const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
   const people = (t.participants ?? []).filter((p) => p && p.email);
   const names = people.length ? people.map((p) => (p.email.toLowerCase() === myEmail.toLowerCase() ? 'me' : addrName(p))) : t.latest?.to?.length ? ['To: ' + t.latest.to.map(addrName).join(', ')] : ['(unknown)'];
@@ -642,7 +700,9 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
         <span className="t-marks"><TrustMarks t={t} /></span>
         {summary
           ? <span className="t-snippet gist" title={t.latest?.preview}><Sparkles size={11} /> {summary}</span>
-          : <span className="t-snippet">— {isEncrypted(t) || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>}
+          : summarizing
+            ? <span className="t-snippet gist"><Loader2 size={11} className="spin" /> Summarizing…</span>
+            : <span className="t-snippet">{onSummarize && <GistAsk onAsk={onSummarize} />}— {isEncrypted(t) || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>}
         {atts.length > 0 && <span className="t-atts">{atts.slice(0, 2).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}{atts.length > 2 && <span className="t-att">+{atts.length - 2}</span>}</span>}
       </div>
       <div className="t-meta" aria-hidden="true">
@@ -664,7 +724,7 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
 // The card view: the same conversation with room to breathe. Where the list
 // is for scanning a hundred rows, this is for reading a dozen — the summary
 // line, the people, the labels and the attachments all get their own space.
-function ThreadCardView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+function ThreadCardView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary, onSummarize, summarizing }: RowViewProps) {
   const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
   const label = threadPeople(t, myEmail);
   const from = t.latest?.from?.[0];
@@ -700,7 +760,11 @@ function ThreadCardView({ t, index, focused, selected, active, showAccount, acco
           </div>
         </div>
         <div className="tc-subject">{t.latest?.subject || '(no subject)'}<span className="t-marks"><TrustMarks t={t} /></span></div>
-        {summary && <div className="tc-gist"><Sparkles size={12} /> {summary}</div>}
+        {summary
+          ? <div className="tc-gist"><Sparkles size={12} /> {summary}</div>
+          : summarizing
+            ? <div className="tc-gist"><Loader2 size={12} className="spin" /> Summarizing…</div>
+            : onSummarize && <button type="button" className="tc-gist ask" onClick={(e) => { e.stopPropagation(); onSummarize(); }}><Sparkles size={12} /> Summarize this conversation</button>}
         <div className="tc-preview">
           {encrypted || (!t.latest?.preview && t.has_attachment)
             ? <span className="row gap-4"><Lock size={12} /> Encrypted message</span>

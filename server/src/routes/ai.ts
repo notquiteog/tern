@@ -247,6 +247,32 @@ aiRouter.post('/summaries', rateLimit({ name: 'ai-summaries', perMinute: 30, mes
   res.json({ summaries: out, enabled: s.enabled });
 });
 
+// One conversation, summarised because somebody asked for it rather than
+// because it scrolled past. The list writes a handful per request and gives
+// up once a round settles nothing, which is right for filling a page in the
+// background and leaves rows with no line at all; this is how a reader gets
+// the line for the row in front of them.
+//
+// It generates unconditionally, including where the model declined before.
+// A decline is remembered so the list stops asking by itself, not so that a
+// person can never ask again.
+aiRouter.post('/summaries/one', requireCapability('ai.summaries'), rateLimit({ name: 'ai-summary-one', perMinute: 15, message: 'Too many summary requests; wait a moment' }), async (req, res) => {
+  const { key } = parse(z.object({ key: z.string().min(3).max(200) }), req.body);
+  const i = key.indexOf(':');
+  const accountId = Number(key.slice(0, i));
+  const threadId = key.slice(i + 1);
+  if (i <= 0 || !Number.isFinite(accountId) || !threadId) throw badRequest('Not a conversation');
+  const s = await getAiSettings();
+  if (!s.enabled) throw badRequest('The assistant is switched off');
+  const acc = await getUserAccount(req.user!.id, accountId);
+  if (!acc) throw notFound('No such conversation');
+  // Somebody is watching this one arrive, so it takes an interactive slot.
+  const made = await generateSummary(req.user!.id, acc, threadId, { interactive: true });
+  // An empty line is the model declining rather than a failure, and the
+  // browser is told which of the two it got.
+  res.json({ key, summary: made?.text ?? '' });
+});
+
 const draftSchema = z.object({
   mode: z.enum(['compose', 'reply', 'rewrite', 'shorten', 'expand', 'summarize', 'subject', 'personalize', 'polish', 'quick_replies']),
   instruction: z.string().max(4000).optional(),
