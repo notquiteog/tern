@@ -47,6 +47,20 @@ export function syncAccount(accountId: number, opts: { full?: boolean } = {}): P
   return p;
 }
 
+// The session's endpoints are cached on the account row so most syncs skip the
+// round trip to fetch them, which means a mailbox whose endpoints moved stays
+// broken across restarts: nothing in the normal path ever refetches them. So
+// an answer that does not look like a JMAP endpoint answering — the name now
+// serves something else, a proxy in front of it is down, a redirect the API
+// call refuses to follow — buys one session refetch on the next attempt.
+// Transient upstream errors cost a single extra request; a moved server that
+// would otherwise need someone to re-enter its settings by hand heals itself.
+export function endpointLooksStale(e: unknown): boolean {
+  if (!(e instanceof JmapError)) return true;
+  if (e.type === 'unauthorized') return false;
+  return Boolean(e.status && [404, 405, 410, 421, 500, 502, 503, 504].includes(e.status));
+}
+
 async function doSync(accountId: number, opts: { full?: boolean }): Promise<SyncResult> {
   const acc = await getAccount(accountId);
   if (!acc || !acc.enabled) return { created: 0, updated: 0, destroyed: 0, full: false };
@@ -81,7 +95,7 @@ async function doSync(accountId: number, opts: { full?: boolean }): Promise<Sync
     const status = e instanceof JmapError && e.type === 'unauthorized' ? 'auth_error' : 'error';
     log.error(`account ${acc.id} sync failed`, { err: msg });
     await query(`UPDATE accounts SET sync_status=$2, sync_error=$3 WHERE id=$1`, [acc.id, status, msg.slice(0, 500)]);
-    if (status === 'auth_error') {
+    if (status === 'auth_error' || endpointLooksStale(e)) {
       // Force a fresh session next time; the stored URLs may be stale too.
       await query(`UPDATE accounts SET api_url=NULL WHERE id=$1`, [acc.id]);
     }

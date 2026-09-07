@@ -114,6 +114,27 @@ async function main(): Promise<void> {
       console.log(bad.length ? `\n${bad.length} required record(s) still missing or wrong.` : '\nAll required records are in place.');
       break;
     }
+    // What each connected mailbox is actually talking to. api_url is the
+    // endpoint cached from the last session fetch, and the usual reason a
+    // mailbox sits on an error that restarting the app did not clear.
+    // --reconnect drops it so the next sync fetches the session again.
+    case 'accounts': {
+      const target = arg('reconnect');
+      if (target) {
+        const all = target === 'all';
+        const rows = await query<{ email: string }>(
+          `UPDATE accounts SET api_url=NULL, sync_status='idle', sync_error=NULL
+             WHERE ${all ? 'true' : '(id::text=$1 OR lower(email)=lower($1))'} RETURNING email`,
+          all ? [] : [target],
+        );
+        if (!rows.length) throw new Error(`no account matching '${target}'`);
+        console.log(`reconnecting ${rows.map((r) => r.email).join(', ')}: the next sync fetches the session again`);
+        break;
+      }
+      const rows = await query(`SELECT id, email, provider, session_url, api_url, sync_status, left(sync_error, 60) AS sync_error, last_sync_at FROM accounts ORDER BY id`);
+      console.table(rows);
+      break;
+    }
     case 'list-users': {
       const rows = await query('SELECT id, username, display_name, role, disabled, totp_enabled, last_login_at FROM users ORDER BY id');
       console.table(rows);
@@ -169,7 +190,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status');
   }
   await pool.end();
 }

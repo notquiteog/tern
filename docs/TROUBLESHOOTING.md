@@ -43,6 +43,31 @@ DNS on the server) trips the same check.
 - After changing a password, edit the account in Tern and enter the new one;
   syncing resumes automatically.
 
+## An account keeps showing an error the restart did not clear
+
+Tern caches the endpoints a mailbox advertised the last time it fetched the
+JMAP session (its `api_url` and friends), so most syncs skip that round trip.
+The cache lives in the database, which is why restarting the app does not
+touch it: if the mail server moved, or the account was first connected against
+a name that now serves something else, every sync keeps calling the old
+address and reporting the same failure.
+
+```bash
+./bin/tern cli accounts
+```
+
+That prints each mailbox's session URL, the cached `api_url` and its last
+error. If the two point somewhere you do not recognise:
+
+```bash
+./bin/tern cli accounts --reconnect alex@example.com
+```
+
+The next sync then fetches the session again and stores whatever the server
+advertises now. Editing the account in Settings → Accounts does the same
+thing. Tern also drops the cache by itself when a sync fails in a way that
+suggests the endpoint moved, so this is a nudge, not a repair.
+
 ## Mail is syncing but sending fails
 
 - "Blob upload failed" or "Send rejected": the server refused the message.
