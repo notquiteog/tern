@@ -166,6 +166,21 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
     setUnsub(null);
   }
 
+  // Dates this conversation is already keeping that you could snooze to.
+  // Only future ones: a commitment that is already late offers a date the
+  // server would refuse, and a button that cannot work is worse than no
+  // button — which is exactly what an overdue promise would produce.
+  const snoozableCommitments = ((data?.commitments ?? []) as ThreadCommitment[])
+    .filter((c) => c.dueAt && new Date(c.dueAt).getTime() > Date.now());
+
+  // The suggestions row is showing and this conversation asked about time:
+  // the chip among the suggestions is the control, so the reply bar's own
+  // button stands down rather than repeating it.
+  const timesChipShowing = Boolean(
+    quick && !quick.loading && quick.items.length > 0
+    && asksAboutTime(lastInbound?.body_text || lastInbound?.preview),
+  );
+
   useHotkeys({
     r: () => last && reply(lastInbound), a: () => last && reply(lastInbound, true), f: () => last && forward(last),
     e: () => inInbox && void act('archive', {}, { back: true, msg: 'Archived' }), '#': () => void act('trash', {}, { back: true, msg: 'Moved to trash' }), '!': () => void act('spam', {}, { back: true, msg: 'Marked as junk' }),
@@ -286,8 +301,11 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                   <Button variant="ghost" icon={<Zap size={15} />} onClick={quickReplies} loading={quick?.loading} title="Three short replies suggested by the AI">Quick replies</Button>
                   {/* A reply opened with the times already in it. The other
                       buttons on this row open an empty reply; this one is
-                      only worth pressing because of what it puts in it. */}
-                  <ProposeTimesButton onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
+                      only worth pressing because of what it puts in it.
+                      It stands down while the suggestions are on screen: the
+                      chip among them is the same control, and two of them a
+                      centimetre apart is one too many. */}
+                  {!timesChipShowing && <ProposeTimesButton onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />}
                 </div>
                 <AiThinking trace={quickThinking} busy={Boolean(quick?.loading)} />
                 {quick && !quick.loading && quick.items.length > 0 && (
@@ -298,7 +316,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                         no day in it — it is told not to invent a date, and it
                         cannot see the calendar. This chip is that suggestion,
                         answered properly. */}
-                    {asksAboutTime(lastInbound.body_text || lastInbound.preview) && (
+                    {timesChipShowing && (
                       <ProposeTimesChip onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
                     )}
                   </div>
@@ -328,11 +346,11 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
             ways — "not now, then" — and the two features had no idea the
             other existed. If this conversation carries a dated promise, the
             date it is already keeping is offered as the day to come back. */}
-        {(data?.commitments ?? []).filter((c: ThreadCommitment) => c.dueAt).length > 0 && (
+        {snoozableCommitments.length > 0 && (
           <div className="snooze-commitments">
             <div className="small muted mb-8">This conversation is already carrying a date:</div>
             <div className="row wrap gap-4">
-              {(data.commitments as ThreadCommitment[]).filter((c) => c.dueAt).map((c) => (
+              {snoozableCommitments.map((c) => (
                 <Button
                   key={c.id}
                   size="sm"

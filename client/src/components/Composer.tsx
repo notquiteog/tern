@@ -406,8 +406,11 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
               the times come out of the calendar, so this is the one button in
               this row that cannot be wrong about a fact. */}
           <ProposeTimesButton compact onInsert={(t) => {
+            // As HTML, not as text: `execCommand('insertText')` turns each
+            // newline into a block of its own, so a paragraph break arrives as
+            // three blank lines and the offer of times reads as a poem.
             editor.current?.focus();
-            editor.current?.insertText(t);
+            editor.current?.insertHtml(textToHtml(t));
             html.current = editor.current?.getHtml() ?? html.current;
             setDirty(true);
           }} />

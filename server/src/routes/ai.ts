@@ -372,14 +372,26 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
       const hit = msgs.map((m) => m.from_addr?.[0]).find((a: any) => a?.email && a.name && String(a.email).toLowerCase() === input.recipient!.email!.toLowerCase());
       if (hit) input.recipient.name = String(hit.name);
     }
-    // A commitment can carry no counterparty at all — plenty are written down
-    // without one. The conversation it came from always knows: it is whoever
-    // last wrote to us in it. Without this the email opens "Hi there" to
-    // somebody whose name is three lines below.
-    if (!input.recipient?.email && (b.mode === 'reschedule' || b.mode === 'nudge')) {
+    // Who a reschedule or a nudge is addressed to, settled against the
+    // conversation rather than against the ledger alone.
+    //
+    // Two cases, and both are real. A commitment can carry no counterparty at
+    // all — plenty are written down without one — and then the thread is the
+    // only thing that knows, or the email opens "Hi there" to somebody whose
+    // name is three lines below it. And a counterparty can name the mailbox's
+    // own owner, which happens whenever the promise was read out of something
+    // you sent; addressing yourself is never right, and it is what the
+    // composer would silently disagree with, because it addresses the other
+    // party. The composer's answer wins, so it is the one used here.
+    if (b.mode === 'reschedule' || b.mode === 'nudge') {
       const mine = String(tacc.email).toLowerCase();
-      const them = [...msgs].reverse().map((m: any) => m.from_addr?.[0]).find((a: any) => a?.email && String(a.email).toLowerCase() !== mine);
-      if (them) input.recipient = { name: them.name ? String(them.name) : input.recipient?.name, email: String(them.email) };
+      const addressingMyself = String(input.recipient?.email ?? '').toLowerCase() === mine;
+      if (!input.recipient?.email || addressingMyself) {
+        const them = [...msgs].reverse().map((m: any) => m.from_addr?.[0]).find((a: any) => a?.email && String(a.email).toLowerCase() !== mine)
+          ?? msgs.flatMap((m: any) => m.to_addr ?? []).find((a: any) => a?.email && String(a.email).toLowerCase() !== mine);
+        if (them) input.recipient = { name: them.name ? String(them.name) : undefined, email: String(them.email) };
+        else if (addressingMyself) input.recipient = undefined;
+      }
     }
   }
   const send = sse(res);

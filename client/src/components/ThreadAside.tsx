@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ClipboardCheck, Clock, Loader2, Plus, Telescope, Timer, X } from 'lucide-react';
 import { api } from '../api';
+import { postWithWork } from '../lib/work';
 import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
 import { Badge, Button, IconButton, Input, Segmented } from './ui';
@@ -293,8 +294,10 @@ export function useTriageFeedback(emailId: number | null, onDone?: () => void) {
   const qc = useQueryClient();
   const toast = useToast();
   return useMutation({
+    // Priced like the other indexing work: the correction retrains the model
+    // on the spot, which is not free.
     mutationFn: (label: 0 | 1) =>
-      api.post<{ trained: boolean; samples: number; minSamples: number }>('/api/discover/triage/feedback', { emailId, label }),
+      postWithWork<{ trained: boolean; samples: number; minSamples: number }>('index', '/api/discover/triage/feedback', { emailId, label }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['triage-why', emailId] });
       qc.invalidateQueries({ queryKey: ['threads'] });
