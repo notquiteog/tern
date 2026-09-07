@@ -814,7 +814,7 @@ function DnsSetup({ data }: { data: any }) {
       <Callout>
         <div className="strong mb-8">Trusted mail in five steps</div>
         <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-          <li>At your <b>hosting provider</b>, set the reverse DNS of <code>{dns.serverIp ?? 'the server IP'}</code> to <code>{dns.mailHost}</code>.</li>
+          <li>At your <b>hosting provider</b>, set the reverse DNS of <code>{dns.serverIp ?? 'the server IP'}</code> to <code>{dns.mailHost}</code>{dns.serverIpv6 && <> — and the same for <code>{dns.serverIpv6}</code>, since mail delivered over IPv6 is judged on that address</>}.</li>
           <li>At your <b>DNS host</b> (where {dns.domain} is managed), add the records below. Use the copy buttons; long values are fine to paste as one piece. If Cloudflare proxies your DNS, turn the proxy off for these names.</li>
           <li>Press <b>Check DNS</b>. Every record shows found, missing or differs, with what the resolver saw.</li>
           <li>Once the required rows are green, send a message to a Gmail address and open "Show original": SPF, DKIM and DMARC should say PASS.</li>

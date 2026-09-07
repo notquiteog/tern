@@ -396,7 +396,7 @@ async function* exportChunks(uid: number, user: UserRow): AsyncGenerator<string>
       if (!rows.length) break;
       // The mail cache and drafts are ciphertext at rest; an export of your
       // own data is readable, which is the point of it.
-      const opened = section.name === 'emails' ? await openEmails(uid, rows)
+      const opened = section.name === 'emails' ? await openEmails(uid, 'owner', rows)
         : section.name === 'drafts' ? await openDrafts(uid, rows)
         : section.name === 'review_queue' ? await openReviews(uid, rows)
         : section.name === 'outbox' ? await Promise.all(rows.map(async (r: any) => ({ ...r, payload: safeJson(await open(uid, r.payload)) })))

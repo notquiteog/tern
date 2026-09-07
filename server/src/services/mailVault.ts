@@ -14,6 +14,7 @@
 //   subject, preview, body_text, body_html, every address list, and the
 //   attachment metadata (names leak as much as bodies).
 import { addressKey, addressTermsWith, dataKey, indexTermsWith, openWith, searchKey, sealWith } from './vault.js';
+import { assertCapability, type Capability } from './capabilities.js';
 
 export interface Addr { name?: string | null; email: string }
 
@@ -76,8 +77,29 @@ export type Opened<T> = Omit<T, keyof OpenedEmailFields | 'search_terms' | 'addr
 // Turns a row as it came out of Postgres back into the shape the rest of the
 // app has always seen. Rows the backfill has not reached are plaintext and
 // pass through unchanged, so a read never has to ask which it is holding.
-export async function openEmail<T extends Record<string, any>>(userId: number, row: T): Promise<Opened<T>> {
+// Who is opening this message, and why. There are exactly two answers.
+//
+//   'owner'      the person it belongs to is looking at their own mail, or
+//                asked for a copy of it. That is the product; it needs no
+//                permission beyond being signed in as themselves.
+//   a Capability something other than the owner's eyes is about to read the
+//                content — a summariser, an indexer, a scanner. That needs
+//                the person to have turned it on, and the install to still
+//                have it enabled.
+//
+// The argument is required. A code path that decrypts a mailbox without
+// saying which of the two it is does not compile, which is the only kind of
+// audit that stays true after the audit is over.
+export type MailReader = 'owner' | Capability;
+
+async function checkReader(userId: number, reader: MailReader): Promise<void> {
+  if (reader === 'owner') return;
+  await assertCapability(userId, reader);
+}
+
+export async function openEmail<T extends Record<string, any>>(userId: number, reader: MailReader, row: T): Promise<Opened<T>> {
   if (!row) return row as Opened<T>;
+  await checkReader(userId, reader);
   const dek = await dataKey(userId);
   return openEmailWith(dek, row);
 }
@@ -101,8 +123,9 @@ export function openEmailWith<T extends Record<string, any>>(dek: Buffer, row: T
 }
 
 // Opens many rows for one user with a single key lookup.
-export async function openEmails<T extends Record<string, any>>(userId: number, rows: T[]): Promise<Opened<T>[]> {
+export async function openEmails<T extends Record<string, any>>(userId: number, reader: MailReader, rows: T[]): Promise<Opened<T>[]> {
   if (!rows.length) return rows as Opened<T>[];
+  await checkReader(userId, reader);
   const dek = await dataKey(userId);
   return rows.map((r) => openEmailWith(dek, r));
 }

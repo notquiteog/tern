@@ -777,4 +777,214 @@ CREATE TABLE IF NOT EXISTS thread_summaries (
 );
 `,
   },
+  {
+    // Consent. Nothing that reads mail for a purpose other than showing it to
+    // its owner, and nothing that reaches the model, runs without a row here
+    // and the matching install-wide switch in settings.features.
+    id: '20260908_0019_capabilities',
+    up: `
+CREATE TABLE IF NOT EXISTS user_capabilities (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  capability TEXT NOT NULL,
+  granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, capability)
+);
+`,
+  },
+  {
+    // F1, meaning search. The vector lives in its own table rather than on the
+    // message: it is derived data with its own lifetime, revoking consent has
+    // to be able to drop all of it in one statement, and a message row that is
+    // read on every list render should not carry a kilobyte nobody asked for.
+    //
+    // `vec` is int8, already multiplied by the per-user rotation derived from
+    // the data key (services/embeddings.ts). Distances survive the rotation;
+    // the axes that would let somebody read it back do not.
+    id: '20260908_0020_semantic_index',
+    up: `
+CREATE TABLE IF NOT EXISTS email_vectors (
+  email_id BIGINT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  vec BYTEA NOT NULL,
+  dims SMALLINT NOT NULL,
+  norm REAL NOT NULL DEFAULT 1,
+  model TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS email_vectors_account_idx ON email_vectors(account_id);
+-- Which messages still need one. A partial index keeps the "what is left"
+-- query cheap once the backlog is gone.
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS embedded BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS emails_unembedded_idx ON emails(account_id, received_at DESC) WHERE NOT embedded;
+`,
+  },
+  {
+    // F2, priority ordering. The model is a linear one over the hashed terms
+    // that are already in emails.search_terms, so its weights are as opaque as
+    // the index they read; they are sealed anyway, because a weight vector is
+    // still something learned from one person's mail.
+    id: '20260908_0021_triage',
+    up: `
+CREATE TABLE IF NOT EXISTS triage_models (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  weights TEXT NOT NULL,
+  samples INT NOT NULL DEFAULT 0,
+  accuracy REAL,
+  trained_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 0..100. Plain, like the category: it is a number about a message, not a
+-- word from one, and the list sorts by it.
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS priority SMALLINT;
+CREATE INDEX IF NOT EXISTS emails_priority_idx ON emails(account_id, priority DESC NULLS LAST, received_at DESC);
+`,
+  },
+  {
+    // F3, the impersonation guard. The flags are a closed vocabulary, so they
+    // are stored as they are and can be filtered on; anything that names a
+    // domain or a person is in the sealed detail beside them.
+    id: '20260908_0022_guard',
+    up: `
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS guard_flags TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS guard_detail TEXT;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS guard_checked BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS emails_guard_idx ON emails(account_id) WHERE array_length(guard_flags, 1) > 0;
+`,
+  },
+  {
+    // F5, the text inside attachments. Sealed like a body, and folded into the
+    // same blind index so "the invoice Karen sent" is findable without the
+    // words being anywhere in the clear.
+    id: '20260908_0023_attachment_text',
+    up: `
+CREATE TABLE IF NOT EXISTS attachment_text (
+  id BIGSERIAL PRIMARY KEY,
+  email_id BIGINT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  part_id TEXT NOT NULL,
+  name TEXT,
+  content_type TEXT NOT NULL DEFAULT '',
+  text TEXT,
+  chars INT NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (email_id, part_id)
+);
+CREATE INDEX IF NOT EXISTS attachment_text_account_idx ON attachment_text(account_id);
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS attachments_extracted BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS emails_unextracted_idx ON emails(account_id, received_at DESC)
+  WHERE has_attachment AND NOT attachments_extracted;
+`,
+  },
+  {
+    // F6, commitments. Every human-readable column is sealed; the dates and
+    // the state are not, because the list is ordered and counted by them.
+    id: '20260908_0024_commitments',
+    up: `
+CREATE TABLE IF NOT EXISTS commitments (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email_id BIGINT REFERENCES emails(id) ON DELETE SET NULL,
+  thread_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('owed','awaiting')),
+  text TEXT NOT NULL,
+  counterparty TEXT,
+  due_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','dropped')),
+  source TEXT NOT NULL DEFAULT 'ai' CHECK (source IN ('ai','manual')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  closed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS commitments_open_idx ON commitments(user_id, status, due_at NULLS LAST);
+CREATE INDEX IF NOT EXISTS commitments_thread_idx ON commitments(account_id, thread_id);
+-- Which conversations have been looked at, so a scan is not repeated for
+-- every message of a thread that has not changed.
+CREATE TABLE IF NOT EXISTS commitment_scans (
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  latest_at TIMESTAMPTZ NOT NULL,
+  scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, thread_id)
+);
+`,
+  },
+  {
+    // F8, the brief. One per person, replaced in place, sealed. It is a cache
+    // of a page, not a record of anything, so it holds no history.
+    id: '20260908_0025_brief',
+    up: `
+CREATE TABLE IF NOT EXISTS briefs (
+  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  model TEXT,
+  covers_from TIMESTAMPTZ,
+  covers_to TIMESTAMPTZ,
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  duration_ms INT
+);
+`,
+  },
+  {
+    // F10, invitations. Times are plain so the list can be ordered and a
+    // clash can be found; everything a person would read is sealed.
+    id: '20260908_0026_calendar',
+    up: `
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email_id BIGINT REFERENCES emails(id) ON DELETE CASCADE,
+  uid TEXT,
+  summary TEXT,
+  location TEXT,
+  organizer TEXT,
+  attendees TEXT,
+  description TEXT,
+  starts_at TIMESTAMPTZ,
+  ends_at TIMESTAMPTZ,
+  all_day BOOLEAN NOT NULL DEFAULT false,
+  method TEXT NOT NULL DEFAULT 'REQUEST',
+  sequence INT NOT NULL DEFAULT 0,
+  reply TEXT CHECK (reply IS NULL OR reply IN ('accepted','declined','tentative')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS calendar_events_when_idx ON calendar_events(user_id, starts_at);
+CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_email_uid_idx ON calendar_events(email_id, uid);
+`,
+  },
+  {
+    // F12, importing an archive. The staged file is on disk under the upload
+    // directory and is deleted the moment the run ends, whether it worked or
+    // not; this row is the progress the browser polls.
+    id: '20260908_0027_imports',
+    up: `
+CREATE TABLE IF NOT EXISTS mail_imports (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  filename TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','cancelled')),
+  total INT NOT NULL DEFAULT 0,
+  done INT NOT NULL DEFAULT 0,
+  skipped INT NOT NULL DEFAULT 0,
+  failed INT NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mail_imports_user_idx ON mail_imports(user_id, created_at DESC);
+`,
+  },
+  {
+    // A finished AI job holds the prompt it was given. Once it is finished
+    // that is a copy of somebody's mail sitting in a queue table for no
+    // reason, so the payload is emptied the moment the job leaves 'running'
+    // and the row itself now lives hours rather than a month.
+    id: '20260908_0028_ai_job_wipe',
+    up: `
+ALTER TABLE ai_jobs ALTER COLUMN payload SET DEFAULT '{}'::jsonb;
+UPDATE ai_jobs SET payload='{}'::jsonb, result=NULL WHERE status IN ('done','failed','skipped');
+DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '1 day';
+`,
+  },
 ];

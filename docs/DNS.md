@@ -27,6 +27,8 @@ does not go through their proxy.
 |---|---|---|
 | A | `mx1.example.com` | the server's IPv4 |
 | PTR (reverse DNS) | the server's IPv4 | `mx1.example.com` |
+| AAAA | `mx1.example.com` | the server's IPv6, if it has one |
+| PTR (reverse DNS) | the server's IPv6 | `mx1.example.com` |
 
 Forward and reverse must match exactly. Gmail rejects mail from servers where
 they do not. Check with:
@@ -35,6 +37,28 @@ they do not. Check with:
 dig +short mx1.example.com
 dig +short -x 203.0.113.10
 ```
+
+**If the box has an IPv6, it needs its own reverse DNS.** When both ends of a
+delivery speak IPv6, the receiver connects to the AAAA address and judges
+*that* address's PTR; a perfect IPv4 setup does not cover it, and Gmail
+rejects IPv6 mail from an address with no reverse DNS at all. Set it in the
+same hosting panel, then check:
+
+```bash
+dig +short AAAA mx1.example.com
+dig +short -x 2001:db8::10
+```
+
+Tern learns the IPv6 from `SERVER_IPV6` in `.env` (the installer offers it,
+and fills in what it detects). Leave it empty on an IPv4-only box: the check
+then falls back to whatever AAAA `mx1.example.com` publishes, so the reverse
+DNS is still verified if you add one later. The AAAA row itself only appears
+when `.env` names the address — otherwise the row would be comparing DNS
+against itself and would pass regardless.
+
+Publish an AAAA only if the server really answers on IPv6. A published
+address that does not accept connections makes senders wait for the timeout
+before falling back to IPv4.
 
 ## 2. Required: receiving and authentication
 

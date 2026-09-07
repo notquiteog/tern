@@ -14,7 +14,7 @@ export const respondersRouter = Router();
 // used as a sample when testing a responder.
 async function firstNotFromMe(userId: number, accountIds: number[], mine: string[]): Promise<any | null> {
   const rows = await query<any>('SELECT * FROM emails WHERE account_id = ANY($1) ORDER BY received_at DESC LIMIT 50', [accountIds]);
-  for (const r of await openEmails(userId, rows)) {
+  for (const r of await openEmails(userId, 'ai.responders', rows)) {
     if (!mine.includes(String(r.from_email ?? ''))) return r;
   }
   return null;

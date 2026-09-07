@@ -16,6 +16,8 @@ import { rateLimit } from '../util/rateLimit.js';
 import { logger } from '../log.js';
 import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
+import { requireCapability } from '../services/capabilities.js';
+import { powGuard } from '../services/workGuard.js';
 
 const log = logger('ai');
 
@@ -267,7 +269,7 @@ const DRAFT_MODES = new Set(['rewrite', 'polish', 'shorten', 'expand', 'subject'
 
 // Streams tokens as SSE. The browser inserts them into the editor as they
 // arrive so a slow CPU-only model still feels responsive.
-aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'The assistant is busy with your earlier requests; wait a moment' }), async (req, res) => {
+aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLimit({ name: 'ai-draft', perMinute: 40, message: 'The assistant is busy with your earlier requests; wait a moment' }), async (req, res) => {
   const b = parse(draftSchema, req.body);
   const s = await getAiSettings();
   if (!s.enabled) throw badRequest('AI drafting is turned off');
@@ -288,7 +290,7 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
     const [accId, threadId] = b.threadKey.split(':');
     const tacc = await getUserAccount(req.user!.id, Number(accId));
     if (!tacc) throw notFound('Thread not found');
-    const msgs = await openEmails(req.user!.id, await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
+    const msgs = await openEmails(req.user!.id, 'ai.compose', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
     input.thread = msgs.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() }));
     // A reply goes to whoever wrote to us; if we only have their address, the thread usually has their name.
     if (input.recipient?.email && !input.recipient.name) {
@@ -307,6 +309,10 @@ aiRouter.post('/draft', rateLimit({ name: 'ai-draft', perMinute: 40, message: 'T
     // tells people to raise.
     for await (const piece of chatStream({
       messages: buildMessages(input), signal: abort.signal, maxTokens: tuning.maxTokens, temperature: tuning.temperature, stop: tuning.stop,
+      // Writing help, which is what the composer's buttons are. The gate has
+      // already run in the middleware above; passing it again is what makes
+      // chatStream refuse a request that slipped past a route.
+      consent: { userId: req.user!.id, capability: 'ai.compose' },
       // Somebody is watching this one arrive, and it is theirs: it takes an
       // interactive slot, and only one person's worth of them.
       owner: req.user!.id,

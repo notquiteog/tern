@@ -261,7 +261,7 @@ export async function runRuleOnExisting(acc: AccountRow, rule: any, limit = 500)
     [acc.id, inbox.jmap_id, limit],
   );
   const matched: string[] = [];
-  for (const r of await openEmails(acc.user_id, rows)) {
+  for (const r of await openEmails(acc.user_id, 'owner', rows)) {
     const e = { id: r.jmap_id, from: r.from_addr, to: r.to_addr, cc: r.cc_addr, subject: r.subject, hasAttachment: r.has_attachment };
     if (ruleMatches(rule, e, r.body_text ?? r.preview ?? '')) matched.push(r.jmap_id);
   }

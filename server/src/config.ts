@@ -101,6 +101,9 @@ export const config = {
   stalwartAdminPassword: env('STALWART_ADMIN_PASSWORD', ''),
   // Public IPv4 of this box, written by install.sh; used for DNS verification.
   serverIp: env('SERVER_IP', ''),
+  // Public IPv6, if the box has one. Optional: when it is empty the DNS check
+  // falls back to whatever AAAA the mail host publishes.
+  serverIpv6: env('SERVER_IPV6', ''),
   webHost: env('WEB_HOST', ''),
   clientDist: env('CLIENT_DIST', ''),
   logLevel: env('LOG_LEVEL', 'info'),

@@ -1,13 +1,15 @@
 // DNS guidance and verification for the bundled mail server. Stalwart hands
 // us a zone file; we turn it into records a person can publish one by one,
-// add the ones Stalwart cannot know (A, reverse DNS, BIMI), explain what each
+// add the ones Stalwart cannot know (A/AAAA, reverse DNS, BIMI), explain what each
 // one is for, and check them against the live DNS from this box.
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-export type RecordType = 'A' | 'PTR' | 'MX' | 'TXT' | 'CNAME' | 'SRV';
+export type RecordType = 'A' | 'AAAA' | 'PTR' | 'MX' | 'TXT' | 'CNAME' | 'SRV';
 export type Group = 'required' | 'recommended' | 'brand' | 'clients';
-export interface DnsRecord { id: string; group: Group; type: RecordType; name: string; value: string; purpose: string; priority?: number; srv?: { priority: number; weight: number; port: number; target: string } }
+// `ip` is the address a PTR row reverses, so a v4 and a v6 row can sit in
+// the same list and each check the address it belongs to.
+export interface DnsRecord { id: string; group: Group; type: RecordType; name: string; value: string; purpose: string; priority?: number; srv?: { priority: number; weight: number; port: number; target: string }; ip?: string }
 export type Status = 'ok' | 'missing' | 'mismatch' | 'error' | 'skipped';
 export interface CheckResult { id: string; status: Status; found: string[]; note?: string }
 
@@ -42,6 +44,9 @@ export function parseZone(zone: string): { name: string; type: RecordType; value
       if (sm) out.push({ name, type, value: sm[4].replace(/\.$/, ''), srv: { priority: Number(sm[1]), weight: Number(sm[2]), port: Number(sm[3]), target: sm[4].replace(/\.$/, '') } });
     } else if (type === 'CNAME') {
       out.push({ name, type, value: rest.replace(/\.$/, '') });
+    } else if (type === 'A' || type === 'AAAA') {
+      const v = rest.split(/\s+/)[0];
+      if (v) out.push({ name, type, value: v });
     }
   }
   return out;
@@ -49,6 +54,7 @@ export function parseZone(zone: string): { name: string; type: RecordType; value
 
 function purposeFor(name: string, type: RecordType, value: string, domain: string, mailHost: string): { group: Group; purpose: string } {
   const n = name.toLowerCase();
+  if (type === 'A' || type === 'AAAA') return { group: n === mailHost.toLowerCase() ? 'required' : 'recommended', purpose: `${type === 'A' ? 'IPv4' : 'IPv6'} address of ${name}.` };
   if (type === 'MX') return { group: 'required', purpose: 'Tells the world which server receives mail for the domain.' };
   if (type === 'TXT' && value.startsWith('v=DKIM1')) return { group: 'required', purpose: `DKIM public key (${/k=ed25519/.test(value) ? 'Ed25519' : 'RSA'}). Receivers use it to verify that mail was really signed by this server.` };
   if (type === 'TXT' && value.startsWith('v=spf1')) return { group: 'required', purpose: n === domain.toLowerCase() ? 'SPF: only the MX host may send mail for the domain. Everything else is rejected.' : 'SPF for the mail host itself, used for bounce and report messages.' };
@@ -63,13 +69,29 @@ function purposeFor(name: string, type: RecordType, value: string, domain: strin
   return { group: 'recommended', purpose: '' };
 }
 
-export function buildRecords(input: { zone: string; domain: string; mailHost: string; serverIp?: string | null; bimiUrl?: string | null; vmcUrl?: string | null }): DnsRecord[] {
+export function buildRecords(input: { zone: string; domain: string; mailHost: string; serverIp?: string | null; serverIpv6?: string | null; publishedIpv6?: string | null; bimiUrl?: string | null; vmcUrl?: string | null }): DnsRecord[] {
   const { zone, domain, mailHost } = input;
   const out: DnsRecord[] = [];
-  out.push({ id: 'a-mail', group: 'required', type: 'A', name: mailHost, value: input.serverIp || '<this server\'s IPv4>', purpose: 'The mail server\'s address. Every other record points here.' });
-  out.push({ id: 'ptr', group: 'required', type: 'PTR', name: input.serverIp ? `${input.serverIp} (reverse DNS)` : 'reverse DNS of the server IP', value: mailHost, purpose: 'Reverse DNS, set in your hosting provider\'s panel, not at the registrar. Gmail and Microsoft reject mail from servers whose forward and reverse names disagree.' });
+  const zoneRecords = parseZone(zone);
+  const zoneAddr = (t: 'A' | 'AAAA') => zoneRecords.find((r) => r.type === t && norm(r.name) === norm(mailHost))?.value ?? null;
+  const ip4 = input.serverIp || zoneAddr('A');
+  out.push({ id: 'a-mail', group: 'required', type: 'A', name: mailHost, value: ip4 || '<this server\'s IPv4>', purpose: 'The mail server\'s address. Every other record points here.' });
+  // An AAAA row is only worth showing when .env tells us the box's own IPv6:
+  // taking it from the mail host's published AAAA would make the row check
+  // itself and pass no matter what.
+  const ip6 = (input.serverIpv6 && net.isIPv6(input.serverIpv6)) ? input.serverIpv6 : null;
+  if (ip6) out.push({ id: 'aaaa-mail', group: 'required', type: 'AAAA', name: mailHost, value: ip6, purpose: 'The mail server\'s IPv6 address. Publish it only if the box really sends over IPv6; an AAAA that does not answer delays incoming mail.' });
+  out.push({ id: 'ptr', group: 'required', type: 'PTR', name: ip4 ? `${ip4} (reverse DNS)` : 'reverse DNS of the server IP', value: mailHost, ip: ip4 ?? undefined, purpose: 'Reverse DNS, set in your hosting provider\'s panel, not at the registrar. Gmail and Microsoft reject mail from servers whose forward and reverse names disagree.' });
+  // Mail sent over IPv6 is judged on the v6 address's PTR, not the v4 one, and
+  // Gmail refuses IPv6 mail that has none. Check it whenever the box has a v6,
+  // whether .env named it or the mail host publishes an AAAA for it.
+  const ip6Ptr = ip6 || (input.publishedIpv6 && net.isIPv6(input.publishedIpv6) ? input.publishedIpv6 : null);
+  if (ip6Ptr) out.push({ id: 'ptr6', group: 'required', type: 'PTR', name: `${ip6Ptr} (reverse DNS, IPv6)`, value: mailHost, ip: ip6Ptr, purpose: 'Reverse DNS for the IPv6 address, set in the same provider panel as the IPv4 one. Gmail rejects mail delivered over IPv6 from an address with no reverse DNS, even when the IPv4 side is perfect.' });
   let i = 0;
-  for (const r of parseZone(zone)) {
+  for (const r of zoneRecords) {
+    // The host's own address rows are synthesized above from what this box
+    // knows; a duplicate from the zone would just check the same thing twice.
+    if ((r.type === 'A' || r.type === 'AAAA') && norm(r.name) === norm(mailHost)) continue;
     const { group, purpose } = purposeFor(r.name, r.type, r.value, domain, mailHost);
     out.push({ id: `z${i++}`, group, type: r.type, name: r.name, value: r.value, priority: r.priority, srv: r.srv, purpose });
   }
@@ -82,6 +104,23 @@ export function buildRecords(input: { zone: string; domain: string; mailHost: st
 
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase().replace(/\.$/, '');
 
+// 2001:db8::1 and 2001:0db8:0:0:0:0:0:1 are one address spelled two ways, and
+// resolve6 does not promise the same spelling as .env, so compare expanded.
+export function normIp6(s: string): string {
+  let a = s.trim().toLowerCase().replace(/%.*$/, '').replace(/^\[|\]$/g, '');
+  if (!net.isIPv6(a)) return a;
+  const v4 = a.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (v4) {
+    const o = v4[1].split('.').map(Number);
+    a = a.slice(0, v4.index) + (((o[0] << 8) | o[1]).toString(16)) + ':' + (((o[2] << 8) | o[3]).toString(16));
+  }
+  const [head, tail] = a.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = a.includes('::') ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+  return groups.map((g) => (g || '0').replace(/^0+(?=.)/, '')).join(':');
+}
+
 async function withTimeout<T>(p: Promise<T>, ms = 6000): Promise<T> {
   return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('DNS lookup timed out')), ms))]);
 }
@@ -92,14 +131,23 @@ export async function checkRecord(r: DnsRecord, serverIp?: string | null): Promi
       case 'A': {
         const found = await withTimeout(dns.resolve4(r.name));
         if (!found.length) return { id: r.id, status: 'missing', found };
-        if (serverIp && !found.includes(serverIp)) return { id: r.id, status: 'mismatch', found, note: `Resolves to ${found.join(', ')} but this server appears to be ${serverIp}` };
+        const want = net.isIPv4(r.value) ? r.value : serverIp;
+        if (want && !found.includes(want)) return { id: r.id, status: 'mismatch', found, note: `Resolves to ${found.join(', ')} but this server appears to be ${want}` };
+        return { id: r.id, status: 'ok', found };
+      }
+      case 'AAAA': {
+        const found = await withTimeout(dns.resolve6(r.name));
+        if (!found.length) return { id: r.id, status: 'missing', found };
+        const want = net.isIPv6(r.value) ? normIp6(r.value) : null;
+        if (want && !found.map(normIp6).includes(want)) return { id: r.id, status: 'mismatch', found, note: `Resolves to ${found.join(', ')} but this server's IPv6 is ${r.value}` };
         return { id: r.id, status: 'ok', found };
       }
       case 'PTR': {
-        if (!serverIp) return { id: r.id, status: 'skipped', found: [], note: 'Server IP unknown; set SERVER_IP in .env or re-run the installer' };
-        const found = await withTimeout(dns.reverse(serverIp));
-        if (!found.length) return { id: r.id, status: 'missing', found };
-        return found.map(norm).includes(norm(r.value)) ? { id: r.id, status: 'ok', found } : { id: r.id, status: 'mismatch', found, note: `Reverse DNS says ${found.join(', ')}` };
+        const ip = r.ip ?? serverIp;
+        if (!ip) return { id: r.id, status: 'skipped', found: [], note: 'Server IP unknown; set SERVER_IP in .env or re-run the installer' };
+        const found = await withTimeout(dns.reverse(ip));
+        if (!found.length) return { id: r.id, status: 'missing', found, note: `${ip} has no reverse DNS; set it in your hosting provider's panel` };
+        return found.map(norm).includes(norm(r.value)) ? { id: r.id, status: 'ok', found } : { id: r.id, status: 'mismatch', found, note: `Reverse DNS for ${ip} says ${found.join(', ')}` };
       }
       case 'MX': {
         const found = await withTimeout(dns.resolveMx(r.name));
@@ -172,4 +220,20 @@ export async function checkOutbound25(host = 'gmail-smtp-in.l.google.com'): Prom
 export function detectServerIp(): string | null {
   const v = process.env.SERVER_IP?.trim();
   return v && net.isIPv4(v) ? v : null;
+}
+
+export function detectServerIpv6(): string | null {
+  const v = process.env.SERVER_IPV6?.trim();
+  return v && net.isIPv6(v) ? v : null;
+}
+
+// Fallback for boxes where .env never learned the IPv6: whatever the mail host
+// publishes is the address other servers will connect from and judge, so its
+// reverse DNS is worth checking even though we cannot confirm it is this box.
+export async function resolvePublishedIpv6(mailHost: string): Promise<string | null> {
+  if (!mailHost) return null;
+  try {
+    const a = await withTimeout(dns.resolve6(mailHost), 4000);
+    return a[0] ?? null;
+  } catch { return null; }
 }

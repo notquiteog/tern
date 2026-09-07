@@ -84,7 +84,7 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
     );
     return { threadId, accountId: acc.id, text: '', stale: false };
   };
-  const msgs = await openEmails(userId, sealed);
+  const msgs = await openEmails(userId, 'ai.summaries', sealed);
   const newest = msgs.reduce((a: any, m: any) => (new Date(m.received_at) > new Date(a.received_at) ? m : a), msgs[0]);
   const thread = msgs.map((m: any) => ({
     from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(),
@@ -109,6 +109,7 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
       // must not be able to take every slot the model has.
       background: true,
       owner: String(userId),
+      consent: { userId, capability: 'ai.summaries' },
       // Never. A one-line summary is not worth a reasoning budget, and on a
       // CPU-only box a thinking model would take a minute per row of the
       // list — for a question the first sentence of the mail answers.

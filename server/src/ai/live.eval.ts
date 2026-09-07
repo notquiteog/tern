@@ -1,3 +1,4 @@
+import { evalConsent } from './evalConsent.js';
 // Live model evaluation. Unlike the unit tests, this one actually talks to
 // the configured model and grades what comes back, so a change to a prompt,
 // a default or the clean-up pass can be judged on the thing that matters:
@@ -406,7 +407,7 @@ async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: num
     // compared: the same case in run 2 asks the model exactly what it asked
     // it in run 2 yesterday. Nothing a person triggers sets a seed — their
     // "try again" has to be able to come back different.
-    const raw = await chat({ messages: buildMessages(input), maxTokens, temperature, stop: tuning.stop, seed: 1000 + run });
+    const raw = await chat({ messages: buildMessages(input), maxTokens, temperature, stop: tuning.stop, seed: 1000 + run, consent: evalConsent() });
     const out = finalizeOutput(raw, c.input.mode, { recipient: c.input.recipient, senderName: c.input.senderName, senderEmail: c.input.senderEmail });
     const failures = c.checks.map((k) => k(out)).filter((x): x is string => Boolean(x));
     return { id: c.id, run, ms: Date.now() - t0, failures, output: out, raw: failures.length ? raw : undefined };

@@ -428,11 +428,11 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
   const recipient = { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email };
   // Sequence and responder mail is written minutes or hours before it is
   // sent, so it queues behind whoever is drafting in a browser right now.
-  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens), stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id) }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
+  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens), stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
   let subject = rendered.subject;
   if (!subject.trim()) {
     const st = modeTuning('subject');
-    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature, stop: st.stop, background: true, owner: String(acc.user_id) }), 'subject');
+    subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature, stop: st.stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'subject');
   }
   return { subject, html: textToHtml(body), model: settings.model };
 }
@@ -462,7 +462,7 @@ async function processAiJobs(): Promise<void> {
 
 export async function generateResponderReply(responder: any, acc: AccountRow, email: any): Promise<{ subject: string; html: string; text: string; to: { name: string | null; email: string }[]; model: string }> {
   const settings = await getAiSettings();
-  const thread = await openEmails(acc.user_id, await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]));
+  const thread = await openEmails(acc.user_id, 'ai.responders', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [acc.id, email.thread_id]));
   const contact = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=$2', [acc.user_id, String(email.from_addr?.[0]?.email ?? '').toLowerCase()]);
   const messages = buildMessages({
     mode: 'reply',
@@ -479,7 +479,7 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
     threadChars: threadBudgetChars(settings.numCtx, settings.maxTokens),
   });
   const replyRecipient = contact ? { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email } : { name: email.from_addr?.[0]?.name ?? undefined, email: email.from_addr?.[0]?.email };
-  const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens, stop: modeTuning('reply').stop, background: true, owner: String(acc.user_id) }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
+  const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens, stop: modeTuning('reply').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.responders' } }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });
   // The same addressing rules as the Reply button in the browser.
   const r = replyRecipients({ from: email.from_addr, replyTo: email.reply_to, to: email.to_addr, cc: email.cc_addr }, acc.email, Boolean(responder.reply_all));
   const to = [...r.to, ...r.cc].map((a) => ({ name: a.name ?? null, email: a.email }));
@@ -497,12 +497,12 @@ async function runResponderJob(job: any): Promise<string> {
   if (!responder) return 'responder gone or disabled';
   const acc = await getAccount(p.accountId);
   if (!acc || !acc.enabled) return 'account unavailable';
-  const email = await openEmail(acc.user_id, await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id=$2', [p.emailDbId, acc.id]));
+  const email = await openEmail(acc.user_id, 'ai.responders', await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id=$2', [p.emailDbId, acc.id]));
   if (!email) return 'email gone';
   // Someone may have answered by hand in the meantime. The sender is
   // ciphertext now, so the candidates are opened rather than matched in SQL;
   // there are only ever a handful later in one thread.
-  const later = await openEmails(acc.user_id, await query<any>('SELECT from_addr FROM emails WHERE account_id=$1 AND thread_id=$2 AND received_at > $3', [acc.id, email.thread_id, email.received_at]));
+  const later = await openEmails(acc.user_id, 'ai.responders', await query<any>('SELECT from_addr FROM emails WHERE account_id=$1 AND thread_id=$2 AND received_at > $3', [acc.id, email.thread_id, email.received_at]));
   if (later.some((m) => String(m.from_email ?? '') === acc.email.toLowerCase())) return 'already answered';
   const gen = await generateResponderReply(responder, acc, email);
   if (!gen.to.length) return 'no recipient';

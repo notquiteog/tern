@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     case 'dns-check': {
       // tern-cli dns-check [--port25]   prints every record with its live status
       const sw = await import('./services/stalwart.js');
-      const { buildRecords, checkAll, checkOutbound25, detectServerIp } = await import('./services/dnsCheck.js');
+      const { buildRecords, checkAll, checkOutbound25, detectServerIp, detectServerIpv6, resolvePublishedIpv6 } = await import('./services/dnsCheck.js');
       const { getBrand } = await import('./services/brand.js');
       const { config } = await import('./config.js');
       if (!sw.stalwartEnabled()) throw new Error('the bundled mail server is not enabled');
@@ -97,8 +97,11 @@ async function main(): Promise<void> {
       const primary = domains.find((d) => d.name === config.stalwartDomain) ?? domains[0];
       if (!primary) throw new Error('no domain on the mail server');
       const brand = await getBrand(primary.name);
-      const records = buildRecords({ zone: await sw.dnsZone(primary.id), domain: primary.name, mailHost: config.stalwartHost, serverIp: detectServerIp(), bimiUrl: brand ? `${config.appUrl}/bimi/${primary.name}.svg` : null, vmcUrl: brand?.vmc_url || null });
-      const results = await checkAll(records, detectServerIp());
+      const serverIp = detectServerIp();
+      const serverIpv6 = detectServerIpv6();
+      const publishedIpv6 = serverIpv6 ? null : await resolvePublishedIpv6(config.stalwartHost);
+      const records = buildRecords({ zone: await sw.dnsZone(primary.id), domain: primary.name, mailHost: config.stalwartHost, serverIp, serverIpv6, publishedIpv6, bimiUrl: brand ? `${config.appUrl}/bimi/${primary.name}.svg` : null, vmcUrl: brand?.vmc_url || null });
+      const results = await checkAll(records, serverIp);
       const icon: Record<string, string> = { ok: 'OK ', missing: 'MISSING', mismatch: 'DIFFERS', error: 'ERROR', skipped: 'SKIP' };
       for (const r of records) {
         const c = results.find((x) => x.id === r.id)!;

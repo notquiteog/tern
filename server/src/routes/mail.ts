@@ -252,7 +252,7 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
     [acc.id, threadId],
   );
   if (!sealedMessages.length) throw notFound('Thread not found');
-  const messages = await openEmails(req.user!.id, sealedMessages);
+  const messages = await openEmails(req.user!.id, 'owner', sealedMessages);
   // Profile pictures: a contact's photo for their address, the user's own for the account's address.
   const senders = [...new Set(messages.map((m: any) => m.from_email).filter(Boolean))];
   const photos = await query<{ email: string; id: number; v: number }>(`SELECT lower(email) AS email, id, (extract(epoch FROM avatar_updated_at) * 1000)::bigint AS v FROM contacts WHERE user_id=$1 AND avatar_updated_at IS NOT NULL AND lower(email) = ANY($2)`, [req.user!.id, senders]);

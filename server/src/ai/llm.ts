@@ -7,6 +7,8 @@ import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
 import { recommendModel } from './models.js';
 import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js';
+import { assertCapability, type Capability } from '../services/capabilities.js';
+import { beginSession, endSession, onWipe } from './session.js';
 import { logger } from '../log.js';
 
 const log = logger('ai');
@@ -46,6 +48,15 @@ export interface AiSettings {
   presencePenalty: number;
   frequencyPenalty: number;
   maxTokens: number;
+  // Unload the model once nothing is generating, so the KV cache holding the
+  // last prompt — somebody's email — does not sit in memory for the rest of
+  // the keep-alive window. Costs a model load the next time somebody asks.
+  wipeAfterUse: boolean;
+  wipeIdleSeconds: number;
+  // The model that turns a message into a vector for meaning search. Its own
+  // setting because it is a different, much smaller model from the one that
+  // writes, and an install may want one without the other.
+  embedModel: string;
   // Whether several people may be answered at once. Off serialises every
   // generation on this install, which is the right setting for a small box:
   // each slot Ollama serves in parallel costs another context window of KV
@@ -76,6 +87,9 @@ const DEFAULTS: AiSettings = {
   presencePenalty: 0,
   frequencyPenalty: 0,
   maxTokens: 700,
+  wipeAfterUse: true,
+  wipeIdleSeconds: 90,
+  embedModel: 'all-minilm',
   concurrency: true,
 };
 
@@ -128,8 +142,16 @@ export function isValidKeepAlive(v: string): boolean {
 }
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
+
+// Who this generation is for and which capability they turned on to get it.
+// Required, and checked before a single byte leaves the process: the gate is
+// an argument rather than a convention, so a new code path that forgets to
+// ask does not compile. `assertCapability` throws when the person has not
+// consented or an admin has switched the feature off for the install.
+export interface AiConsent { userId: number; capability: Capability }
+
 export interface ChatOptions {
-  messages: ChatMessage[]; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number;
+  messages: ChatMessage[]; consent: AiConsent; model?: string; temperature?: number; signal?: AbortSignal; maxTokens?: number;
   // Forces reasoning off for this call whatever the install has turned on.
   // Some tasks are not worth thinking about: a one-line summary of an email
   // costs a whole reasoning budget and a minute of CPU to answer a question
@@ -219,16 +241,30 @@ export function samplingOptions(s: AiSettings, temperature?: number): Record<str
 
 export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   assertFreshConversation(opts.messages);
+  // Before anything else, and before the prompt is looked at: is this person
+  // allowed to have asked?
+  await assertCapability(opts.consent.userId, opts.consent.capability);
   const s = await getAiSettings();
   if (!s.enabled) throw new Error('AI drafting is turned off in Settings → AI');
   const model = opts.model || s.model;
-  if (s.provider === 'openai') {
-    // Somebody else's endpoint decides how much it will do at once, and it is
-    // not sharing one loaded model with this install; the gate below would
-    // only slow it down.
-    yield* openaiStream(s, model, opts);
-    return;
+  const session = beginSession();
+  try {
+    if (s.provider === 'openai') {
+      // Somebody else's endpoint decides how much it will do at once, and it
+      // is not sharing one loaded model with this install; the gate below
+      // would only slow it down.
+      yield* openaiStream(s, model, opts);
+      return;
+    }
+    yield* ollamaGeneration(s, model, opts);
+  } finally {
+    // The prompt goes now, whether this ended in an answer, an abort or a
+    // throw. Nothing above this line is allowed to keep it.
+    endSession(session, opts.messages, s);
   }
+}
+
+async function* ollamaGeneration(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
   // One generation per slot Ollama has, and the retry below runs inside the
   // same slot: a model that answered with reasoning only should not have to
   // queue again to say something usable.
@@ -384,6 +420,61 @@ export async function chat(opts: ChatOptions): Promise<string> {
   return out.trim();
 }
 
+// ---------- Embeddings ----------
+// Meaning search needs a vector per message, from a much smaller model than
+// the one that writes. It goes through the same consent gate: turning a
+// message into a vector is reading it.
+//
+// The vectors leave here raw. services/embeddings.ts is what makes them safe
+// to store, and nothing writes one to the database without passing through
+// it first.
+export interface EmbedResult { vectors: number[][]; model: string; dims: number }
+
+export async function embed(texts: string[], consent: AiConsent, signal?: AbortSignal): Promise<EmbedResult> {
+  await assertCapability(consent.userId, consent.capability);
+  const s = await getAiSettings();
+  if (!s.enabled) throw new Error('The model is turned off in Admin → AI model');
+  const model = s.embedModel || DEFAULTS.embedModel;
+  const input = texts.map((t) => String(t ?? '').slice(0, 8000)).filter(Boolean);
+  if (!input.length) return { vectors: [], model, dims: 0 };
+
+  const session = beginSession();
+  try {
+    if (s.provider === 'openai') {
+      const res = await fetch(`${s.baseUrl.replace(/\/+$/, '')}/v1/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
+        body: JSON.stringify({ model, input }),
+        signal,
+      });
+      if (!res.ok) throw new Error(`Embedding endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+      const j: any = await res.json();
+      const vectors = (j.data ?? []).map((d: any) => (Array.isArray(d.embedding) ? d.embedding : []));
+      return { vectors, model, dims: vectors[0]?.length ?? 0 };
+    }
+    const res = await fetch(`${s.baseUrl}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
+      signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      if (res.status === 404) throw new Error(`The embedding model "${model}" is not downloaded. Pull it in Admin → AI model.`);
+      throw new Error(`Ollama returned HTTP ${res.status} for embeddings: ${body.slice(0, 200)}`);
+    }
+    const j: any = await res.json();
+    const vectors: number[][] = Array.isArray(j.embeddings) ? j.embeddings : [];
+    return { vectors, model, dims: vectors[0]?.length ?? 0 };
+  } finally {
+    // The texts handed in were mail. Same rule as a chat prompt: they do not
+    // outlive the call.
+    input.length = 0;
+    texts.length = 0;
+    endSession(session, undefined, s);
+  }
+}
+
 // ---------- Ollama management ----------
 
 export async function ollamaHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
@@ -519,3 +610,13 @@ export async function releaseReplacedModel(before: AiSettings, after: AiSettings
     log.info(ok ? 'model residency updated' : 'model residency update refused', { model: after.model, keepAlive: after.keepAlive });
   }
 }
+
+// The idle wipe needs a way to unload; wiring it here rather than importing
+// llm.ts from session.ts keeps that file free of HTTP.
+onWipe(async () => {
+  const s = await getAiSettings();
+  if (s.provider !== 'ollama') return;
+  for (const m of new Set([s.model, s.embedModel].filter(Boolean))) {
+    await unloadModel(s.baseUrl, m);
+  }
+});

@@ -100,7 +100,7 @@ async function main(): Promise<void> {
     id: 0, mode: 'review', instructions: 'Answer the question in the latest message.', tone: 'friendly', length: 'medium',
     reply_all: true, humanize: true,
   };
-  const email = await openEmail(acc.user_id, (await one<any>('SELECT * FROM emails WHERE id=$1', [lastId]))!);
+  const email = await openEmail(acc.user_id, 'ai.responders', (await one<any>('SELECT * FROM emails WHERE id=$1', [lastId]))!);
 
   let pass = 0;
   for (let run = 1; run <= RUNS; run++) {

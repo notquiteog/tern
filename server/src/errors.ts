@@ -13,7 +13,9 @@ export class HttpError extends Error {
 }
 export const badRequest = (m: string, details?: unknown) => new HttpError(400, m, 'bad_request', details);
 export const unauthorized = (m = 'Not signed in') => new HttpError(401, m, 'unauthorized');
-export const forbidden = (m = 'Not allowed') => new HttpError(403, m, 'forbidden');
+// `code` lets the browser tell a capability that is switched off from one
+// the person has simply not turned on yet, and offer the right fix.
+export const forbidden = (m = 'Not allowed', code = 'forbidden') => new HttpError(403, m, code);
 export const notFound = (m = 'Not found') => new HttpError(404, m, 'not_found');
 export const conflict = (m: string) => new HttpError(409, m, 'conflict');
 export const tooMany = (m = 'Too many requests') => new HttpError(429, m, 'rate_limited');

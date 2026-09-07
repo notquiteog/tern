@@ -203,6 +203,10 @@ if [ "$STALWART_ENABLED" = 1 ]; then
   DETECTED_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | head -1)"
   [ -z "$DETECTED_IP" ] && DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
   ask SERVER_IP "This server's public IPv4 (used to verify the A and reverse DNS records)" "${SERVER_IP:-$DETECTED_IP}"
+  # Only a globally routable address (2000::/3) is worth recording; link-local
+  # and unique-local ones never appear to the outside world.
+  DETECTED_IP6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | grep -E '^[23]' | head -1)"
+  ask SERVER_IPV6 "This server's public IPv6, if it has one (blank for IPv4 only)" "${SERVER_IPV6:-$DETECTED_IP6}"
   STALWART_HTTP_PORT="${STALWART_HTTP_PORT:-8080}"
   STALWART_ADMIN_USER="${STALWART_ADMIN_USER:-}"
   STALWART_ADMIN_PASSWORD="${STALWART_ADMIN_PASSWORD:-}"
@@ -274,6 +278,7 @@ STALWART_RECOVERY_ADMIN=${STALWART_RECOVERY_ADMIN:-}
 STALWART_RECOVERY_MODE=
 STALWART_FIRST_USER=${STALWART_FIRST_USER:-}
 SERVER_IP=${SERVER_IP:-}
+SERVER_IPV6=${SERVER_IPV6:-}
 EOF
 umask 022
 ok ".env written (mode 600)"
@@ -481,7 +486,13 @@ if [ "$STALWART_ENABLED" = 1 ]; then
   say ""
   say "  ${B}DNS walkthrough for $STALWART_DOMAIN${N}   (full guide: docs/DNS.md)"
   say "  1. At your hosting provider, set reverse DNS of ${SERVER_IP:-<server IP>} to $STALWART_HOST."
+  if [ -n "${SERVER_IPV6:-}" ]; then
+    say "     Do the same for $SERVER_IPV6 — mail sent over IPv6 is judged on that address's reverse DNS."
+  fi
   say "  2. At your DNS host, add an A record:  $STALWART_HOST → ${SERVER_IP:-<server IP>}"
+  if [ -n "${SERVER_IPV6:-}" ]; then
+    say "     and an AAAA record:                 $STALWART_HOST → $SERVER_IPV6"
+  fi
   say "  3. Add the records the mail server generated (MX, SPF, two DKIM keys, DMARC, MTA-STS, TLS-RPT, mail-app autoconfig):"
   if [ -n "$STALWART_DNS" ]; then printf '%s\n' "$STALWART_DNS" | sed 's/^/       /'; fi
   say "  4. Brand logo (BIMI): upload an SVG or generate an avatar under Settings → Mail server → Brand logo; its record appears in DNS setup."

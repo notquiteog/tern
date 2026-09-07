@@ -13,7 +13,7 @@ import { hashPassword, verifyPassword } from '../crypto.js';
 import { assertPasswordOk } from '../util/password.js';
 import { syncManager } from '../workers/syncManager.js';
 import { jmapErrorMessage } from '../jmap/client.js';
-import { buildRecords, checkAll, checkOutbound25, detectServerIp, type DnsRecord } from '../services/dnsCheck.js';
+import { buildRecords, checkAll, checkOutbound25, detectServerIp, detectServerIpv6, resolvePublishedIpv6, type DnsRecord } from '../services/dnsCheck.js';
 import { getBrand } from '../services/brand.js';
 import { bimiUrlFor } from './brand.js';
 
@@ -125,7 +125,7 @@ stalwartRouter.delete('/mailboxes/:id', requireAdmin, async (req, res) => {
 
 // ---------- Guided DNS setup ----------
 
-async function expectedRecords(): Promise<{ domain: string; mailHost: string; records: DnsRecord[]; serverIp: string | null; bimiUrl: string | null }> {
+async function expectedRecords(): Promise<{ domain: string; mailHost: string; records: DnsRecord[]; serverIp: string | null; serverIpv6: string | null; bimiUrl: string | null }> {
   const domains = await sw.listDomains();
   const primary = domains.find((d) => d.name === config.stalwartDomain) ?? domains[0];
   if (!primary) throw badRequest('The mail server has no domain yet');
@@ -133,12 +133,17 @@ async function expectedRecords(): Promise<{ domain: string; mailHost: string; re
   const brand = await getBrand(primary.name);
   const bimiUrl = brand ? bimiUrlFor(primary.name) : null;
   const serverIp = detectServerIp();
-  return { domain: primary.name, mailHost: config.stalwartHost, records: buildRecords({ zone, domain: primary.name, mailHost: config.stalwartHost, serverIp, bimiUrl, vmcUrl: brand?.vmc_url || null }), serverIp, bimiUrl };
+  const serverIpv6 = detectServerIpv6();
+  const publishedIpv6 = serverIpv6 ? null : await resolvePublishedIpv6(config.stalwartHost);
+  return {
+    domain: primary.name, mailHost: config.stalwartHost, serverIp, serverIpv6: serverIpv6 ?? publishedIpv6, bimiUrl,
+    records: buildRecords({ zone, domain: primary.name, mailHost: config.stalwartHost, serverIp, serverIpv6, publishedIpv6, bimiUrl, vmcUrl: brand?.vmc_url || null }),
+  };
 }
 
 stalwartRouter.get('/dns', requireAdmin, async (_req, res) => {
   const r = await expectedRecords();
-  res.json({ ...r, zone: r.records.filter((x) => x.type !== 'PTR').map((x) => x.type === 'A' ? `${x.name}.\tIN\tA\t${x.value}` : x.type === 'MX' ? `${x.name}.\tIN\tMX\t${x.priority} ${x.value}.` : x.type === 'SRV' ? `${x.name}.\tIN\tSRV\t${x.srv!.priority} ${x.srv!.weight} ${x.srv!.port} ${x.value}.` : x.type === 'CNAME' ? `${x.name}.\tIN\tCNAME\t${x.value}.` : `${x.name}.\tIN\tTXT\t"${x.value.replace(/"/g, '\\"')}"`).join('\n') });
+  res.json({ ...r, zone: r.records.filter((x) => x.type !== 'PTR').map((x) => x.type === 'A' ? `${x.name}.\tIN\tA\t${x.value}` : x.type === 'AAAA' ? `${x.name}.\tIN\tAAAA\t${x.value}` : x.type === 'MX' ? `${x.name}.\tIN\tMX\t${x.priority} ${x.value}.` : x.type === 'SRV' ? `${x.name}.\tIN\tSRV\t${x.srv!.priority} ${x.srv!.weight} ${x.srv!.port} ${x.value}.` : x.type === 'CNAME' ? `${x.name}.\tIN\tCNAME\t${x.value}.` : `${x.name}.\tIN\tTXT\t"${x.value.replace(/"/g, '\\"')}"`).join('\n') });
 });
 
 // Live verification from this server's resolver. Optional `records` lets
