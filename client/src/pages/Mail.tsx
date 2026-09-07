@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers } from 'lucide-react';
+import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers, Wrench, Gauge, ArrowUp, ArrowDown } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose, seedFromDraft } from '../state/compose';
 import { useMailPrefs, type Layout } from '../state/mailPrefs';
 import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
-import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm } from '../components/ui';
+import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm, Progress } from '../components/ui';
 import { SemanticResults } from '../components/SearchExtras';
+import { useTriageWhy } from '../components/ThreadAside';
 import { useCan } from '../state/features';
 
 // The words out of a search, with the operators taken off. Meaning search
@@ -95,6 +96,7 @@ export default function MailPage() {
   const [snoozeAt, setSnoozeAt] = useState('');
   const [emptyOpen, setEmptyOpen] = useState(false);
   const [openStacks, setOpenStacks] = useState<Set<string>>(new Set());
+  const [why, setWhy] = useState<ThreadRow | null>(null);
 
   const accountsParam = acctFilter === 'all' ? 'all' : acctFilter;
   const enabled = box !== 'scheduled' && box !== 'drafts-local';
@@ -423,6 +425,11 @@ export default function MailPage() {
           <MenuItem icon={<ExternalLink size={15} />} onClick={() => { openThread(ctx.row); setCtx(null); }}>Open</MenuItem>
           <MenuItem icon={<Reply size={15} />} onClick={() => { nav(`/mail/${box}/t/${encodeURIComponent(ctx.row.key)}?reply=1`); setCtx(null); }}>Reply</MenuItem>
           <MenuItem icon={<Forward size={15} />} onClick={() => { nav(`/mail/${box}/t/${encodeURIComponent(ctx.row.key)}?forward=1`); setCtx(null); }}>Forward</MenuItem>
+          {/* The two things you could previously only do by retyping what is
+              already on the row: turn the sender into a rule, and ask the
+              priority model to account for itself. */}
+          {ctx.row.latest?.from?.[0]?.email && <MenuItem icon={<Wrench size={15} />} onClick={() => { nav(`/rules?from=${encodeURIComponent(ctx.row.latest.from[0].email)}`); setCtx(null); }}>Make a rule from this sender…</MenuItem>}
+          {canTriage && sort === 'priority' && <MenuItem icon={<Gauge size={15} />} onClick={() => { setWhy(ctx.row); setCtx(null); }}>Why is this here?</MenuItem>}
           <div className="menu-sep" />
           <MenuItem icon={ctx.row.unread ? <MailOpen size={15} /> : <Mail size={15} />} onClick={() => { void act(ctx.row.unread ? 'read' : 'unread', [ctx.row]); setCtx(null); }}>{ctx.row.unread ? 'Mark as read' : 'Mark as unread'}</MenuItem>
           <MenuItem icon={<Star size={15} />} onClick={() => { void act(ctx.row.starred ? 'unstar' : 'star', [ctx.row]); setCtx(null); }}>{ctx.row.starred ? 'Unstar' : 'Star'}</MenuItem>
@@ -439,8 +446,44 @@ export default function MailPage() {
         <Field label="Return to inbox at"><Input type="datetime-local" value={snoozeAt} onChange={(e) => setSnoozeAt(e.target.value)} /></Field>
         <div className="row wrap gap-4">{[['Later today', 3], ['Tomorrow', 24], ['In 3 days', 72], ['Next week', 168]].map(([l, h]) => <Button key={String(l)} size="sm" onClick={() => { const d = new Date(Date.now() + Number(h) * 3600_000); if (Number(h) >= 24) d.setHours(9, 0, 0, 0); setSnoozeAt(localDateTimeValue(d)); }}>{l}</Button>)}</div>
       </Modal>
+      <WhyModal row={why} onClose={() => setWhy(null)} />
       <Confirm open={emptyOpen} onClose={() => setEmptyOpen(false)} danger title={`Empty ${box}?`} message={`Every conversation in ${box} is deleted permanently. This cannot be undone.`} confirmLabel="Delete for good" onConfirm={emptyBox} />
     </div>
+  );
+}
+
+// Why the priority model put a conversation where it did.
+//
+// The ordering was the one place in the app where a guess changed what
+// somebody saw and nothing would say why. The server has always been able to
+// answer — it keeps the weights and the signals that fired — and nothing
+// ever asked it. The honesty about the hashed words matters: it would be
+// easy to imply the model read the message and understood it, and it did
+// not; it counted signals, and the words behind them cannot be shown.
+function WhyModal({ row, onClose }: { row: ThreadRow | null; onClose: () => void }) {
+  const { data, isLoading } = useTriageWhy(row?.latest?.id ?? null);
+  return (
+    <Modal open={Boolean(row)} onClose={onClose} title="Why is this here?" footer={<Button onClick={onClose}>Close</Button>}>
+      {isLoading && <div className="center pad-24"><Spinner size={20} /></div>}
+      {!isLoading && data && (
+        <div className="stack-12">
+          <div className="row gap-8">
+            <span className="muted small">Score</span>
+            <Progress value={Math.round(100 * (data.priority ?? 0))} max={100} />
+            <span className="small">{data.priority === null ? 'not scored yet' : `${Math.round(100 * data.priority)}%`}</span>
+          </div>
+          {data.reasons.length > 0 ? (
+            <ul className="why-list">
+              {data.reasons.map((r) => {
+                const [dir, ...rest] = r.split(': ');
+                return <li key={r} className={dir === 'higher' ? 'up' : 'down'}>{dir === 'higher' ? <ArrowUp size={13} /> : <ArrowDown size={13} />}{rest.join(': ')}</li>;
+              })}
+            </ul>
+          ) : <p className="muted small">Nothing about this conversation moved it either way.</p>}
+          <p className="muted small">{data.note}</p>
+        </div>
+      )}
+    </Modal>
   );
 }
 

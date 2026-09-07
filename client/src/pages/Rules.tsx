@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ListFilter, Loader2, Pencil, Play, Plus, Sparkles, Trash2, ArrowUp, ArrowDown, X } from 'lucide-react';
 import { api } from '../api';
@@ -14,9 +15,20 @@ const ACTIONS = [['archive', 'Skip the inbox (archive)'], ['mark_read', 'Mark as
 export default function RulesPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const [params, setParams] = useSearchParams();
   const { data, isLoading } = useQuery({ queryKey: ['rules'], queryFn: () => api.get<{ rules: any[] }>('/api/rules') });
   const rules = data?.rules ?? [];
   const [editing, setEditing] = useState<any | 'new' | null>(null);
+  // "Make a rule from this sender" in the mail list and the thread arrives
+  // here. Rules were the one automation you could only reach by leaving the
+  // mail, remembering the address and typing it in again; the message you
+  // were looking at is the entire input.
+  const from = params.get('from');
+  useEffect(() => {
+    if (!from) return;
+    setEditing({ seedFrom: from });
+    setParams((p) => { p.delete('from'); return p; }, { replace: true });
+  }, [from, setParams]);
   const [del, setDel] = useState<any>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['rules'] });
   async function toggle(r: any) { await api.put(`/api/rules/${r.id}`, { enabled: !r.enabled }); invalidate(); }
@@ -56,11 +68,15 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   const toast = useToast();
   const { data: accounts = [] } = useAccounts();
   const { data: mailboxes = [] } = useMailboxes();
-  const isNew = rule === 'new';
+  // A rule seeded from a message is a new rule with one condition already
+  // written. The name is left blank on purpose: naming it is how somebody
+  // decides what the rule is actually for.
+  const seedFrom: string | null = rule && rule !== 'new' && rule.seedFrom ? String(rule.seedFrom) : null;
+  const isNew = rule === 'new' || Boolean(seedFrom);
   const [name, setName] = useState(isNew ? '' : rule.name);
   const [accountId, setAccountId] = useState<number | ''>(isNew ? '' : rule.account_id ?? '');
   const [match, setMatch] = useState<'all' | 'any'>(isNew ? 'all' : rule.match);
-  const [conds, setConds] = useState<any[]>(isNew ? [{ field: 'from', op: 'contains', value: '' }] : rule.conditions);
+  const [conds, setConds] = useState<any[]>(isNew ? [{ field: 'from', op: seedFrom ? 'equals' : 'contains', value: seedFrom ?? '' }] : rule.conditions);
   const [acts, setActs] = useState<any[]>(isNew ? [{ type: 'archive' }] : rule.actions);
   const [busy, setBusy] = useState(false);
   const [sentence, setSentence] = useState('');
@@ -93,7 +109,7 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   }
 
   return (
-    <Modal open onClose={onClose} title={isNew ? 'New rule' : 'Edit rule'} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} disabled={!name.trim() || !conds.length || !acts.length} onClick={save}>Save</Button></>}>
+    <Modal open onClose={onClose} title={seedFrom ? `New rule for ${seedFrom}` : isNew ? 'New rule' : 'Edit rule'} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} disabled={!name.trim() || !conds.length || !acts.length} onClick={save}>Save</Button></>}>
       {canDescribe && (
         <div className="describe-row">
           <Input

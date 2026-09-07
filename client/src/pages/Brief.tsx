@@ -12,7 +12,7 @@
 // silently rewritten while you read it is not.
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Clock, Inbox, Mail, RefreshCw, Timer } from 'lucide-react';
+import { AlertTriangle, Check, ClipboardCheck, Clock, Inbox, Mail, RefreshCw, Timer } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { postWithWork } from '../lib/work';
 import { useFeatures } from '../state/features';
@@ -20,6 +20,7 @@ import { Button, Callout, Empty, PageHeader, Spinner } from '../components/ui';
 import { FeatureOffNotice } from './Features';
 import { useToast } from '../state/toast';
 import { fmtRelative } from '../lib/format';
+import { useTrackCommitment } from '../components/ThreadAside';
 
 interface BriefItem { text: string; accountId?: number; threadId?: string; emailId?: number; tone?: string }
 interface BriefSection { title: string; items: BriefItem[] }
@@ -41,6 +42,51 @@ const TONE_ICON: Record<string, React.ReactNode> = {
   bulk: <Inbox size={14} />,
 };
 
+// A line of the brief and the two things you can do with it: open the
+// conversation, or write it down.
+//
+// The brief and the commitments list were built to answer the same question
+// from two directions — one reads a week of mail and tells you what is
+// waiting, the other keeps a ledger of specific promises — and there was no
+// way to get from the observation to the ledger. Now the brief is the place
+// obligations are noticed and the list is where they are kept, which is the
+// division of labour they were always supposed to have.
+function BriefRow({ item, canTrack }: { item: BriefItem; canTrack: boolean }) {
+  const track = useTrackCommitment();
+  const to = item.accountId && item.threadId ? `/mail/inbox/t/${item.accountId}:${item.threadId}` : null;
+  // "waiting" is somebody else's move; everything else the brief flags is
+  // yours. A bulk line is neither and is not worth tracking.
+  const trackable = canTrack && Boolean(item.accountId) && item.tone !== 'bulk';
+  const kind = item.tone === 'waiting' ? 'awaiting' : 'owed';
+
+  const body = (
+    <>
+      <span className={`brief-tone brief-tone-${item.tone ?? 'plain'}`}>{TONE_ICON[item.tone ?? ''] ?? null}</span>
+      <span className="brief-text">{item.text}</span>
+    </>
+  );
+
+  return (
+    <div className="brief-row">
+      {to
+        ? <Link className="brief-item brief-item-link" to={to}>{body}</Link>
+        : <div className="brief-item">{body}</div>}
+      {trackable && (
+        <button
+          type="button"
+          className="brief-track"
+          title={kind === 'owed' ? 'Add to what you owe' : 'Add to what you are waiting on'}
+          disabled={track.isPending || track.isSuccess}
+          onClick={() => track.mutate({ accountId: item.accountId!, threadId: item.threadId, kind, text: item.text.slice(0, 200) })}
+        >
+          {track.isSuccess ? <Check size={13} /> : <ClipboardCheck size={13} />}
+          <span>{track.isSuccess ? 'Tracked' : 'Track'}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function BriefPage() {
   const { can, info, loading: featuresLoading } = useFeatures();
   const toast = useToast();
@@ -48,6 +94,7 @@ export default function BriefPage() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const allowed = can('brief');
+  const canTrack = can('commitments');
 
   const load = useCallback(async () => {
     if (!allowed) { setLoading(false); return; }
@@ -138,20 +185,7 @@ export default function BriefPage() {
             <section key={section.title} className="stack-8">
               <h3 className="section-title">{section.title}</h3>
               <div className="card brief-list">
-                {section.items.map((item, i) => {
-                  const to = item.accountId && item.threadId
-                    ? `/mail/inbox/t/${item.accountId}:${item.threadId}`
-                    : null;
-                  const body = (
-                    <>
-                      <span className={`brief-tone brief-tone-${item.tone ?? 'plain'}`}>{TONE_ICON[item.tone ?? ''] ?? null}</span>
-                      <span className="brief-text">{item.text}</span>
-                    </>
-                  );
-                  return to
-                    ? <Link key={i} className="brief-item brief-item-link" to={to}>{body}</Link>
-                    : <div key={i} className="brief-item">{body}</div>;
-                })}
+                {section.items.map((item, i) => <BriefRow key={i} item={item} canTrack={canTrack} />)}
               </div>
             </section>
           ))}

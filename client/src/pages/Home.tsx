@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Sparkles, Workflow, Send, Reply, AlertTriangle, Contact } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight, Sparkles, Workflow, Send, Reply, AlertTriangle, Contact, ClipboardCheck, Clock, Newspaper, Timer } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
+import { useCan } from '../state/features';
 import { Badge, Button, Progress, Spinner, PageHeader } from '../components/ui';
-import { fmtDate, fmtDateTime, fmtNumber } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtNumber, fmtRelative } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 
 export default function HomePage() {
@@ -19,6 +20,12 @@ export default function HomePage() {
   return (
     <div className="page">
       <PageHeader title={`${greeting}, ${user!.display_name.split(' ')[0]}`} sub="What Tern sent, who replied, and what needs a decision." />
+      {/* This page was written when the only thing Tern did on your behalf
+          was send outreach, and it still measures only that: how many went
+          out, how many came back. The brief and the commitments ledger
+          answer the question somebody actually opens a home page with —
+          what needs me today — and neither had a way to say so here. */}
+      <Today />
       <div className="stats-row">
         <div className="card stat"><div className="stat-value">{fmtNumber(data.week.sent)}</div><div className="stat-label"><Send size={12} /> sent, last 7 days</div></div>
         <div className="card stat"><div className="stat-value">{fmtNumber(data.week.replied)} <span className="muted" style={{ fontSize: 14 }}>({replyRate}%)</span></div><div className="stat-label"><Reply size={12} /> replies</div></div>
@@ -56,6 +63,54 @@ export default function HomePage() {
         </div>
       </div>
       <div className="row mt-24 wrap gap-12"><Button icon={<Contact size={15} />} onClick={() => nav('/contacts?import=1')}>Import contacts</Button><Button icon={<Workflow size={15} />} onClick={() => nav('/sequences?new=1')}>New sequence</Button><Button icon={<Sparkles size={15} />} onClick={() => nav('/settings/ai')}>AI settings</Button></div>
+    </div>
+  );
+}
+
+// The two things that know what today looks like, side by side, each drawn
+// only if it has been turned on and has something to say. Neither generates
+// anything: the brief is whatever was last written, and the ledger is a
+// count. A home page that started a minute of model time on load would be a
+// home page nobody could open.
+function Today() {
+  const canBrief = useCan('brief');
+  const canCommit = useCan('commitments');
+
+  const brief = useQuery({
+    queryKey: ['brief'],
+    queryFn: () => api.get<{ brief: { summary: string; generatedAt: string; stale: boolean } | null }>('/api/assist/brief'),
+    enabled: canBrief,
+    staleTime: 60_000,
+  });
+  const commitments = useQuery({
+    queryKey: ['commitment-counts'],
+    queryFn: () => api.get<{ counts: { owed: number; awaiting: number; overdue: number } }>('/api/assist/commitments'),
+    enabled: canCommit,
+    staleTime: 60_000,
+  });
+
+  const b = brief.data?.brief;
+  const c = commitments.data?.counts;
+  const hasCommitments = Boolean(c && (c.owed || c.awaiting));
+  if (!b && !hasCommitments) return null;
+
+  return (
+    <div className="today-row">
+      {b && (
+        <Link className="card today-card" to="/brief">
+          <div className="today-head"><Newspaper size={14} /> Brief <span className="muted small ml-auto">{b.stale ? 'out of date' : fmtRelative(b.generatedAt)}</span></div>
+          <p className="today-summary">{b.summary || 'Written, but it had nothing to say.'}</p>
+        </Link>
+      )}
+      {hasCommitments && (
+        <Link className="card today-card" to="/commitments">
+          <div className="today-head"><ClipboardCheck size={14} /> Commitments{c!.overdue > 0 && <Badge kind="danger">{c!.overdue} overdue</Badge>}</div>
+          <div className="today-counts">
+            <span><Clock size={13} /> <strong>{fmtNumber(c!.owed)}</strong> you owe</span>
+            <span><Timer size={13} /> <strong>{fmtNumber(c!.awaiting)}</strong> you are waiting on</span>
+          </div>
+        </Link>
+      )}
     </div>
   );
 }

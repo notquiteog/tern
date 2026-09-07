@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlarmClock, Archive, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText } from 'lucide-react';
+import { AlarmClock, Archive, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText, Link2Off, Wrench } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { AiThinking, useAiThinking } from './AiThinking';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment } from '../state/compose';
@@ -15,12 +15,13 @@ import { GuardBanner } from './GuardBanner';
 import { InvitationCard } from './InvitationCard';
 import { SafeHtml } from './SafeHtml';
 import { EncryptedMessage, pgpKindOf } from './EncryptedMessage';
+import { AttachmentText, RelatedThreads, ThreadCommitments, type ThreadCommitment } from './ThreadAside';
 import { Composer, type ComposeKind, type KindOptions } from './Composer';
 import { AttachmentPreview, canPreview, type PreviewItem } from './AttachmentPreview';
 import { addrFull, addrName, cls, fmtBytes, fmtDateTime, fmtDate, fmtRelative, localDateTimeValue, type Addr } from '../lib/format';
 import { buildForwardHtml, buildQuoteHtml, forwardSubject, parseListUnsubscribe, replyRecipients, replySubject } from '../lib/reply';
 
-interface Msg { id: number; jmap_id: string; thread_id: string; mailbox_ids: string[]; keywords: string[]; received_at: string; sent_at: string | null; message_id: string[]; from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[]; subject: string; preview: string; has_attachment: boolean; body_text: string | null; body_html: string | null; attachments: any[]; is_unread: boolean; is_flagged: boolean; is_draft: boolean; from_email: string; size: number; blob_id: string; avatar_url?: string | null; list_unsubscribe?: string | null; list_id?: string | null; auto_submitted?: string | null }
+interface Msg { id: number; jmap_id: string; thread_id: string; mailbox_ids: string[]; keywords: string[]; received_at: string; sent_at: string | null; message_id: string[]; from_addr: Addr[]; to_addr: Addr[]; cc_addr: Addr[]; bcc_addr: Addr[]; reply_to: Addr[]; subject: string; preview: string; has_attachment: boolean; body_text: string | null; body_html: string | null; attachments: any[]; is_unread: boolean; is_flagged: boolean; is_draft: boolean; from_email: string; size: number; blob_id: string; avatar_url?: string | null; list_unsubscribe?: string | null; list_id?: string | null; auto_submitted?: string | null; links_cleaned?: number }
 interface Undo { accountId: number; items: { jmapId: string; mailboxIds: string[] }[] }
 interface InlineState { key: number; seed: ComposeSeed; kindOptions: KindOptions }
 
@@ -216,6 +217,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
             {other?.email && other.email.toLowerCase() !== me && <>
               <div className="menu-sep" />
               <MenuItem icon={<ListFilter size={15} />} onClick={() => { nav(`/mail/all?q=${encodeURIComponent(`from:${other.email}`)}`); c(); }}>Find messages from {addrName(other)}</MenuItem>
+              <MenuItem icon={<Wrench size={15} />} onClick={() => { nav(`/rules?from=${encodeURIComponent(other.email)}`); c(); }}>Make a rule from this sender…</MenuItem>
               <MenuItem icon={<Ban size={15} />} danger onClick={() => { if (confirm(`Block ${other.email}? Future messages go to Junk.`)) void blockSender(other.email); c(); }}>Block {addrName(other)}</MenuItem>
             </>}
             <div className="menu-sep" />
@@ -253,6 +255,8 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
               onDelete={() => act('trash', {}, { jmapIds: [m.jmap_id], msg: 'Message moved to trash' })}
               onBlock={() => { if (confirm(`Block ${m.from_email}? Future messages go to Junk.`)) void blockSender(m.from_email); }}
               onFilter={() => nav(`/mail/all?q=${encodeURIComponent(`from:${m.from_email}`)}`)}
+              onRule={() => nav(`/rules?from=${encodeURIComponent(m.from_email)}`)}
+              onQuote={(t) => openInline(m, 'reply', { initialText: t })}
               onUnsubscribe={(u) => { if (u.url && !u.mailto) window.open(u.url, '_blank', 'noopener'); else if (u.mailto) setUnsub({ m, mailto: u.mailto, subject: u.subject }); }}
               unsubscribed={unsubDone.has(m.id)}
               onPreview={(a) => { const i = previewItems.findIndex((p) => p.url === attachmentUrl(accountId, a)); if (i >= 0) setPreview(i); }} />
@@ -286,6 +290,16 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
         </div>
         <div className="context">
           <ContextCard data={data} accountId={accountId} onOpenContact={(id) => nav(`/contacts/${id}`)} />
+          {/* What the rest of the app knows about this conversation, beside
+              the conversation. Each card draws nothing when it has nothing. */}
+          <ThreadCommitments
+            accountId={accountId}
+            threadId={threadId}
+            items={(data?.commitments ?? []) as ThreadCommitment[]}
+            counterparty={other ? (addrName(other) || other.email) : null}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['thread', accountId, threadId] })}
+          />
+          <RelatedThreads emailId={last?.id ?? null} threadId={threadId} />
         </div>
       </div>
       <Modal open={snoozeOpen} onClose={() => setSnoozeOpen(false)} title="Snooze until" footer={<><Button onClick={() => setSnoozeOpen(false)}>Cancel</Button><Button variant="primary" onClick={() => { setSnoozeOpen(false); void act('snooze', { until: new Date(snoozeAt).toISOString() }, { back: true, msg: `Snoozed until ${fmtDateTime(snoozeAt)}` }); }}>Snooze</Button></>}>
@@ -304,8 +318,8 @@ function attachmentUrl(accountId: number, a: any): string {
   return `/api/mail/blob/${accountId}/${encodeURIComponent(a.blobId)}?name=${encodeURIComponent(a.name ?? 'attachment')}&type=${encodeURIComponent(a.type ?? '')}`;
 }
 
-function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onReply, onReplyAll, onForward, onStar, onUnreadFromHere, onDelete, onBlock, onFilter, onUnsubscribe, unsubscribed, onPreview }: {
-  m: Msg; accountId: number; me: string; isContact: boolean; open: boolean; single: boolean; onToggle: () => void; onReply: () => void; onReplyAll: () => void; onForward: () => void; onStar: () => void; onUnreadFromHere: () => void; onDelete: () => void; onBlock: () => void; onFilter: () => void; onUnsubscribe: (u: { mailto: string | null; subject: string | null; url: string | null }) => void; unsubscribed: boolean; onPreview: (a: any) => void;
+function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onReply, onReplyAll, onForward, onStar, onUnreadFromHere, onDelete, onBlock, onFilter, onRule, onUnsubscribe, unsubscribed, onPreview, onQuote }: {
+  m: Msg; accountId: number; me: string; isContact: boolean; open: boolean; single: boolean; onToggle: () => void; onReply: () => void; onReplyAll: () => void; onForward: () => void; onStar: () => void; onUnreadFromHere: () => void; onDelete: () => void; onBlock: () => void; onFilter: () => void; onRule: () => void; onUnsubscribe: (u: { mailto: string | null; subject: string | null; url: string | null }) => void; unsubscribed: boolean; onPreview: (a: any) => void; onQuote: (text: string) => void;
 }) {
   const [prefs] = useMailPrefs();
   const from = m.from_addr?.[0];
@@ -328,6 +342,13 @@ function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onRe
             {!open && m.has_attachment && pgpKind !== 'pgp/mime' && <Paperclip size={13} className="faint" />}
             {pgpKind && pgpKind !== 'signed' && <Badge kind="accent">encrypted</Badge>}
             {isList && open && !mine && <Badge>list</Badge>}
+            {/* F11 quietly rewrote this message on the way here. A cleaning
+                nobody is told about is indistinguishable from no cleaning. */}
+            {open && (m.links_cleaned ?? 0) > 0 && (
+              <Badge kind="success" >
+                <Link2Off size={11} /> {m.links_cleaned} link{m.links_cleaned === 1 ? '' : 's'} cleaned
+              </Badge>
+            )}
           </div>
           {open ? <Menu width={380} trigger={(o) => <div className="to" onClick={(e) => { e.stopPropagation(); o(); }} style={{ cursor: 'pointer' }}>to {toLabel || '—'} <ChevronDown size={12} /></div>}>
             {() => <div style={{ padding: 8 }}><table className="details-table"><tbody>
@@ -354,6 +375,10 @@ function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onRe
               <MenuItem icon={<Forward size={15} />} onClick={() => { onForward(); c(); }}>Forward</MenuItem>
               <MenuItem icon={<MailOpen size={15} />} onClick={() => { onUnreadFromHere(); c(); }}>Mark unread from here</MenuItem>
               {!mine && <MenuItem icon={<ListFilter size={15} />} onClick={() => { onFilter(); c(); }}>Find messages from this sender</MenuItem>}
+              {/* Blocking a sender already wrote a rule; this is the same
+                  door for every other rule, opened with the sender filled
+                  in — the step people used to do by hand in another page. */}
+              {!mine && <MenuItem icon={<Wrench size={15} />} onClick={() => { onRule(); c(); }}>Make a rule from this sender…</MenuItem>}
               {!mine && <MenuItem icon={<Ban size={15} />} danger onClick={() => { onBlock(); c(); }}>Block sender</MenuItem>}
               <MenuItem icon={<FileText size={15} />} onClick={() => { window.open(`/api/mail/blob/${accountId}/${m.blob_id}?name=message.eml&type=message/rfc822&download=1`, '_blank'); c(); }}>Show original</MenuItem>
               <div className="menu-sep" />
@@ -387,6 +412,9 @@ function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onRe
               })}
             </div>
           )}
+          {/* F5 read these files into the index. This is that same text,
+              where the files are, and a way to put a line of it in a reply. */}
+          {pgpKind !== 'pgp/mime' && atts.length > 0 && <AttachmentText emailId={m.id} onQuote={onQuote} />}
         </>
       )}
     </div>
