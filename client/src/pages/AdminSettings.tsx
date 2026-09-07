@@ -794,12 +794,20 @@ function DnsSetup({ data }: { data: any }) {
     setChecking(true);
     try {
       const r = await api.post<any>('/api/stalwart/dns/check', { port25 });
-      setChecks(Object.fromEntries(r.results.map((x: any) => [x.id, x]))); setOutbound(r.outbound); setSummary(r.summary);
+      const byId = Object.fromEntries(r.results.map((x: any) => [x.id, x]));
+      setChecks(byId); setOutbound(r.outbound); setSummary(r.summary);
+      // The mail-app records are collapsed by default, and the summary line
+      // above only speaks for the required ones: without this, "all required
+      // records are in place" is the last word on a mailbox that no client
+      // can configure itself against. Open the section when any are missing.
+      if (dns?.records?.some((x: any) => x.group === 'clients' && byId[x.id] && byId[x.id].status !== 'ok')) setShowClients(true);
     } catch (e) { toast.error(e); } finally { setChecking(false); }
   }
   if (!data.reachable) return null;
   if (isLoading || !dns) return <Spinner />;
   const groups = ['required', 'recommended', 'brand', 'clients'].filter((g) => dns.records.some((r: any) => r.group === g));
+  const clientRecords = dns.records.filter((r: any) => r.group === 'clients');
+  const clientsMissing = clientRecords.filter((r: any) => checks[r.id] && checks[r.id].status !== 'ok').length;
   const copy = (t: string) => { navigator.clipboard?.writeText(t); toast.success('Copied'); };
   return (
     <div className="col gap-16">
@@ -840,7 +848,8 @@ function DnsSetup({ data }: { data: any }) {
           )}
         </div>
       ))}
-      <div className="row"><Button variant="ghost" size="sm" onClick={() => setShowClients((v) => !v)}>{showClients ? 'Hide' : 'Show'} the mail-app autoconfig records ({dns.records.filter((r: any) => r.group === 'clients').length})</Button></div>
+      <div className="row wrap"><Button variant="ghost" size="sm" onClick={() => setShowClients((v) => !v)}>{showClients ? 'Hide' : 'Show'} the mail-app autoconfig records ({clientRecords.length})</Button>
+        {clientsMissing > 0 && <span className="small" style={{ color: 'var(--warning)' }}>{clientsMissing} of them missing: Thunderbird, Apple Mail, Outlook and JMAP clients have no way to find this mailbox from the address alone.</span>}</div>
     </div>
   );
 }
