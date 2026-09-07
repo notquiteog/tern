@@ -26,6 +26,11 @@ const EMAIL_PROPS = [
   // Stalwart ignores the `:all` form (RFC 8621 §4.1.3) and answers the plain
   // form under `header:Autocrypt`; autocryptHeadersOf() reads either.
   'header:Autocrypt:asRaw',
+  // What the receiving server made of SPF, DKIM and DMARC. The impersonation
+  // guard (services/guard.ts) treats an unauthenticated message from a domain
+  // that normally authenticates as the signal it is; without this header it
+  // simply says nothing rather than guessing.
+  'header:Authentication-Results:asText',
 ];
 const MAILBOX_PROPS = ['id', 'name', 'parentId', 'role', 'sortOrder', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'];
 
@@ -259,15 +264,16 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
     for (const { e, text, sealed, category } of prepared) {
       const row = await c.query(
         `INSERT INTO emails (account_id, jmap_id, blob_id, thread_id, mailbox_ids, keywords, size, received_at, sent_at, message_id, in_reply_to, references_ids,
-            from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, has_attachment, body_text, body_html, attachments, auto_submitted, list_unsubscribe, list_id, autocrypt_seen,
-            search_terms, address_terms, from_terms, category, sealed, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,true,now())
+            from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, has_attachment, body_text, body_html, attachments, auto_submitted, list_unsubscribe, list_id, autocrypt_seen, auth_results,
+            search_terms, address_terms, from_terms, from_blind, recipient_count, category, sealed, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,true,now())
          ON CONFLICT (account_id, jmap_id) DO UPDATE SET blob_id=EXCLUDED.blob_id, thread_id=EXCLUDED.thread_id, mailbox_ids=EXCLUDED.mailbox_ids, keywords=EXCLUDED.keywords,
            size=EXCLUDED.size, received_at=EXCLUDED.received_at, sent_at=EXCLUDED.sent_at, message_id=EXCLUDED.message_id, in_reply_to=EXCLUDED.in_reply_to, references_ids=EXCLUDED.references_ids,
            from_addr=EXCLUDED.from_addr, to_addr=EXCLUDED.to_addr, cc_addr=EXCLUDED.cc_addr, bcc_addr=EXCLUDED.bcc_addr, reply_to=EXCLUDED.reply_to, subject=EXCLUDED.subject, preview=EXCLUDED.preview,
            has_attachment=EXCLUDED.has_attachment, body_text=COALESCE(EXCLUDED.body_text, emails.body_text), body_html=COALESCE(EXCLUDED.body_html, emails.body_html), attachments=EXCLUDED.attachments,
-           auto_submitted=EXCLUDED.auto_submitted, list_unsubscribe=EXCLUDED.list_unsubscribe, list_id=EXCLUDED.list_id, autocrypt_seen=EXCLUDED.autocrypt_seen,
-           search_terms=EXCLUDED.search_terms, address_terms=EXCLUDED.address_terms, from_terms=EXCLUDED.from_terms, category=EXCLUDED.category, sealed=true, updated_at=now()
+           auto_submitted=EXCLUDED.auto_submitted, list_unsubscribe=EXCLUDED.list_unsubscribe, list_id=EXCLUDED.list_id, autocrypt_seen=EXCLUDED.autocrypt_seen, auth_results=EXCLUDED.auth_results,
+           search_terms=EXCLUDED.search_terms, address_terms=EXCLUDED.address_terms, from_terms=EXCLUDED.from_terms,
+           from_blind=EXCLUDED.from_blind, recipient_count=EXCLUDED.recipient_count, category=EXCLUDED.category, sealed=true, updated_at=now()
          RETURNING id, (xmax = 0) AS inserted`,
         [
           acc.id, e.id, e.blobId ?? null, e.threadId ?? e.id, Object.keys(e.mailboxIds ?? {}), Object.keys(e.keywords ?? {}).filter((k) => e.keywords[k]),
@@ -275,7 +281,8 @@ export async function upsertEmails(acc: AccountRow, list: any[], opts: { runAuto
           sealed.from_addr, sealed.to_addr, sealed.cc_addr, sealed.bcc_addr, sealed.reply_to,
           sealed.subject, sealed.preview, Boolean(e.hasAttachment), sealed.body_text, sealed.body_html, sealed.attachments, e['header:Auto-Submitted:asText'] ?? null,
           (e['header:List-Unsubscribe:asText'] ?? null) && String(e['header:List-Unsubscribe:asText']).slice(0, 2000), listIdOf(e), autocryptHeadersOf(e).length > 0,
-          sealed.search_terms, sealed.address_terms, sealed.from_terms, category,
+          (e['header:Authentication-Results:asText'] ?? null) && String(e['header:Authentication-Results:asText']).slice(0, 2000),
+          sealed.search_terms, sealed.address_terms, sealed.from_terms, sealed.from_blind, sealed.recipient_count, category,
         ],
       );
       if (row.rows[0].inserted) { created++; fresh.push({ ...e, _id: row.rows[0].id, _text: text }); } else updated++;

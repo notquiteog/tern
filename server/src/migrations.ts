@@ -987,4 +987,38 @@ UPDATE ai_jobs SET payload='{}'::jsonb, result=NULL WHERE status IN ('done','fai
 DELETE FROM ai_jobs WHERE status IN ('done','failed','skipped') AND updated_at < now() - interval '1 day';
 `,
   },
+  {
+    // Two facts about a message that several of the new features want and
+    // that no amount of array matching makes cheap: which single term is its
+    // sender, and how many people it went to.
+    //
+    // `from_blind` is the same keyed hash the address index already holds for
+    // the full sender address, pulled out into its own column so "how many
+    // have I had from this person" is a grouped count rather than an array
+    // overlap over the whole mailbox. It is a hash under the owner's key, so
+    // it says nothing on its own.
+    //
+    // `recipient_count` is a number, like size and has_attachment: it says
+    // how widely a message was addressed, which is what separates a note to
+    // you from a note to two hundred people.
+    id: '20260908_0029_message_facts',
+    up: `
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS from_blind BYTEA;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS recipient_count SMALLINT;
+CREATE INDEX IF NOT EXISTS emails_from_blind_idx ON emails(account_id, from_blind, received_at);
+-- Contacts are matched against senders on the same hash. The column is
+-- filled by the backfill, and on every write from then on.
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_blind BYTEA;
+CREATE INDEX IF NOT EXISTS contacts_email_blind_idx ON contacts(user_id, email_blind);
+`,
+  },
+  {
+    // What the receiving mail server made of SPF, DKIM and DMARC. Not
+    // content — it is a verdict about the envelope, written by our own MTA —
+    // so it is stored as it arrived and the guard can read it without a key.
+    id: '20260908_0030_auth_results',
+    up: `
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS auth_results TEXT;
+`,
+  },
 ];

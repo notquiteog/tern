@@ -24,6 +24,10 @@ export interface SealedContent {
   from_addr: string; to_addr: string; cc_addr: string; bcc_addr: string; reply_to: string;
   attachments: string;
   search_terms: Buffer[]; address_terms: Buffer[]; from_terms: Buffer[];
+  // Pulled out of the address index so a sender can be grouped on rather
+  // than matched against. Null when a message has no From at all.
+  from_blind: Buffer | null;
+  recipient_count: number;
 }
 
 export interface PlainContent {
@@ -59,7 +63,28 @@ export async function sealEmail(userId: number, c: PlainContent): Promise<Sealed
     search_terms: indexTermsWith(sk, searchable),
     address_terms: addressTermsWith(ak, [...emails(c.from_addr), ...emails(c.to_addr), ...emails(c.cc_addr), ...emails(c.bcc_addr)]),
     from_terms: addressTermsWith(ak, emails(c.from_addr)),
+    from_blind: senderBlind(ak, c.from_addr),
+    // Everyone the message was addressed to, not counting blind copies,
+    // which the recipients cannot see either.
+    recipient_count: Math.min(32767, emails(c.to_addr).length + emails(c.cc_addr).length),
   };
+}
+
+// The one term that stands for "this exact sender". addressTermsWith adds
+// the whole address, its domain and its local part; this is the first of
+// those, computed directly so nothing depends on the order of a Set.
+export function senderBlind(ak: Buffer, from: Addr[] | undefined): Buffer | null {
+  const e = String(from?.[0]?.email ?? '').trim().toLowerCase();
+  if (!e) return null;
+  return addressTermsWith(ak, [e])[0] ?? null;
+}
+
+// The same hash for a contact, so a sender and a contact card meet on one
+// value. Exported because contacts are written from several places.
+export async function contactBlind(userId: number, email: string): Promise<Buffer | null> {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!e) return null;
+  return addressTermsWith(addressKey(await dataKey(userId)), [e])[0] ?? null;
 }
 
 // The fields opening a row changes: ciphertext text becomes text, sealed
