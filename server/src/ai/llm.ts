@@ -84,7 +84,14 @@ const BASE_DEFAULTS: AiSettings = {
   keepAlive: '10m',
   allowThinking: false,
   thinkEffort: 'low',
-  thinkingBudget: 3000,
+  // Measured rather than guessed. With thinking on, 26 of 33 generations in
+  // the live suite spent their whole budget reasoning and returned nothing,
+  // and only the retry-without-thinking fallback produced an answer at all —
+  // so "thinking on" was in practice "thinking off, forty seconds later".
+  // The exhausted generations used a median of about 4,000 tokens of
+  // reasoning and a maximum of 4,600, so 3,000 guaranteed the failure it was
+  // meant to bound. 6,000 leaves headroom above the observed maximum.
+  thinkingBudget: 6000,
   systemPrompt: '',
   topP: 0.9,
   topK: 40,

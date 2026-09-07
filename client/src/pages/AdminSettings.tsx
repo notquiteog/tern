@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft, Monitor, Sun, Moon, Paintbrush, ToggleRight, Timer, ShieldCheck } from 'lucide-react';
+import { CalendarDays, Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft, Monitor, Sun, Moon, Paintbrush, ToggleRight, Timer, ShieldCheck } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
@@ -15,6 +15,8 @@ import { AiPlayground, AiStatusLine } from './Settings';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { getAppearance, houseAppearance, applyHouseAppearance, type Appearance, type Theme } from '../state/theme';
 import { AdminFeatures, AdminRetention, AdminVault } from './AdminFeatures';
+import AdminCalendar from './AdminCalendar';
+import { SettingsLayout, type SettingsGroup, type SettingsSection } from '../components/SettingsLayout';
 
 // Everything that changes the workspace for everyone: users and sign-up,
 // the bundled mail server, the AI model, the app's name and logo, the
@@ -23,34 +25,54 @@ export default function AdminSettingsPage() {
   const { user, stalwartProvisioning } = useAuth();
   const admin = user!.role === 'admin';
   if (!admin) return <Navigate to="/settings/profile" replace />;
-  const tabs: [string, string, ReactNode][] = [
-    ['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />],
+  const mail: SettingsSection[] = [];
+  if (stalwartProvisioning) mail.push({ key: 'mailserver', label: 'Mail server', icon: <Server size={16} />, hint: 'Domains, DNS, queues, logs' });
+  mail.push({ key: 'calendar', label: 'Calendar', icon: <CalendarDays size={16} />, hint: 'Scheduling for everyone' });
+  const groups: SettingsGroup[] = [
+    {
+      title: 'Install',
+      items: [
+        { key: 'general', label: 'General', icon: <SettingsIcon size={16} />, hint: 'Compliance and defaults' },
+        { key: 'branding', label: 'Branding', icon: <Palette size={16} />, hint: 'Name, logo, icons' },
+        { key: 'appearance', label: 'Appearance', icon: <Paintbrush size={16} />, hint: 'The house theme' },
+      ],
+    },
+    { title: 'People', items: [{ key: 'users', label: 'Users', icon: <Users size={16} />, hint: 'Accounts, roles, sign-up' }] },
+    { title: 'Mail', items: mail },
+    {
+      title: 'Assistant',
+      items: [
+        { key: 'ai', label: 'AI model', icon: <Bot size={16} />, hint: 'Model, hardware, limits' },
+        { key: 'features', label: 'Features', icon: <ToggleRight size={16} />, hint: 'What the install allows' },
+      ],
+    },
+    {
+      // How long it keeps things, what it is running, and what it did.
+      // Together they are the panel an operator reaches for when the box is
+      // under load or somebody asks what it does with mail.
+      title: 'Operations',
+      items: [
+        { key: 'retention', label: 'Retention', icon: <Timer size={16} />, hint: 'How long data is kept' },
+        { key: 'vault', label: 'Security', icon: <ShieldCheck size={16} />, hint: 'Keys and encryption at rest' },
+        { key: 'audit', label: 'Audit log', icon: <ScrollText size={16} />, hint: 'Who did what, and when' },
+      ],
+    },
   ];
-  if (stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
-  tabs.push(
-    ['ai', 'AI model', <Bot size={15} />],
-    // What the install allows at all, how long it keeps things, and what it
-    // is actually running. Together they are the panel an operator reaches
-    // for when the box is under load or somebody asks what it does with mail.
-    ['features', 'Features', <ToggleRight size={15} />],
-    ['retention', 'Retention', <Timer size={15} />],
-    ['vault', 'Security', <ShieldCheck size={15} />],
-    ['branding', 'Branding', <Palette size={15} />], ['appearance', 'Appearance', <Paintbrush size={15} />], ['audit', 'Audit log', <ScrollText size={15} />],
-  );
   return (
-    <div className="page">
-      <div className="settings-head row wrap mb-8">
-        <div className="flex-1"><h1 className="row gap-8">Admin settings <Badge kind="accent">admins only</Badge></h1><div className="small muted">Applies to everyone on this install.</div></div>
-        <NavLink to="/settings/profile" className="btn"><ArrowLeft size={15} />My settings</NavLink>
-      </div>
-      <div className="tabs settings-tabs">
-        {tabs.map(([k, l, i]) => <NavLink key={k} to={`/admin/${k}`} className={({ isActive }) => cls(isActive && 'active')}>{i}{l}</NavLink>)}
-      </div>
+    <SettingsLayout
+      title="Admin settings"
+      badge={<Badge kind="accent">admins only</Badge>}
+      sub="Applies to everyone on this install."
+      base="/admin"
+      groups={groups}
+      action={<NavLink to="/settings/profile" className="btn"><ArrowLeft size={15} />My settings</NavLink>}
+    >
       <Routes>
         <Route path="general" element={<GeneralSettings />} />
         <Route path="users" element={<UsersSettings />} />
         <Route path="mailserver" element={<MailServerSettings />} />
         <Route path="ai" element={<AiAdminSettings />} />
+        <Route path="calendar" element={<AdminCalendar />} />
         <Route path="features" element={<AdminFeatures />} />
         <Route path="retention" element={<AdminRetention />} />
         <Route path="vault" element={<AdminVault />} />
@@ -59,7 +81,7 @@ export default function AdminSettingsPage() {
         <Route path="audit" element={<AuditSettings />} />
         <Route path="*" element={<Navigate to="/admin/general" replace />} />
       </Routes>
-    </div>
+    </SettingsLayout>
   );
 }
 
@@ -217,7 +239,11 @@ function AuditSettings() {
           { key: 'when', header: 'When', className: 'small muted', nowrap: true, cell: (e) => fmtDateTime(e.created_at) },
           { key: 'who', header: 'Who', className: 'small', cell: (e) => e.username ?? 'system' },
           { key: 'action', header: 'Action', primary: true, className: 'small strong', cell: (e) => e.action },
-          { key: 'details', header: 'Details', secondary: true, className: 'small muted', cell: (e) => { const d = `${e.target ?? ''} ${Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}`.trim(); return d ? <span className="truncate" style={{ display: 'inline-block', maxWidth: 420, verticalAlign: 'bottom' }} title={d}>{d}</span> : null; } },
+                    // Two lines, wrapped, rather than one line cut off at a fixed 420px.
+          // The fixed width was wider than the card it sat in on a phone, so
+          // the end of every settings blob hung over the edge — and one line
+          // of a JSON object rarely reaches anything worth reading anyway.
+          { key: 'details', header: 'Details', secondary: true, className: 'small muted', cell: (e) => { const d = `${e.target ?? ''} ${Object.keys(e.details ?? {}).length ? JSON.stringify(e.details) : ''}`.trim(); return d ? <span className="clamp-2" title={d}>{d}</span> : null; } },
         ]} />
       </div>
     </div>

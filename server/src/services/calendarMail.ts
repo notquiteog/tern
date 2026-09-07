@@ -18,6 +18,11 @@ import { addressKey, addressTermsWith, dataKey, openWith, sealWith } from './vau
 import { openEmails } from './mailVault.js';
 import { parseIcalendar, type IcalEvent } from './icalendar.js';
 import { allowed } from './capabilities.js';
+// F13. An invitation that arrived by mail is one source of "busy"; a
+// connected calendar is the other, and much the larger one. Both are
+// consulted everywhere a clash or a free slot is worked out, because a
+// proposal that ignores the calendar is worse than no proposal.
+import { busyIn, mergeBlocks, mutualBusy } from './calendar/index.js';
 import type { AccountRow } from './accounts.js';
 
 const log = logger('calendar');
@@ -177,6 +182,26 @@ async function openAll(userId: number, rows: any[]): Promise<Invitation[]> {
       WHERE user_id=$1 AND starts_at IS NOT NULL AND reply IS DISTINCT FROM 'declined'`,
     [userId],
   );
+  // And what the connected calendars say, over the span these invitations
+  // cover. Titles are deliberately not read here: the card says "you are
+  // busy then", which is what the reader needs, and free/busy is the only
+  // thing this path is entitled to.
+  //
+  // The invitations being rendered are excluded from that by UID. Accepting
+  // an invitation puts it in the calendar, so without this every accepted
+  // invitation would be reported as clashing with itself — and one already
+  // in this batch would be counted twice, once from `all` above and once
+  // from its calendar copy.
+  const times = rows.map((r) => (r.starts_at ? new Date(r.starts_at).getTime() : 0)).filter(Boolean);
+  const ownUids = rows.map((r) => (r.uid ? openWith(dek, r.uid) : null)).filter((u): u is string => Boolean(u));
+  const calendarBusy = times.length
+    ? await busyIn(
+      userId,
+      new Date(Math.min(...times) - 86_400_000),
+      new Date(Math.max(...times) + 2 * 86_400_000),
+      { excludeUids: ownUids },
+    )
+    : [];
 
   return rows.map((r) => {
     const start = r.starts_at ? new Date(r.starts_at).getTime() : null;
@@ -190,6 +215,16 @@ async function openAll(userId: number, rows: any[]): Promise<Invitation[]> {
       })
       .slice(0, 3)
       .map((o: any) => ({ id: o.id, summary: o.summary ? openWith(dek, o.summary) : null, startsAt: new Date(o.starts_at).toISOString() }));
+    // A calendar clash has no id and no title to give — only that the time
+    // is taken. It goes on the same list so the card has one thing to render.
+    if (start !== null && clashes.length < 3) {
+      for (const b of calendarBusy) {
+        if (clashes.length >= 3) break;
+        if (b.from < (end ?? start) && b.to > start) {
+          clashes.push({ id: 0, summary: null, startsAt: new Date(b.from).toISOString() });
+        }
+      }
+    }
 
     return {
       id: r.id,
@@ -299,7 +334,20 @@ function safeZone(tz: string | undefined): string {
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return 'UTC'; }
 }
 
-export async function freeSlots(userId: number, opts: { minutes?: number; days?: number; count?: number; startHour?: number; endHour?: number; tz?: string } = {}): Promise<Slot[]> {
+export interface SlotResult { slots: Slot[]; unknown: string[] }
+
+export async function freeSlots(userId: number, opts: { minutes?: number; days?: number; count?: number; startHour?: number; endHour?: number; tz?: string; withEmails?: string[] } = {}): Promise<Slot[]> {
+  return (await freeSlotsFor(userId, opts)).slots;
+}
+
+/**
+ * The same, saying which guests could not be checked.
+ *
+ * Worth separating: "everyone is free at three" and "you are free at three
+ * and nobody could tell me about the others" are different claims, and the
+ * composer should not make the first when it only knows the second.
+ */
+export async function freeSlotsFor(userId: number, opts: { minutes?: number; days?: number; count?: number; startHour?: number; endHour?: number; tz?: string; withEmails?: string[] } = {}): Promise<SlotResult> {
   const minutes = Math.min(480, Math.max(15, opts.minutes ?? 30));
   const days = Math.min(30, Math.max(1, opts.days ?? 10));
   const tz = safeZone(opts.tz);
@@ -311,10 +359,21 @@ export async function freeSlots(userId: number, opts: { minutes?: number; days?:
         AND starts_at < now() + ($2 || ' days')::interval AND starts_at > now() - interval '1 day'`,
     [userId, days],
   );
-  const blocks = busy.map((b) => ({
-    from: new Date(b.starts_at).getTime(),
-    to: b.ends_at ? new Date(b.ends_at).getTime() : new Date(b.starts_at).getTime() + 3600_000,
-  }));
+  // Invitations from mail, plus every connected calendar. Before F13 this
+  // read only the first, which meant Tern would cheerfully propose a time
+  // the person was already in a meeting — the calendar it did not have.
+  const horizon = new Date(Date.now() + days * 86_400_000);
+  // Everybody's, where there are guests and a provider that will say. A time
+  // that is free for the sender and booked for the person they are writing
+  // to is not a time worth proposing.
+  const mutual = await mutualBusy(userId, opts.withEmails ?? [], new Date(Date.now() - 86_400_000), horizon);
+  const blocks = mergeBlocks([
+    ...busy.map((b) => ({
+      from: new Date(b.starts_at).getTime(),
+      to: b.ends_at ? new Date(b.ends_at).getTime() : new Date(b.starts_at).getTime() + 3600_000,
+    })),
+    ...mutual.blocks,
+  ]);
 
   const out: Slot[] = [];
   const step = minutes * 60_000;
@@ -338,5 +397,5 @@ export async function freeSlots(userId: number, opts: { minutes?: number; days?:
       out.push({ startsAt: new Date(start).toISOString(), endsAt: new Date(end).toISOString() });
     }
   }
-  return out;
+  return { slots: out, unknown: mutual.unknown };
 }

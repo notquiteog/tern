@@ -22,6 +22,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, Check, ChevronRight, ClipboardCheck, Clock, Inbox, Mail, RefreshCw, Timer } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { postWithWork } from '../lib/work';
+import { localZone } from '../lib/scheduling';
 import { useFeatures } from '../state/features';
 import { Button, Callout, Empty, PageHeader, Spinner } from '../components/ui';
 import { FeatureOffNotice } from './Features';
@@ -184,7 +185,7 @@ export default function BriefPage() {
       // Priced in work rather than refused by a counter: the model is shared,
       // so the cost of asking should rise with how much is already being
       // asked of it.
-      const r = await postWithWork<{ brief: Brief }>('brief', '/api/assist/brief', {});
+      const r = await postWithWork<{ brief: Brief }>('brief', '/api/assist/brief', { tz: localZone() });
       setBrief(r.brief);
       toast.success('Brief written');
     } catch (e) {

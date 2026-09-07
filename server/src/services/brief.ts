@@ -20,6 +20,7 @@ import { openEmails } from './mailVault.js';
 import { htmlToText } from './merge.js';
 import { allowed } from './capabilities.js';
 import { listCommitments, openCount } from './commitments.js';
+import { agendaFor } from './calendar/index.js';
 import { describe as describeGuard, type GuardFlag, type GuardDetail } from './guard.js';
 
 const log = logger('brief');
@@ -89,7 +90,56 @@ const SYSTEM = [
   'Write plainly, in the second person ("You have…"). No greeting, no sign-off, no bullet points, no headings.',
 ].join('\n');
 
-export async function generateBrief(userId: number): Promise<Brief> {
+// A zone the browser made up, or one this build of Node has never heard of,
+// must not take a whole brief down with it.
+function safeZone(tz: string | undefined): string | undefined {
+  if (!tz) return undefined;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return undefined; }
+}
+
+// The date as the reader would say it. `toDateString()` is the server's day,
+// which is the same mistake the section below used to make.
+function writeToday(at: Date, tz?: string): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(at);
+}
+
+// What is in the diary today, from every calendar the person has selected.
+//
+// Unlike the rest of the brief this needs no model at all: the times are
+// facts, and a model asked to re-render them would only get the chance to
+// move one. Titles are shown here, unlike everywhere else the calendar is
+// read — this is the person's own brief, not a prompt.
+async function todaySection(userId: number, tz?: string): Promise<BriefSection> {
+  const items: BriefItem[] = [];
+  try {
+    const now = new Date();
+    // Which day "today" is, and what the clock reads, are both questions
+    // about where the person is rather than where the server is. Without a
+    // zone this asked for the UTC day: an evening brief anywhere west of
+    // Greenwich listed tomorrow's meetings, and every time was printed in
+    // the container's zone.
+    const events = await agendaFor(userId, now, tz);
+    const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+    for (const e of events.slice(0, 10)) {
+      const start = new Date(e.startsAt);
+      const end = new Date(e.endsAt);
+      // Something that finished hours ago is not part of "the day ahead".
+      if (end.getTime() < now.getTime() - 30 * 60_000) continue;
+      const when = e.allDay ? 'All day' : `${fmt.format(start)}–${fmt.format(end)}`;
+      const soon = !e.allDay && start.getTime() > now.getTime() && start.getTime() - now.getTime() < 60 * 60_000;
+      items.push({
+        text: `${when} · ${e.summary ?? 'Untitled'}${e.location ? ` (${e.location})` : ''}`,
+        tone: soon ? 'needs-you' : undefined,
+      });
+    }
+  } catch (e) {
+    // A calendar server that is down must not cost somebody their brief.
+    log.warn('the brief could not read the calendar', { user: userId, err: (e as Error).message });
+  }
+  return { title: 'Today', items };
+}
+
+export async function generateBrief(userId: number, opts: { tz?: string } = {}): Promise<Brief> {
   await allowedOrThrow(userId);
   const started = Date.now();
   const s = await getAiSettings();
@@ -112,7 +162,14 @@ export async function generateBrief(userId: number): Promise<Brief> {
   const commitments = await commitmentSection(userId);
   if (commitments.items.length) sections.push(commitments);
 
-  // 4. What can go in one action.
+  // 4. What is actually on today (F13). Above the bulk section because a
+  //    meeting in forty minutes outranks a pile of newsletters, and because
+  //    "what does my day look like" is the first question a brief is opened
+  //    to answer.
+  const day = await todaySection(userId, safeZone(opts.tz));
+  if (day.items.length) sections.push(day);
+
+  // 5. What can go in one action.
   const bulk = await bulkSection(userId, from);
   if (bulk.items.length) sections.push(bulk);
 
@@ -124,7 +181,7 @@ export async function generateBrief(userId: number): Promise<Brief> {
   if (facts) {
     const messages = [
       { role: 'system' as const, content: SYSTEM },
-      { role: 'user' as const, content: `Today is ${to.toDateString()}.\n\n${facts}` },
+      { role: 'user' as const, content: `Today is ${writeToday(to, safeZone(opts.tz))}.\n\n${facts}` },
     ];
     assertFreshConversation(messages);
     try {

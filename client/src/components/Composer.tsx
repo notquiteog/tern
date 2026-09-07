@@ -405,7 +405,11 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
           {/* Deterministic, and next to the assistant rather than inside it:
               the times come out of the calendar, so this is the one button in
               this row that cannot be wrong about a fact. */}
-          <ProposeTimesButton compact onInsert={(t) => {
+          {/* The recipients count too: a time that is free for the sender and
+              booked for the person being written to is not worth proposing.
+              Only Google and Outlook will answer for somebody else, and the
+              picker says so when nothing could. */}
+          <ProposeTimesButton compact withEmails={[...to, ...cc].map((a) => a.email).filter(Boolean)} onInsert={(t) => {
             // As HTML, not as text: `execCommand('insertText')` turns each
             // newline into a block of its own, so a paragraph break arrives as
             // three blank lines and the offer of times reads as a poem.

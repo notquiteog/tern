@@ -48,8 +48,18 @@ for i in $(seq 1 60); do
   if compose exec -T app wget -qO- http://127.0.0.1:3080/healthz >/dev/null 2>&1; then echo "    app healthy (v$NEWV)"; break; fi
   sleep 2; [ "$i" = 60 ] && { echo "app did not come back; see ./bin/tern logs app" >&2; exit 1; }
 done
+# Dictation is optional: the app reports the transcriber as unavailable
+# rather than failing, so a whisper that is down must not abort the rest of
+# an update — the Caddyfile, the certificate and the prune all come after
+# this. On a fresh volume the container spends its first minutes fetching
+# weights, which is a normal reason to find it not answering yet.
 for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
-  compose exec -T "$svc" true >/dev/null 2>&1 || { echo "the $svc container is not running; see ./bin/tern logs $svc" >&2; exit 1; }
+  compose exec -T "$svc" true >/dev/null 2>&1 && continue
+  if [ "$svc" = whisper ]; then
+    echo "    the whisper container is not running; dictation stays off (see ./bin/tern logs whisper)" >&2
+  else
+    echo "the $svc container is not running; see ./bin/tern logs $svc" >&2; exit 1
+  fi
 done
 if [ "${AI_ENABLED:-true}" = true ] && [ -n "${AI_MODEL:-}" ]; then
   if ! compose exec -T ollama ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$AI_MODEL\(:latest\)\?"; then

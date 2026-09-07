@@ -342,7 +342,7 @@ function ImportWizard({ open, onClose, onDone }: { open: boolean; onClose: () =>
           </div>
           <Field label="If a contact already exists"><Select value={existing} onChange={(e) => setExisting(e.target.value as any)}><option value="update">Update empty fields and merge tags</option><option value="skip">Skip the row</option></Select></Field>
           <h4 className="mb-8">Preview</h4>
-          <div style={{ overflow: 'auto', maxHeight: 200 }}><table className="table small"><thead><tr>{preview.headers.map((h: string) => <th key={h}>{h}</th>)}</tr></thead><tbody>{preview.sample.map((r: string[], i: number) => <tr key={i}>{r.map((c, j) => <td key={j} className="truncate" style={{ maxWidth: 160 }}>{c}</td>)}</tr>)}</tbody></table></div>
+          <div style={{ overflow: 'auto', maxHeight: 200 }}><table className="table small"><thead><tr>{preview.headers.map((h: string) => <th key={h}>{h}</th>)}</tr></thead><tbody>{preview.sample.map((r: string[], i: number) => <tr key={i}>{r.map((c, j) => <td key={j} className="truncate" style={{ maxWidth: 'min(100%, 160px)' }}>{c}</td>)}</tr>)}</tbody></table></div>
         </>
       )}
       {step === 2 && result && (

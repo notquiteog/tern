@@ -17,10 +17,14 @@ import { getUserAccount } from '../services/accounts.js';
 import { generateBrief, getBrief } from '../services/brief.js';
 import { addCommitment, closeCommitment, listCommitments, moveCommitment, openCount } from '../services/commitments.js';
 import { draftRule, draftSearch } from '../services/nlRules.js';
-import { buildReply, freeSlots, getInvitation, invitationsFor, recordReply, upcoming } from '../services/calendarMail.js';
+import { buildReply, freeSlotsFor, getInvitation, invitationsFor, recordReply, upcoming } from '../services/calendarMail.js';
+import { acceptIntoCalendar } from '../services/calendar/index.js';
+import { logger } from '../log.js';
 import { MAX_AUDIO_BYTES, AUDIO_TYPES, transcribe, voiceConfigured } from '../services/voice.js';
 import { cancelImport, progress, runImport, startImport } from '../services/mailImport.js';
 import { MAX_MESSAGE_BYTES } from '../services/mbox.js';
+
+const log = logger('assist');
 
 export const assistRouter = Router();
 assistRouter.use(requireAuth);
@@ -40,7 +44,12 @@ assistRouter.post(
   powGuard('brief'),
   rateLimit({ name: 'brief', perMinute: 4, message: 'A brief is still being written; give it a moment' }),
   async (req, res) => {
-    res.json({ brief: await generateBrief(req.user!.id) });
+    // The browser's own zone. Not stored and not a fact about the person:
+    // it decides which day "today" is and how the times are printed, and the
+    // server has no other way to know — no IP is kept, and an account's send
+    // window is about when mail may leave rather than where its owner is.
+    const { tz } = parse(z.object({ tz: z.string().max(64).optional() }), req.body ?? {});
+    res.json({ brief: await generateBrief(req.user!.id, { tz }) });
   },
 );
 
@@ -127,16 +136,22 @@ assistRouter.get('/invitations/message/:id', requireCapability('calendar'), asyn
 // leave rather than when its owner is awake.
 assistRouter.get('/invitations/slots', requireCapability('calendar'), async (req, res) => {
   const num = (v: unknown, dflt: number) => (Number.isFinite(Number(v)) ? Number(v) : dflt);
-  res.json({
-    slots: await freeSlots(req.user!.id, {
-      minutes: num(req.query.minutes, 30),
-      days: num(req.query.days, 10),
-      count: num(req.query.count, 6),
-      startHour: num(req.query.startHour, 9),
-      endHour: num(req.query.endHour, 17),
-      tz: typeof req.query.tz === 'string' ? req.query.tz.slice(0, 64) : undefined,
-    }),
-  });
+  // Guests, so a proposal can avoid a time one of them is already booked
+  // for. Only Google and Outlook will answer for somebody else; the reply
+  // says which addresses nobody could speak for rather than letting the page
+  // imply everyone was checked.
+  const withEmails = typeof req.query.with === 'string'
+    ? req.query.with.split(',').map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')).slice(0, 20)
+    : [];
+  res.json(await freeSlotsFor(req.user!.id, {
+    minutes: num(req.query.minutes, 30),
+    days: num(req.query.days, 10),
+    count: num(req.query.count, 6),
+    startHour: num(req.query.startHour, 9),
+    endHour: num(req.query.endHour, 17),
+    tz: typeof req.query.tz === 'string' ? req.query.tz.slice(0, 64) : undefined,
+    withEmails,
+  }));
 });
 
 // Records the answer and hands back the REPLY body. Sending it is the
@@ -150,11 +165,34 @@ assistRouter.post('/invitations/:id/reply', requireCapability('calendar'), async
   if (!acc) throw notFound('Account not found');
   const updated = await recordReply(req.user!.id, inv.id, reply);
   const partstat = reply === 'accepted' ? 'ACCEPTED' : reply === 'declined' ? 'DECLINED' : 'TENTATIVE';
+
+  // F13: put it in the calendar as well, which is what answering an
+  // invitation means anywhere else. Before there was a calendar to put it
+  // in, "Yes" sent a REPLY and left the person to write the meeting down
+  // themselves. A declined one still goes in — with the refusal recorded on
+  // their own attendee line, so it shows in the day but does not block the
+  // time — because "I said no to this" is worth being able to see.
+  //
+  // Best effort on purpose: an unreachable calendar server must not stop
+  // somebody answering an invitation.
+  let added: { id: number; calendarId: number } | null = null;
+  try {
+    const saved = await acceptIntoCalendar(req.user!.id, {
+      uid: inv.uid, summary: inv.summary, location: inv.location, description: inv.description,
+      startsAt: inv.startsAt, endsAt: inv.endsAt, allDay: inv.allDay,
+      organizer: inv.organizer, attendees: inv.attendees, partstat,
+    });
+    if (saved) added = { id: saved.id, calendarId: saved.calendarId };
+  } catch (e) {
+    log.warn('could not add an answered invitation to the calendar', { invitation: inv.id, err: (e as Error).message });
+  }
+
   res.json({
     invitation: updated,
     ics: buildReply(inv, { email: acc.email, name: acc.name }, partstat),
     to: inv.organizer ? [inv.organizer] : [],
     subject: `${reply === 'accepted' ? 'Accepted' : reply === 'declined' ? 'Declined' : 'Tentative'}: ${inv.summary ?? 'Invitation'}`,
+    addedToCalendar: added,
   });
 });
 

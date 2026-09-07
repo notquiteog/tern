@@ -53,9 +53,30 @@
   --radius: 10px;
   --radius-sm: 7px;
   --radius-lg: 14px;
-  --sidebar-w: 256px;
+  /* ---- the fluid chrome ----
+     Every number below used to be a single value that was right at 1440px and
+     wrong at either end of the range: 28px of page padding is a quarter of a
+     small phone's width, and a 256px sidebar is a rounding error on a 5120px
+     desktop. They scale with the viewport now, with both ends pinned so the
+     scaling never becomes silly. */
+  --sidebar-w: clamp(228px, 18vw, 300px);
   --topbar-h: 56px;
   --row-h: 48px;
+  --page-pad-x: clamp(14px, 2.2vw, 40px);
+  --page-pad-y: clamp(14px, 1.5vw, 28px);
+  /* Control heights, so a button, a field and a row grow together on a large
+     display instead of one of them growing alone. */
+  --control-h: 34px;
+  --control-h-sm: 28px;
+  --control-h-lg: 40px;
+  /* ---- how wide content is allowed to get ----
+     A line of prose stops being readable somewhere around 90 characters, and
+     a settings form stops looking designed long before a 3440px monitor runs
+     out of room. Pages cap their content and centre it rather than stretching
+     to whatever the glass happens to be. */
+  --content-max: 1180px;
+  --reading-max: 940px;
+  --wide-max: 1680px;
   /* The ring itself never depends on the palette — an amber or mint accent
      would drop it under the 3:1 WCAG 2.2 asks of a focus indicator. The
      palette shows up in the halo around it instead. */
@@ -172,7 +193,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .pre { white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- buttons ---------- */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass-strong); color: var(--text); font-weight: 500; font-size: 13.5px; white-space: nowrap; user-select: none; -webkit-tap-highlight-color: transparent; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease), filter var(--dur-1) var(--ease); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: var(--control-h); padding: 0 14px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass-strong); color: var(--text); font-weight: 500; font-size: 13.5px; white-space: nowrap; user-select: none; -webkit-tap-highlight-color: transparent; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease), filter var(--dur-1) var(--ease); }
 .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .btn:active { transform: scale(.97); }
 .btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
@@ -185,11 +206,11 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
 .btn-soft { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
 .btn-soft:hover { background: var(--accent-soft); filter: brightness(.97); }
-.btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 6px; }
-.btn-lg { height: 40px; padding: 0 18px; font-size: 14px; }
-.btn-icon { width: 34px; padding: 0; border-color: transparent; background: transparent; color: var(--text-2); border-radius: 8px; }
+.btn-sm { height: var(--control-h-sm); padding: 0 10px; font-size: 12.5px; border-radius: 6px; }
+.btn-lg { height: var(--control-h-lg); padding: 0 18px; font-size: 14px; }
+.btn-icon { width: var(--control-h); padding: 0; border-color: transparent; background: transparent; color: var(--text-2); border-radius: 8px; }
 .btn-icon:hover { background: var(--bg-hover); color: var(--text); }
-.btn-icon.btn-sm { width: 28px; }
+.btn-icon.btn-sm { width: var(--control-h-sm); }
 .btn-icon.active { color: var(--accent-text); background: var(--accent-soft); }
 .btn .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -201,14 +222,14 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field > label, .label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
 .field .hint { font-size: 12px; color: var(--text-3); }
-.input, .select, .textarea { width: 100%; height: 36px; padding: 0 11px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text); transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease), background var(--dur-2) var(--ease); }
+.input, .select, .textarea { width: 100%; height: calc(var(--control-h) + 2px); padding: 0 11px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text); transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease), background var(--dur-2) var(--ease); }
 .input:hover:not(:focus), .select:hover:not(:focus), .textarea:hover:not(:focus) { border-color: var(--text-3); }
 .textarea { height: auto; min-height: 90px; padding: 9px 11px; resize: vertical; line-height: 1.5; }
 .input:focus, .select:focus, .textarea:focus { border-color: var(--accent); box-shadow: var(--focus); outline: none; }
 .input::placeholder, .textarea::placeholder { color: var(--text-3); }
 .input.invalid { border-color: var(--danger); }
 .select { appearance: none; padding-right: 30px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23676d7e' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
-.input-sm { height: 30px; font-size: 13px; }
+.input-sm { height: calc(var(--control-h-sm) + 2px); font-size: 13px; }
 .checkbox { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin: 0; }
 /* The box stays 16px because a row of them should read as a quiet column, but
    what you can hit is the whole cell around it, which clears 24px either way.
@@ -312,7 +333,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .tooltip { position: relative; }
 
 /* ---------- app shell ---------- */
-.shell { display: grid; grid-template-rows: var(--topbar-h) 1fr; grid-template-columns: var(--sidebar-w) 1fr; height: 100vh; height: 100dvh; position: relative; z-index: 1; }
+.shell { display: grid; grid-template-rows: var(--topbar-h) 1fr; grid-template-columns: var(--sidebar-w) 1fr; height: 100%; position: relative; z-index: 1; }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 12px; background: var(--glass); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); border-bottom: 1px solid var(--glass-border); }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: -.02em; width: calc(var(--sidebar-w) - 12px); text-decoration: none; color: var(--text); }
 .brand:hover { text-decoration: none; }
@@ -345,8 +366,12 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .nav-item .count.hot { background: var(--accent); color: var(--on-accent); padding: 0 6px; border-radius: 999px; height: 18px; display: inline-flex; align-items: center; }
 .nav-item .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(140%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%); border-top-left-radius: 16px; border: 1px solid var(--glass-border); border-right: 0; border-bottom: 0; overflow: hidden; box-shadow: 0 -6px 30px rgba(20, 24, 40, .06); }
-.page { flex: 1; min-height: 0; overflow: auto; padding: 24px 28px 40px; }
-.page-narrow { max-width: 860px; }
+.page { flex: 1; min-height: 0; overflow: auto; padding: var(--page-pad-y) var(--page-pad-x) calc(var(--page-pad-y) + 24px); }
+/* Children are capped and centred rather than the scrollport itself, so the
+   scrollbar stays on the edge of the pane where it belongs and every child
+   lines up on the same column. */
+.page > * { max-width: min(100%, var(--wide-max)); margin-inline: auto; }
+.page-narrow { --wide-max: var(--reading-max); }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .page-header .sub { color: var(--text-2); margin-top: 2px; }
 .account-pill { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 13px; font-weight: 500; cursor: pointer; }
@@ -492,7 +517,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 }
 
 .thread-list .date-sep { padding: 10px 14px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); background: var(--bg-elev); position: sticky; top: 0; z-index: 1; }
-.thread-pane { min-width: 0; min-height: 0; overflow-y: auto; background: transparent; position: relative; z-index: 0; isolation: isolate; }
+.thread-pane { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; background: transparent; position: relative; z-index: 0; isolation: isolate; container-type: inline-size; container-name: threadpane; }
 .thread-view { padding: 20px 24px 120px; max-width: 980px; }
 .thread-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
 .thread-head h1 { font-size: 22px; font-weight: 700; line-height: 1.25; letter-spacing: -.02em; }
@@ -526,9 +551,16 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 /* The rail is now a column of cards rather than one card, so the whole
    column sticks and the cards inside it stack. */
 .thread-side { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; }
-.thread-side .context { position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; gap: 12px; max-height: 100vh; overflow-y: auto; overscroll-behavior: contain; }
+.thread-side .context { position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; gap: 12px; max-height: calc(100dvh - var(--topbar-h) - 24px); overflow-y: auto; overscroll-behavior: contain; }
 .thread-side .context::-webkit-scrollbar { width: 6px; }
-@media (max-width: 1300px) { .thread-side { grid-template-columns: minmax(0, 1fr); } .thread-side .context { order: 1; position: static; max-height: none; overflow: visible; } }
+/* The context rail sits beside the conversation only where the conversation's
+   own pane is wide enough for both — which is a question about the pane, not
+   the window. At 1400px of viewport with the list beside it the pane is about
+   600px, and the old viewport query happily kept a 260px rail in it. */
+@container threadpane (max-width: 1040px) {
+  .thread-side { grid-template-columns: minmax(0, 1fr); }
+  .thread-side .context { order: 1; position: static; max-height: none; overflow: visible; }
+}
 
 /* Cards in the rail are quieter than a page card: they are context, not
    content, and they sit beside something you are reading. */
@@ -686,10 +718,18 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .bar-chart .bar div { background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
 .bar-chart .bar div.reply { background: var(--success); }
 .bar-chart .bar span { font-size: 10px; color: var(--text-3); text-align: center; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100vw); background: var(--glass-solid); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border-left: 1px solid var(--glass-border); box-shadow: var(--shadow-3); z-index: 75; display: flex; flex-direction: column; animation: slidein .16s ease-out; }
-@keyframes slidein { from { transform: translateX(20px); opacity: 0; } }
-.drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
-.drawer-body { flex: 1; overflow: auto; padding: 18px; }
+/* The panel and its dimmer. The dimmer is deliberately not `.modal-backdrop`:
+   that class sits at z-index 80 with a `backdrop-filter` on it, which put it
+   *above* the panel and blurred the thing you opened the panel to read. This
+   one is plain, and underneath. */
+.drawer-backdrop { position: fixed; inset: 0; background: rgba(10, 12, 20, .34); z-index: 74; animation: fade .12s ease-out; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(clamp(420px, 34vw, 640px), 100vw); background: var(--glass-solid); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border-left: 1px solid var(--glass-border); box-shadow: var(--shadow-3); z-index: 76; display: flex; flex-direction: column; animation: slidein .18s var(--ease-out); }
+.drawer-wide { width: min(clamp(560px, 46vw, 860px), 100vw); }
+@keyframes slidein { from { transform: translateX(24px); opacity: 0; } }
+.drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); flex: none; }
+.drawer-title { font-size: 15px; overflow-wrap: anywhere; }
+.drawer-acts { flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.drawer-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 18px; }
 .auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; position: relative; z-index: 1; }
 .auth-card { width: 100%; max-width: 400px; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%); border: 1px solid var(--glass-border); border-radius: 22px; padding: 32px; box-shadow: var(--shadow-3); animation: pop .3s ease-out; }
 .auth-card .brand { width: auto; margin-bottom: 20px; font-size: 20px; }
@@ -709,8 +749,11 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .sidebar-backdrop { position: fixed; inset: 0; top: var(--topbar-h); background: rgba(10,12,20,.35); z-index: 64; }
   .brand { width: auto; }
   .main { border-radius: 0; border: 0; }
-  .mail-body.split { grid-template-columns: 1fr; }
-  .mail-body.split .thread-list { display: none; }
+  /* The reading pane is decided from the mail area's own width and height in
+     pages/Mail.tsx, not from the viewport. This block used to hide the list
+     outright whenever a split was on below 960px — which is why a 768px
+     tablet, where the pane above/below arrangement fits perfectly well, got a
+     reading pane and no list at all. */
   /* Geometry comes from the container query; a phone only drops the hover
      actions, which have no pointer to appear under. */
   .thread-row .row-actions { display: none !important; }
@@ -782,8 +825,6 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .bg-preview-lattice { background: repeating-linear-gradient(60deg, color-mix(in srgb, var(--g1) 65%, transparent) 0 1px, transparent 1px 9px), repeating-linear-gradient(-60deg, color-mix(in srgb, var(--g2) 65%, transparent) 0 1px, transparent 1px 9px), repeating-linear-gradient(0deg, color-mix(in srgb, var(--g3) 55%, transparent) 0 1px, transparent 1px 9px), var(--bg-sunken); }
 .bg-preview-shatter { background: conic-gradient(from 20deg at 30% 40%, var(--g1) 0 22%, var(--g2) 22% 47%, var(--g3) 47% 71%, var(--g4) 71% 100%), conic-gradient(from 200deg at 76% 68%, var(--g3) 0 30%, var(--g4) 30% 62%, var(--g1) 62% 100%); background-blend-mode: overlay; }
 .bg-preview-none { background: var(--bg-sunken); }
-.settings-head { align-items: flex-end; }
-.settings-head h1 { font-size: 20px; }
 .swatch-group { grid-column: 1 / -1; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); margin-top: 4px; }
 .profile-avatar { position: relative; width: 96px; height: 96px; }
 .profile-avatar .avatar { width: 96px; height: 96px; font-size: 30px; }
@@ -796,8 +837,6 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid-cards { grid-template-columns: minmax(0, 1fr); }
   .list-toolbar .search { max-width: none; width: 100%; }
-  .thread-side { grid-template-columns: minmax(0, 1fr); }
-  .thread-side .context { order: 1; }
   .reply-bar { flex-wrap: wrap; }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
   .kv dt { margin-top: 6px; }
@@ -913,19 +952,16 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .toast-stack { bottom: calc(var(--bottomnav-h) + 12px); }
   .compose-win { height: calc(100dvh - var(--topbar-h)); }
   .compose-dock { z-index: 66; }
-  .thread-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .thread-toolbar::-webkit-scrollbar { display: none; }
+  /* The conversation's actions wrap onto a second line rather than scrolling
+     sideways. Scrolling put the two assistant buttons half off the right edge
+     of a 320px phone with nothing to say they were there. */
+  .thread-toolbar { flex-wrap: wrap; overflow-x: visible; row-gap: 6px; }
   .thread-toolbar > *, .thread-toolbar .btn { flex: none; }
   .thread-toolbar .ml-auto { margin-left: auto; width: auto; padding-left: 8px; }
   .server-grid { grid-template-columns: minmax(0, 1fr); }
   .kv-tight { grid-template-columns: minmax(0, 1fr); }
   .editor-layout { grid-template-columns: minmax(0, 1fr); }
   .editor-layout aside { order: 2; }
-  /* `top: 0` pins to the scrollport, which starts below the page's own 14px of
-     padding — leaving a band that content scrolled past showing above the bar.
-     The offset matches the negative margin that bleeds it to the edges. */
-  .settings-tabs { position: sticky; top: -14px; z-index: 2; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); margin: -14px -14px 14px; padding: 0 10px; }
-  .settings-tabs a { height: 42px; }
 }
 @media (max-width: 640px) {
   .toast-stack { bottom: calc(var(--bottomnav-h) + 12px); }
@@ -967,7 +1003,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .select-caret { border: 0; background: transparent; color: var(--text-3); width: 24px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; padding: 0; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .select-caret:hover { background: var(--bg-hover); color: var(--text); }
 .thread-list .date-sep { padding: 10px 14px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); position: sticky; top: 0; z-index: 1; }
-.thread-list .list-filters + div .date-sep, .thread-list .list-filters ~ div .date-sep { top: 44px; }
+
 .thread-row[draggable="true"] { cursor: pointer; }
 .thread-row.unread .t-avatar .avatar::after { content: ""; position: absolute; right: -1px; top: -1px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-elev); }
 .mail-body.split-bottom { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 42%) minmax(200px, 1fr); }
@@ -1290,7 +1326,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
    it, mapped onto the palette's existing status tokens. */
 
 /* Prose measure. Wider than this and the eye loses the line coming back. */
-.page-read { max-width: 900px; }
+/* Like `.page-narrow`, this caps the column rather than the scrollport, so the
+   scrollbar stays on the edge of the pane and the reading column sits in the
+   middle of a wide screen instead of hugging its left edge. */
+.page-read { --wide-max: 900px; }
 
 .brief { display: flex; flex-direction: column; gap: 26px; }
 .callout + .brief, .callout + .empty { margin-top: 18px; }
@@ -1436,7 +1475,7 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 /* The attestation panel: a table of what is running, with drift called out. */
 .attest-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .attest-row:last-child { border-bottom: 0; }
-.attest-name { font-weight: 500; min-width: 120px; }
+.attest-name { font-weight: 500; flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }
 .attest-digest { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attest-drifted { color: var(--warning); }
 
@@ -1590,8 +1629,13 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .btn { height: 42px; padding: 0 16px; }
   .btn-sm { height: 36px; padding: 0 13px; font-size: 13px; }
   .btn-lg { height: 48px; }
-  .btn-icon { width: 42px; height: 42px; }
-  .btn-icon.btn-sm { width: 40px; height: 40px; }
+  /* `padding: 0` has to be restated here. The `.btn` rule two lines up has the
+     same specificity and comes later in the file than the base `.btn-icon`, so
+     on every touch device an icon button was 42px wide with 16px of padding
+     either side — a 10px content box, into which a 19px icon was flex-shrunk
+     to about 8px. Every icon in the app, on every phone and tablet. */
+  .btn-icon { width: 42px; height: 42px; padding: 0; }
+  .btn-icon.btn-sm { width: 40px; height: 40px; padding: 0; }
   .btn-compose { height: 48px; }
   .nav-item { height: 44px; font-size: 14px; }
   .segmented { padding: 4px; }
@@ -1926,4 +1970,715 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .slots-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .commit-move-dates .input { flex: 1 1 100%; }
   .review-group-head { align-items: flex-start; }
+}
+
+/* ---------- The calendar (F13) ---------- */
+
+/* Utilities the calendar pages needed and nothing had defined yet. Kept with
+   the other one-liners in spirit, but here because they arrived together. */
+.gap-8 { gap: 8px; }
+.between { justify-content: space-between; }
+.end { justify-content: flex-end; }
+.row.full { width: 100%; }
+.pre-wrap { white-space: pre-wrap; }
+.setup-steps { padding-left: 18px; display: flex; flex-direction: column; gap: 5px; margin: 6px 0 12px; }
+.setup-steps a { display: inline-flex; align-items: center; gap: 3px; }
+
+.cal-page { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px 24px; min-height: 0; flex: 1 1 auto; }
+.cal-body { display: flex; gap: 16px; flex: 1 1 auto; min-height: 0; }
+.cal-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+
+.cal-sidebar { width: 190px; flex: none; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.cal-source { display: flex; flex-direction: column; gap: 3px; }
+.cal-pick { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: var(--radius-sm); font-size: 12.5px; cursor: pointer; }
+.cal-pick:hover { background: var(--bg-hover); }
+.cal-pick input { accent-color: var(--accent); flex: none; }
+/* The colour a calendar's own server gave it, so a row is recognisable at a
+   glance without reading the name. */
+.cal-swatch { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.cal-live { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--success-text); font-weight: 600; }
+
+/* ---- Month ---- */
+
+.cal-month {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(92px, 1fr);
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-elev); flex: 1 1 auto;
+}
+.cal-dow {
+  grid-row: 1; padding: 7px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-3); background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.cal-cell { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 3px 4px 5px; display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
+.cal-cell:nth-child(7n + 7) { border-right: 0; }
+.cal-cell.other-month { background: var(--bg); }
+.cal-cell.other-month .cal-daynum { color: var(--text-3); }
+.cal-cell.today { background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev)); }
+.cal-cell.today .cal-daynum { background: var(--accent); color: var(--bg-elev); border-radius: 999px; }
+.cal-cell-head { display: flex; align-items: center; justify-content: space-between; }
+.cal-daynum { font-size: 12px; font-weight: 600; min-width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; }
+.cal-add { opacity: 0; border: 0; background: transparent; color: var(--text-3); cursor: pointer; padding: 2px; border-radius: 4px; }
+.cal-cell:hover .cal-add { opacity: 1; }
+.cal-add:hover { background: var(--bg-hover); color: var(--text); }
+.cal-cell-events { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+
+/* One event, as a line rather than a block: a month cell has room for four
+   readable rows or two pretty ones. */
+.cal-chip {
+  display: flex; align-items: center; gap: 5px; width: 100%; text-align: left; border: 0; cursor: pointer;
+  padding: 2px 5px; border-radius: 5px; font-size: 11.5px; line-height: 1.35; min-width: 0;
+  background: color-mix(in srgb, var(--chip, var(--accent)) 16%, transparent); color: var(--text);
+  border-left: 2px solid var(--chip, var(--accent));
+}
+.cal-chip:hover { background: color-mix(in srgb, var(--chip, var(--accent)) 28%, transparent); }
+.cal-chip.free { background: transparent; border-left-style: dashed; }
+.cal-chip-time { font-variant-numeric: tabular-nums; color: var(--text-2); flex: none; font-size: 10.5px; }
+.cal-more { font-size: 10.5px; color: var(--text-3); padding-left: 5px; }
+
+/* ---- Week ---- */
+
+.cal-week { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-elev); flex: 1 1 auto; min-height: 0; }
+.cal-week-head, .cal-week-allday { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+.cal-week-day { padding: 7px 6px; text-align: center; font-size: 12px; font-weight: 600; color: var(--text-2); border-left: 1px solid var(--border); }
+.cal-week-day.today { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.cal-allday-cell { border-left: 1px solid var(--border); padding: 3px; display: flex; flex-direction: column; gap: 2px; min-height: 26px; }
+.cal-week-body { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); overflow-y: auto; flex: 1 1 auto; min-height: 0; position: relative; }
+.cal-gutter { border-right: 1px solid var(--border); }
+.cal-hour-label { font-size: 10.5px; color: var(--text-3); text-align: right; padding-right: 6px; transform: translateY(-6px); font-variant-numeric: tabular-nums; }
+.cal-day-col { position: relative; border-left: 1px solid var(--border); }
+.cal-day-col.today { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.cal-hour-line { border-bottom: 1px solid var(--border); }
+/* Where we are now, so a week view answers "am I late" without arithmetic. */
+.cal-now { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--danger); z-index: 3; pointer-events: none; }
+.cal-now::before { content: ''; position: absolute; left: -3px; top: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+
+.cal-event {
+  position: absolute; overflow: hidden; text-align: left; cursor: pointer; z-index: 2;
+  padding: 2px 5px; border-radius: 5px; border: 0; font-size: 11.5px; line-height: 1.3;
+  background: color-mix(in srgb, var(--chip, var(--accent)) 22%, var(--bg-elev)); color: var(--text);
+  border-left: 3px solid var(--chip, var(--accent));
+  display: flex; flex-direction: column; gap: 1px;
+}
+.cal-event:hover { background: color-mix(in srgb, var(--chip, var(--accent)) 34%, var(--bg-elev)); z-index: 4; }
+.cal-event.free { background: transparent; border-left-style: dashed; box-shadow: inset 0 0 0 1px var(--border); }
+.cal-event-time { font-size: 10.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cal-event-title { font-weight: 500; }
+
+/* ---- Agenda ---- */
+
+.cal-agenda { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+.cal-agenda-day { display: flex; flex-direction: column; gap: 2px; }
+.cal-agenda-date { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--text-2); padding: 4px 2px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.cal-agenda-date.today { color: var(--accent-text); }
+.cal-agenda-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
+  border: 0; background: transparent; padding: 7px 8px; border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+}
+.cal-agenda-row:hover { background: var(--bg-hover); }
+.cal-agenda-time { font-variant-numeric: tabular-nums; color: var(--text-2); font-size: 12px; min-width: 96px; flex: none; }
+.cal-agenda-title { font-weight: 500; flex: 1 1 auto; min-width: 0; }
+
+/* ---- Guests, and connecting ---- */
+
+.cal-guests { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.cal-guests li { display: flex; align-items: center; gap: 7px; }
+/* Whether somebody has answered, as a dot rather than a word: a guest list of
+   twelve is unreadable when each line ends in "needs-action". */
+.cal-partstat { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--border-strong); }
+.cal-partstat.accepted { background: var(--success); }
+.cal-partstat.declined { background: var(--danger); }
+.cal-partstat.tentative { background: var(--warning); }
+
+.cal-connect-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.cal-connect-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; cursor: pointer;
+  padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elev); color: var(--text);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.cal-connect-tile:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); }
+.cal-connect-tile:disabled { opacity: .55; cursor: not-allowed; }
+.cal-connect-icon { color: var(--text-2); }
+.cal-cal-table { width: 100%; border-collapse: collapse; }
+.cal-cal-table td { padding: 7px 4px; border-top: 1px solid var(--border); vertical-align: middle; }
+
+/* A month grid on a phone is twenty-eight boxes nobody can read, so the page
+   opens on Agenda there; these keep the other two usable if they switch. */
+@media (max-width: 860px) {
+  .cal-sidebar { display: none; }
+  .cal-page { padding: 12px 12px 20px; }
+}
+@media (max-width: 640px) {
+  .cal-month { grid-auto-rows: minmax(64px, 1fr); font-size: 11px; }
+  .cal-chip-time { display: none; }
+  .cal-week-head, .cal-week-allday, .cal-week-body { grid-template-columns: 40px repeat(7, minmax(0, 1fr)); }
+  .cal-agenda-time { min-width: 74px; }
+}
+
+/* ========================================================================
+   THE SIZE LADDER
+   ------------------------------------------------------------------------
+   Everything below is about one promise: this app is drawn correctly at any
+   size a screen can be, from a 320px phone to a 7680px desktop, and at every
+   awkward width in between — a half-tiled window, a tablet in portrait, a
+   1366px laptop, a 21:9 monitor with the browser on one third of it.
+
+   Three rules decide the shape of what follows.
+
+     1. Ask the box, not the window. A list beside a 280px sidebar has 280px
+        less than `innerWidth` says. Layout that can be decided from the
+        element's own width is decided from the element's own width, with a
+        container query — which is why the settings pane and the mail list
+        change shape at widths that have nothing to do with any device.
+     2. Wrap, never clip. Where a row runs out of room its contents go onto a
+        second line. Nothing is pushed off an edge, and nothing is reachable
+        only by discovering that a strip scrolls sideways.
+     3. Give the extra room to the content, not to the line length. A very
+        wide screen gets a wider layout up to a point, then stops and centres:
+        1200 characters on a line is not a feature.
+   ======================================================================== */
+
+
+/* ------------------------------------------------------------------------
+   1. Settings — yours under /settings, the install's under /admin
+   ------------------------------------------------------------------------
+   Both used to be a single strip of tabs: eleven of them for a person, ten
+   for an admin. A tab strip holds four things. Past that the rest sit off the
+   right-hand edge, and the only hint that Security and Encryption exist is
+   that the strip happens to scroll sideways — which nobody tries on a page
+   they think they have already seen all of.
+
+   So the sections are a column: grouped, titled, all of them on the screen.
+   Where the pane is too narrow to give a column its own space the same list
+   becomes a disclosure that names the section you are in and opens to the
+   full set. The switch is a container query on the pane, so a narrow browser
+   window on a desktop behaves like a phone, which is what it is.
+   ------------------------------------------------------------------------ */
+
+.settings-page { --wide-max: 1280px; }
+.settings-shell { container-type: inline-size; container-name: settings; }
+
+.settings-masthead { display: flex; align-items: flex-end; gap: 12px 20px; flex-wrap: wrap; margin-bottom: clamp(14px, 1.4vw, 22px); }
+.settings-masthead-text { flex: 1 1 240px; min-width: 0; }
+.settings-masthead h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: clamp(19px, 1.1vw + 15px, 26px); }
+.settings-masthead .sub { color: var(--text-2); font-size: 13px; margin-top: 3px; }
+.settings-masthead-action { flex: none; }
+.settings-masthead-action .btn { white-space: nowrap; }
+
+.settings-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.settings-pane { min-width: 0; }
+
+/* --- narrow: a disclosure that says where you are --- */
+.settings-nav {
+  position: sticky; top: calc(-1 * var(--page-pad-y)); z-index: 6;
+  margin-inline: calc(-1 * var(--page-pad-x)); padding: var(--page-pad-y) var(--page-pad-x) 10px;
+  /* Solid rather than the usual glass: this band is what content scrolls
+     *under*, and at 78% the top of a segmented control from the section above
+     showed through it as a smear. */
+  background: var(--glass-solid);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  border-bottom: 1px solid var(--glass-border);
+}
+.settings-nav-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px;
+  padding: 6px 12px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--glass-strong); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.settings-nav-toggle:hover { border-color: var(--border-strong); background: var(--glass-solid); }
+.settings-nav-toggle:focus-visible { outline: none; box-shadow: var(--focus); }
+.settings-nav-toggle-icon { display: inline-flex; flex: none; color: var(--accent-text); }
+.settings-nav-toggle-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.settings-nav-toggle-label { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-nav-toggle-hint { font-size: 11.5px; color: var(--text-3); }
+.settings-nav-caret { flex: none; color: var(--text-3); transition: transform var(--dur-2) var(--ease); }
+.settings-nav-caret.up { transform: rotate(180deg); }
+.settings-nav-list {
+  margin-top: 8px; padding: 6px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--glass-solid); box-shadow: var(--shadow-2); animation: pop .12s var(--ease-out);
+  /* The open list is a menu, so it is allowed to be tall — but never taller
+     than the screen, or the last group would be unreachable. */
+  max-height: min(58dvh, 460px); overflow-y: auto; overscroll-behavior: contain;
+}
+.settings-nav[data-open="no"] .settings-nav-list { display: none; }
+
+.settings-nav-group + .settings-nav-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.settings-nav-group-title { padding: 2px 10px 6px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text-3); }
+.settings-nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px;
+  color: var(--text-2); text-decoration: none;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+/* The marker is an inset shadow rather than a positioned bar: the list can
+   scroll, and anything drawn outside the item's own box gets clipped by it. */
+.settings-nav-item.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px rgba(var(--accent-rgb), .16); }
+.settings-nav-icon { display: inline-flex; flex: none; opacity: .9; }
+.settings-nav-text { display: flex; flex-direction: column; min-width: 0; }
+.settings-nav-label { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; }
+.settings-nav-hint { font-size: 11.5px; line-height: 1.35; color: var(--text-3); overflow-wrap: anywhere; }
+.settings-nav-item.active .settings-nav-hint { color: color-mix(in srgb, var(--accent-text) 60%, transparent); }
+
+/* --- wide: the column takes its own place beside the content --- */
+@container settings (min-width: 720px) {
+  .settings-layout { grid-template-columns: clamp(196px, 20cqw, 264px) minmax(0, 1fr); gap: clamp(20px, 2.6cqw, 44px); }
+  .settings-nav {
+    position: sticky; top: 0; margin: 0; padding: 0; background: none;
+    border-bottom: 0;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+    /* Eleven sections with a line of explanation each can outgrow a laptop's
+       height. The rail scrolls on its own rather than being cut off. */
+    max-height: calc(100dvh - var(--topbar-h) - var(--page-pad-y) * 2); overflow-y: auto;
+    overscroll-behavior: contain; scrollbar-width: thin;
+  }
+  .settings-nav-toggle { display: none; }
+  .settings-nav[data-open="no"] .settings-nav-list, .settings-nav-list {
+    display: block; margin: 0; padding: 0; max-height: none; overflow: visible;
+    border: 0; background: none; box-shadow: none; animation: none;
+  }
+}
+
+/* On a phone the hints earn their line; in the rail they are the difference
+   between a list of eleven nouns and a list you can read. Both keep them. */
+
+
+/* ------------------------------------------------------------------------
+   2. The reading pane, sized by the pane
+   ------------------------------------------------------------------------
+   `minmax(360px, 5fr) minmax(420px, 7fr)` needs 780px before it will fit, and
+   the split view was switched on from a viewport query at 1180px — which on a
+   1180px window leaves the mail body about 900px, fine, but said nothing
+   about a browser window narrowed to 1000px with the sidebar still open. The
+   columns are proportional with a hard cap now, and can shrink to nothing, so
+   there is no width at which the grid is wider than the box holding it.
+   ------------------------------------------------------------------------ */
+
+.mail-body.split { grid-template-columns: minmax(0, clamp(320px, 36%, 520px)) minmax(0, 1fr); }
+.mail-body.split-bottom { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, clamp(150px, 46%, 520px)) minmax(0, 1fr); }
+/* Past a point the pane is wider than anything worth reading in it, so the
+   conversation centres instead of stretching. */
+.thread-view { max-width: var(--reading-max); margin-inline: auto; padding: clamp(14px, 1.6vw, 26px) clamp(14px, 1.8vw, 30px) 120px; }
+.thread-pane > .center { padding: 24px; }
+
+
+/* ------------------------------------------------------------------------
+   3. Tables that know how wide they are
+   ------------------------------------------------------------------------ */
+.dt { min-width: 0; }
+/* The floor is the table's own declared minimum, not a device width, so a
+   table in a narrow settings pane becomes cards on a desktop too. */
+.table-wrap { overflow-x: auto; }
+
+
+/* ------------------------------------------------------------------------
+   4. Small screens
+   ------------------------------------------------------------------------ */
+
+/* Below about 400px every horizontal gap is a real fraction of the screen. */
+@media (max-width: 400px) {
+  :root { --page-pad-x: 12px; }
+  .topbar { gap: 4px; padding: 0 6px; }
+  .search { padding: 0 7px 0 10px; gap: 6px; }
+  .card { padding: 13px 12px; }
+  .modal-header { padding: 14px 14px 10px; }
+  .modal-body { padding: 4px 14px 20px; }
+  .modal-footer { padding: 12px 14px 16px; }
+  .modal-footer .btn { flex: 1 1 auto; }
+  .drawer-body { padding: 14px; }
+  .drawer-head { padding: 12px 14px; }
+  .settings-nav-toggle { padding: 6px 10px; }
+  .empty { padding: 34px 14px; }
+  .page-header h1 { font-size: 19px; }
+}
+
+/* A side panel on a phone is a sheet: a 520px drawer on a 375px screen is the
+   whole screen with a sliver of dimmed page beside it, which reads as broken
+   rather than as layered. */
+@media (max-width: 640px) {
+  .drawer {
+    top: auto; left: 0; right: 0; width: auto; max-height: 92dvh;
+    border-left: 0; border-top: 1px solid var(--glass-border);
+    border-radius: 18px 18px 0 0; animation: sheetup .2s var(--ease-out);
+  }
+  .drawer-head { padding-top: 16px; }
+  /* The grab handle says which way it closes. */
+  .drawer-head::before { content: ""; position: absolute; top: 7px; left: 50%; transform: translateX(-50%); width: 36px; height: 4px; border-radius: 4px; background: var(--border-strong); }
+  .drawer { position: fixed; }
+  .drawer-head { position: relative; }
+}
+@keyframes sheetup { from { transform: translateY(28px); opacity: 0; } }
+
+
+/* ------------------------------------------------------------------------
+   5. Large screens
+   ------------------------------------------------------------------------
+   A 4K or 5K desktop is not a big phone: it is the same layout with more
+   room, and the room goes to breathing space and to a second column, never to
+   longer lines. Controls and type step up once the viewport is large enough
+   that 14px stops being comfortable at arm's length.
+   ------------------------------------------------------------------------ */
+
+@media (min-width: 1500px) {
+  :root { --row-h: 50px; }
+  .page-header { margin-bottom: 24px; }
+}
+
+@media (min-width: 2000px) {
+  :root {
+    --control-h: 38px; --control-h-sm: 32px; --control-h-lg: 44px;
+    --row-h: 54px; --topbar-h: 62px; --radius: 12px; --radius-lg: 16px;
+    --content-max: 1320px; --reading-max: 1040px; --wide-max: 1840px;
+    /* The rail and the search grow with the frame. Left at their small-screen
+       caps they read as a UI built for a laptop and stretched. */
+    --sidebar-w: clamp(268px, 15vw, 344px);
+  }
+  .search { max-width: 900px; }
+  body { font-size: 15px; }
+  .btn { font-size: 14.5px; }
+  .nav-item { font-size: 14.5px; height: 38px; }
+  .table { font-size: 14.5px; }
+  .input, .select, .textarea { font-size: 15px; }
+  .small { font-size: 13px; } .tiny { font-size: 12px; }
+  .card-title h2 { font-size: 16.5px; }
+  .thread-row { font-size: 14.5px; }
+  .thread-row .t-subject { font-size: 14.5px; }
+  .thread-row .t-snippet { font-size: 13.5px; }
+  .thread-row .t-meta { font-size: 13px; }
+  .msg-text, .editor { font-size: 15px; }
+  .settings-page { --wide-max: 1440px; }
+  .brand { font-size: 17px; }
+  .search { height: 44px; }
+  .search input { font-size: 15px; }
+}
+
+@media (min-width: 3000px) {
+  :root {
+    --control-h: 44px; --control-h-sm: 36px; --control-h-lg: 50px;
+    --row-h: 62px; --topbar-h: 70px; --radius: 14px; --radius-lg: 18px;
+    --content-max: 1480px; --reading-max: 1160px; --wide-max: 2200px;
+    --sidebar-w: clamp(320px, 12vw, 420px);
+  }
+  .search { max-width: 1100px; }
+  body { font-size: 17px; }
+  .btn { font-size: 16px; }
+  .nav-item { font-size: 16px; height: 44px; }
+  .table { font-size: 16px; }
+  .input, .select, .textarea { font-size: 17px; }
+  .small { font-size: 14.5px; } .tiny { font-size: 13px; }
+  .card { padding: 24px 26px; }
+  .card-title h2 { font-size: 19px; }
+  .thread-row { font-size: 16px; }
+  .thread-row .t-subject { font-size: 16px; }
+  .thread-row .t-snippet { font-size: 15px; }
+  .msg-text, .editor { font-size: 17px; }
+  .settings-page { --wide-max: 1680px; }
+  .avatar { width: 38px; height: 38px; font-size: 14px; }
+  .brand-logo { width: 34px; height: 34px; }
+  .brand { font-size: 19px; }
+  .search { height: 52px; }
+  .search input { font-size: 17px; }
+}
+
+/* Past this the screen is a wall — an 8K panel, or two of them. The layout
+   stops growing and the empty space either side becomes deliberate margin. */
+@media (min-width: 4600px) {
+  :root {
+    --control-h: 54px; --control-h-sm: 44px; --control-h-lg: 62px;
+    --row-h: 76px; --topbar-h: 86px;
+    --content-max: 1700px; --reading-max: 1340px; --wide-max: 2600px;
+    --sidebar-w: clamp(380px, 10vw, 520px);
+  }
+  .search { max-width: 1400px; }
+  body { font-size: 21px; }
+  .btn { font-size: 19px; }
+  .nav-item { font-size: 19px; height: 52px; }
+  .table, .input, .select, .textarea { font-size: 20px; }
+  .small { font-size: 17px; } .tiny { font-size: 15px; }
+  .card { padding: 30px 34px; }
+  .thread-row, .thread-row .t-subject { font-size: 19px; }
+  .thread-row .t-snippet { font-size: 18px; }
+  .msg-text, .editor { font-size: 20px; }
+  .settings-page { --wide-max: 2000px; }
+  .avatar { width: 46px; height: 46px; font-size: 17px; }
+  .search { height: 62px; }
+  .search input { font-size: 20px; }
+  .brand-logo { width: 42px; height: 42px; }
+  .brand { font-size: 23px; }
+}
+
+
+/* ------------------------------------------------------------------------
+   6. Last line of defence
+   ------------------------------------------------------------------------
+   Rules that hold whatever else is going on. If something below ever has an
+   effect, a layout above it is wrong — but a page that is slightly cramped is
+   still usable, and a page with a row hanging off the side of it is not.
+   ------------------------------------------------------------------------ */
+.card, .callout, .modal, .drawer, .dt-card, .aside-card, .step-card { min-width: 0; }
+.card > *, .callout > *, .settings-pane > * { min-width: 0; }
+/* Anything that can hold a URL, an address, a key or an id. */
+.kv dd, .kv-tight dd, .dt-kv dd, .mono, .pre, .copy-text, .badge, .tag { overflow-wrap: anywhere; }
+/* Grids that name a fixed first column: below the width where that column
+   plus a readable value fits, the pair stacks. */
+@media (max-width: 560px) {
+  .kv, .kv-tight, .srv-fields { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .kv dt, .kv-tight dt, .srv-fields dt { margin-top: 8px; }
+  .srv-fields dt:first-child, .kv dt:first-child { margin-top: 0; }
+}
+/* A row of buttons in a page header wraps rather than squeezing the title. */
+.page-header .row { flex-wrap: wrap; }
+
+/* A line of explanation inside a menu, for the case where a setting is offered
+   but the screen cannot currently honour it. Quieter than an item, and not
+   clickable. */
+.menu-note { padding: 2px 10px 8px; font-size: 11.5px; line-height: 1.4; color: var(--text-3); max-width: 260px; }
+
+/* ------------------------------------------------------------------------
+   The conversation list's header
+   ------------------------------------------------------------------------
+   The category tabs and the filter row. Both used to pin themselves to
+   `top: 0` independently, so scrolling the list stacked one on top of the
+   other; and the filter row — two segmented controls and a count, about
+   560px of content — had no way to wrap, so in a 310px reading-pane list it
+   simply ran off the side and took the whole list scrolling sideways with it.
+   That is what an inbox "looking wrong at some resolutions" was.
+
+   One sticky block, wrapping contents, and a list that is not allowed to
+   scroll sideways under any circumstances.
+   ------------------------------------------------------------------------ */
+.list-head {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  border-bottom: 1px solid var(--glass-border);
+}
+.list-head:empty { display: none; }
+.cat-tabs, .list-filters {
+  position: static; background: none; border-bottom: 0;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  flex-wrap: wrap; overflow: visible;
+}
+.cat-tabs { row-gap: 0; padding: 6px 10px 0; }
+.list-filters { row-gap: 6px; padding: 8px 10px; }
+.list-filters .segmented { min-width: 0; max-width: 100%; }
+/* The count and the view switch keep to the end of whichever line they land
+   on, and drop to a line of their own rather than squeezing the filters. */
+.list-filters .ml-auto { margin-left: auto; }
+/* Date separators pin below the header, whatever height it has ended up. */
+.thread-list .date-sep { top: var(--list-head-h, 0px); }
+/* Belt and braces: a list of conversations never scrolls sideways. If
+   something inside it is too wide, that is for the row to wrap, not for the
+   column to slide. */
+.thread-list { overflow-x: hidden; }
+
+/* ------------------------------------------------------------------------
+   A conversation on a narrow screen
+   ------------------------------------------------------------------------ */
+
+/* The message header is an avatar, a name, a date and three buttons. Below
+   about 560px those five things on one line leave the name four characters
+   and the preview none, so the date and the buttons take a line of their own,
+   indented to sit under the name they belong to. */
+@media (max-width: 560px) {
+  .msg-head { flex-wrap: wrap; row-gap: 2px; column-gap: 8px; }
+  .msg-head .avatar { align-self: flex-start; }
+  .msg-head .who { flex: 1 1 calc(100% - 52px); }
+  .msg-head .when { order: 3; margin-left: 48px; }
+  .msg-head .msg-actions { order: 4; margin-left: auto; }
+}
+
+/* Category tabs in a narrow list become pills. Underlined tabs are a shape
+   that only works on one line; the moment they wrap, half the underlines sit
+   in the middle of the block and the row stops reading as a set of tabs.
+   Pills wrap without any of that. */
+@container threadlist (max-width: 440px) {
+  .cat-tabs { padding: 8px 10px 2px; gap: 5px; row-gap: 5px; }
+  .cat-tab { padding: 6px 11px; border-radius: 999px; border-bottom-color: transparent; }
+  .cat-tab.on { border-bottom-color: transparent; background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .28); }
+}
+
+/* ------------------------------------------------------------------------
+   Icons in the chrome
+   ------------------------------------------------------------------------
+   The sidebar, the top bar, the bottom bar and the settings rail carried
+   17px icons next to 13.5px labels — small enough that the icon read as a
+   footnote to the word rather than as its equal, which is the wrong way round
+   for a rail people navigate by shape. Worse, the sizes were baked into the
+   markup as `size={17}`, so on a display where the text stepped up to 17px
+   and the rows to 62px the icons stayed exactly 17px.
+
+   One token, set here and stepped at the large breakpoints, overriding the
+   width/height attributes the icon component writes. Nothing in the markup
+   has to know.
+   ------------------------------------------------------------------------ */
+:root { --icon: 19px; --icon-lg: 23px; }
+/* The top bar sets its own sizes further down — it sits next to a search
+   field and an avatar and wants a slightly bigger step than a list row. */
+.nav-item > svg,
+.settings-nav-icon > svg,
+.settings-nav-toggle-icon > svg,
+.topbar .account-pill > svg { width: var(--icon); height: var(--icon); }
+.mobile-nav a > svg { width: var(--icon-lg); height: var(--icon-lg); }
+.mobile-nav .mn-compose .pill > svg { width: calc(var(--icon-lg) - 2px); height: calc(var(--icon-lg) - 2px); }
+/* The sidebar's rows grow a little to keep the same air around a larger
+   glyph; without this the icon fills the row and the list feels crowded. */
+.nav-item { height: 36px; }
+.nav-section-title { padding-top: 8px; }
+
+@media (min-width: 2000px) {
+  :root { --icon: 20px; --icon-lg: 25px; }
+  /* Icons inside buttons and menus are set in the markup at 14–16px, which is
+     right at 14px of text and lost at 17px. */
+  .btn > svg, .menu-item > svg, .cat-tab-icon > svg, .aside-head > svg { width: 18px; height: 18px; }
+}
+@media (min-width: 3000px) {
+  :root { --icon: 24px; --icon-lg: 30px; }
+  .btn > svg, .menu-item > svg, .cat-tab-icon > svg, .aside-head > svg { width: 21px; height: 21px; }
+}
+@media (min-width: 4600px) {
+  :root { --icon: 29px; --icon-lg: 36px; }
+  .btn > svg, .menu-item > svg, .cat-tab-icon > svg, .aside-head > svg { width: 26px; height: 26px; }
+}
+
+/* ------------------------------------------------------------------------
+   The compose window's send row on a narrow screen
+   ------------------------------------------------------------------------
+   Send, attach, templates, schedule, the assistant and discard are about
+   450px of controls in 350px of window, so they wrap. Left to itself the wrap
+   put Send and the attachment buttons on the first line and stranded the
+   assistant and the discard button together on the second — the two least
+   alike things in the row. Ordered, the first line is what you came to the
+   foot to do and the second is everything else.
+   ------------------------------------------------------------------------ */
+@media (max-width: 560px) {
+  .compose-foot { flex-wrap: wrap; row-gap: 8px; column-gap: 6px; padding: 10px; }
+  .compose-foot .send-group { order: 1; }
+  .compose-foot .ai-btn { order: 2; }
+  .compose-foot > * { order: 3; }
+  .compose-foot > :last-child { order: 4; margin-left: auto; }
+}
+
+/* ------------------------------------------------------------------------
+   Full-screen sheets
+   ------------------------------------------------------------------------
+   A dialog that covers the whole screen is not a pane floating above the page
+   any more — it *is* the page — so the glass comes off. At 93% opacity over a
+   blurred inbox, a phone-sized form had the ghost of a conversation list
+   showing through every field, and the footer floated in the middle of the
+   screen with the dimmed page below it.
+   ------------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  .modal {
+    background: var(--bg-elev);
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  /* The body takes the slack, so the buttons sit on the bottom edge where a
+     thumb expects them rather than under the last field. */
+  .modal-body { flex: 1 1 auto; }
+  .modal-footer { background: var(--bg-elev); }
+  .drawer { background: var(--bg-elev); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* Sign-in on a small phone. 24px of page padding plus 32px of card padding
+   left a 320px screen with 248px to put a password field in. */
+@media (max-width: 420px) {
+  .auth-page { padding: 14px; }
+  .auth-card { padding: 22px 18px; border-radius: 18px; }
+}
+
+/* ------------------------------------------------------------------------
+   Tabs
+   ------------------------------------------------------------------------
+   Underlined tabs on one scrolling line, again. "Sending policy · Identity &
+   signature · Auto-reply · Storage & drafts · Connection" is 560px of labels
+   and it lived inside a dialog, so on anything narrower than a laptop the last
+   two were off the edge of a strip nobody thinks to scroll.
+
+   They wrap now, which means they cannot be underlined — half the underlines
+   would sit in the middle of the block — so the row that is on carries a fill
+   instead. That is the same shape `.client-tabs` already used a few pages
+   over, so the app gained consistency rather than a second idea.
+   ------------------------------------------------------------------------ */
+.tabs {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 8px; margin-bottom: 18px;
+  overflow: visible;
+}
+.tabs button, .tabs a {
+  height: 32px; max-width: 100%; padding: 0 12px;
+  border: 0; border-bottom: 0; border-radius: 8px; margin-bottom: 0;
+  background: transparent; color: var(--text-2); font-weight: 500; font-size: 13.5px;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.tabs button:hover, .tabs a:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+.tabs button.active, .tabs a.active {
+  background: var(--accent-soft); color: var(--accent-text);
+  border-bottom-color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .18);
+}
+@media (pointer: coarse) { .tabs button, .tabs a { height: 40px; padding: 0 14px; } }
+
+/* A row of controls inside a form, a card or a dialog wraps. `.row` is the
+   app's generic flex line and it does not wrap, which is right in a toolbar
+   where the row is the width of the screen and wrong everywhere the row is
+   the width of whatever is holding it — a field with seven day-of-week
+   buttons in a 322px dialog is 359px of buttons, and without this the last
+   one is simply outside the dialog. Wrapping costs nothing when the contents
+   already fit. */
+.card .row, .field .row, .modal-body .row, .dt-card .row, .callout .row, .drawer-body .row, .settings-pane .row {
+  flex-wrap: wrap;
+}
+/* Toolbars and rows that scroll on purpose keep their single line. */
+.mail-toolbar, .thread-actions, .compose-head, .drawer-head, .segmented, .send-group {
+  flex-wrap: nowrap;
+}
+
+/* A truncating span must never be wider than the thing holding it. Without a
+   cap it ellipsises at its own content width — which is a different number —
+   and its box still sticks out of the card it is in, so a line of JSON in the
+   audit log ran 20px past the card's right edge. The cap does most of the
+   work; the blocks that hold one clip what is left, because a percentage
+   max-width on an inline-block resolves against a containing block that is
+   not always the box you can see. */
+.truncate { max-width: 100%; min-width: 0; }
+.dt-card-title, .dt-card-sub, .dt-kv dd { overflow: hidden; }
+
+/* An icon is never the thing that gives way. Flex items shrink by default, so
+   any button whose content box is momentarily narrower than its icon silently
+   squashed the icon rather than overflowing — which is a failure you cannot
+   see the cause of, only the result. The sidebar already had this rule; every
+   button gets it now. */
+.btn > svg, .btn-icon > svg, .menu-item > svg, .mobile-nav svg { flex: none; }
+
+/* ------------------------------------------------------------------------
+   The top bar
+   ------------------------------------------------------------------------
+   It sits next to a 40px search field and a 32px avatar, so 34px buttons
+   holding 17px icons read as a row of afterthoughts. The bar gets its own
+   step up, and the two actions living inside the search field get one that
+   keeps them subordinate to it without making them tiny.
+   ------------------------------------------------------------------------ */
+.topbar .btn-icon { width: 36px; height: 36px; }
+.topbar .btn-icon > svg { width: 20px; height: 20px; }
+.search > svg { width: 19px; height: 19px; }
+.search .btn-icon.btn-sm { width: 30px; height: 30px; }
+.search .btn-icon.btn-sm > svg { width: 18px; height: 18px; }
+.topbar .avatar { width: 34px; height: 34px; }
+@media (pointer: coarse) {
+  .topbar .btn-icon { width: 42px; height: 42px; }
+  .search .btn-icon.btn-sm { width: 36px; height: 36px; }
+}
+@media (min-width: 2000px) {
+  .topbar .btn-icon { width: 42px; height: 42px; }
+  .topbar .btn-icon > svg { width: 22px; height: 22px; }
+  .search > svg, .search .btn-icon.btn-sm > svg { width: 20px; height: 20px; }
+  .topbar .avatar { width: 38px; height: 38px; }
+}
+@media (min-width: 3000px) {
+  .topbar .btn-icon { width: 50px; height: 50px; }
+  .topbar .btn-icon > svg { width: 26px; height: 26px; }
+  .search > svg, .search .btn-icon.btn-sm > svg { width: 24px; height: 24px; }
+  .search .btn-icon.btn-sm { width: 40px; height: 40px; }
+  .topbar .avatar { width: 46px; height: 46px; }
 }

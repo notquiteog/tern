@@ -53,8 +53,8 @@ export default function HomePage() {
           <div className="card-title"><h2>Recent sends</h2><Button size="sm" variant="ghost" onClick={() => nav('/mail/sent')}>Sent folder</Button></div>
           {!data.recent.length ? <div className="muted small">Nothing sent yet. Compose a message or activate a sequence.</div> : (
             <DataTable rows={data.recent} rowKey={(r: any) => r.id} cardSize="sm" columns={[
-              { key: 'to', header: 'To', primary: true, cell: (r: any) => <span className="row gap-4"><span className="swatch" style={{ width: 10, height: 10, borderRadius: 3, background: r.color, display: 'inline-block', flex: 'none' }} /><span className="truncate" style={{ maxWidth: 260 }}>{r.to_email}</span></span> },
-              { key: 'subject', header: 'Subject', secondary: true, cell: (r: any) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 360, verticalAlign: 'bottom' }}>{r.subject || '(no subject)'}</span> },
+              { key: 'to', header: 'To', primary: true, cell: (r: any) => <span className="row gap-4"><span className="swatch" style={{ width: 10, height: 10, borderRadius: 3, background: r.color, display: 'inline-block', flex: 'none' }} /><span className="truncate" style={{ maxWidth: 'min(100%, 260px)' }}>{r.to_email}</span></span> },
+              { key: 'subject', header: 'Subject', secondary: true, cell: (r: any) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 'min(100%, 360px)', verticalAlign: 'bottom' }}>{r.subject || '(no subject)'}</span> },
               { key: 'kind', header: 'Kind', cell: (r: any) => <Badge>{r.kind}</Badge> },
               { key: 'status', header: 'Status', cell: (r: any) => r.status === 'failed' ? <Badge kind="danger">failed</Badge> : r.bounced_at ? <Badge kind="danger">bounced</Badge> : r.replied_at ? <Badge kind="success">replied</Badge> : <Badge kind="accent">sent</Badge> },
               { key: 'when', header: 'When', className: 'small muted', nowrap: true, cell: (r: any) => fmtDateTime(r.sent_at) },

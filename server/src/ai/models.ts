@@ -4,12 +4,21 @@
 // the KV cache and everything else on the box.
 export interface ModelTier { minGiB: number; model: string; label: string; note: string }
 
+// Moved off qwen2.5 to the current generation. The sizes below are the real
+// downloads, checked against registry.ollama.ai rather than remembered — the
+// previous list had been overtaken twice, and CURATED_MODELS already recorded
+// that qwen3.5:9b is the strongest thing measured on this suite while the
+// tiers still handed out qwen2.5.
+//
+// These are RAM tiers, not VRAM: the model shares the box with Postgres, the
+// app and possibly Stalwart, so a tier leaves room for all of that. On a
+// CPU-only VPS a smaller model is also a much faster one.
 export const MODEL_TIERS: ModelTier[] = [
-  { minGiB: 0, model: 'qwen2.5:0.5b', label: 'Tiny (under 3.5 GB RAM)', note: 'Fast and small. Fine for subject lines and short rewrites; expect simple drafts.' },
-  { minGiB: 3.5, model: 'qwen2.5:1.5b', label: 'Small (3.5 to 6 GB RAM)', note: 'The right pick for a 4.5 GB VPS. Good short outreach drafts, decent replies.' },
-  { minGiB: 6, model: 'qwen2.5:3b', label: 'Medium (6 to 10 GB RAM)', note: 'Noticeably better tone and structure.' },
-  { minGiB: 10, model: 'qwen2.5:7b', label: 'Large (10 to 20 GB RAM)', note: 'Strong general writing. Slow on CPU-only boxes, fast with a GPU.' },
-  { minGiB: 20, model: 'qwen2.5:14b', label: 'Extra large (20+ GB RAM)', note: 'Best quality; needs a GPU or patience.' },
+  { minGiB: 0, model: 'qwen3.5:0.8b', label: 'Tiny (under 6 GB RAM)', note: 'One gigabyte, and shipped at Q8 so it is less lossy than its size suggests. The right pick for a 4.5 GB VPS: good subject lines and short rewrites, simple drafts.' },
+  { minGiB: 6, model: 'qwen3.5:2b', label: 'Small (6 to 10 GB RAM)', note: 'Also Q8. Noticeably steadier tone and structure than the 0.8b.' },
+  { minGiB: 10, model: 'qwen3.5:4b', label: 'Medium (10 to 16 GB RAM)', note: 'The best value measured on this suite: 36 of 42 cases for 3.4 GB.' },
+  { minGiB: 16, model: 'qwen3.5:9b', label: 'Large (16 to 24 GB RAM)', note: 'The strongest measured here — 39 of 42 — for 2.4 GB more than the 4b and about half the speed. Wants a GPU on anything but a big box.' },
+  { minGiB: 24, model: 'gemma4:12b', label: 'Extra large (24+ GB RAM)', note: 'A true 12B in 7.6 GB, newest Gemma generation. Needs a GPU or patience.' },
 ];
 
 export function recommendModel(totalBytes: number): ModelTier {
@@ -25,15 +34,55 @@ export const CURATED_MODELS = [
   { name: 'qwen2.5:3b', sizeGB: 1.9, note: 'medium' },
   { name: 'qwen2.5:7b', sizeGB: 4.7, note: 'large' },
   { name: 'qwen2.5:14b', sizeGB: 9.0, note: 'extra large' },
-  // Reasoning-capable. Good at holding a long thread; leave thinking off
-  // unless there is a GPU, and give it the thinking budget if you turn it on.
-  { name: 'qwen3.5:4b', sizeGB: 3.4, note: 'medium, best long-thread recall; can think' },
-  { name: 'qwen3.5:8b', sizeGB: 6.6, note: 'large, can think' },
+  // Reasoning-capable. Leave thinking off: measured at 11x to 50x the latency
+  // for a difference inside the noise on every recall case tested.
+  { name: 'qwen3.5:4b', sizeGB: 3.4, note: 'medium, the best value measured; can think' },
+  // Was listed here as "qwen3.5:8b", which is not a tag that exists — anybody
+  // who picked it got a pull failure. The 9b is the real one, and it is the
+  // strongest model measured on this suite: 39 of 42 cases against the 4b's
+  // 36, for 2.4 GB more and about half the speed.
+  { name: 'qwen3.5:9b', sizeGB: 6.6, note: 'large, best measured quality; can think' },
   { name: 'llama3.2:1b', sizeGB: 1.3, note: 'small alternative' },
   { name: 'llama3.2:3b', sizeGB: 2.0, note: 'medium alternative' },
   { name: 'gemma3:1b', sizeGB: 0.8, note: 'small alternative' },
   { name: 'gemma3:4b', sizeGB: 3.3, note: 'medium alternative, good writer' },
   { name: 'phi4-mini', sizeGB: 2.5, note: 'medium alternative' },
+  // Measured alongside the others: level with qwen3.5:4b on quality and
+  // roughly three times the memory, so it is an alternative rather than an
+  // upgrade.
+  { name: 'phi4:14b', sizeGB: 9.1, note: 'large alternative' },
+  // Current generation, added after checking every tag resolves. qwen3.8 and
+  // qwen3.6 ship only at 27b, so there is no small build of those to offer.
+  { name: 'qwen3.5:0.8b', sizeGB: 1.0, note: 'tiny, current generation, Q8' },
+  { name: 'qwen3.5:2b', sizeGB: 2.7, note: 'small, current generation, Q8' },
+  // A true 12B in a smaller file than gemma4:e4b, which is a nested build
+  // with only about 4B parameters active. Size is not capability here.
+  { name: 'gemma4:12b', sizeGB: 7.6, note: 'large, newest Gemma, true 12B' },
+  { name: 'gemma4:e4b', sizeGB: 9.6, note: 'large alternative, nested: ~4B active, fast but weaker than gemma4:12b' },
+  { name: 'qwen3.8:27b', sizeGB: 17.7, note: 'extra large, newest Qwen; 27b is the only size it ships' },
+];
+
+// Uncensored ("abliterated") builds, where the refusal direction is ablated
+// out of the weights. Worth having for drafting: a stock model declining to
+// help with a firm complaint, a debt letter or a frank performance review is a
+// common and irritating failure, and the refusal protects nobody when the mail
+// and the machine are yours.
+//
+// Two caveats that matter more in Tern than they would elsewhere. Ablation can
+// soften instruction-following, which is the thing the send-side filter in
+// llm.ts depends on. And an AI responder set to send without a human in the
+// loop has, until now, had the model's own refusals as a last check before an
+// odd prompt became an odd sent email — that check is gone with these, so keep
+// responders on the review queue while judging one.
+//
+// Sizes verified against registry.ollama.ai; every tag here resolves.
+export const UNCENSORED_MODELS = [
+  { name: 'huihui_ai/qwen3.5-abliterated:4b', sizeGB: 3.3, note: 'medium, uncensored qwen3.5:4b' },
+  { name: 'huihui_ai/qwen3.5-abliterated:9b', sizeGB: 6.6, note: 'large, uncensored qwen3.5:9b, identical size and quantisation to stock' },
+  { name: 'huihui_ai/gemma-4-abliterated:12b', sizeGB: 7.6, note: 'large, uncensored gemma4:12b, best quality per gigabyte on a 16 GB card' },
+  { name: 'huihui_ai/qwen3-abliterated:14b', sizeGB: 9.0, note: 'large, the biggest true parameter count that fits 16 GB with context headroom' },
+  { name: 'huihui_ai/gemma-4-abliterated:e4b', sizeGB: 9.6, note: 'large alternative, nested: ~4B active, fast' },
+  { name: 'huihui_ai/mistral-small-abliterated:24b', sizeGB: 14.3, note: 'extra large, wants 24 GB — too tight on 16 GB to leave room for context' },
 ];
 
 // ---------- How much conversation the model is given ----------

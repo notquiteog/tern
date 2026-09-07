@@ -55,6 +55,8 @@ export interface ComposeInput {
   // the closed set of facts it was written from. Supplied by the scheduler
   // for campaign and responder mail; absent for everything else.
   guard?: Pick<GuardInput, 'greeting' | 'specifics'>;
+  // An invitation, reply or cancellation to carry alongside the body (F13).
+  calendar?: { method: string; ical: string } | null;
 }
 
 const AUTOMATED_KINDS = new Set(['sequence', 'auto_reply']);
@@ -259,6 +261,7 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
       references,
       headers,
       attachments: outgoingAttachments,
+      calendar: input.calendar ?? null,
       pgp,
     });
   } catch (e) {

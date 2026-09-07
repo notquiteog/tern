@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { logger } from './log.js';
 import { HttpError } from './errors.js';
 import { attachUser, csrfGuard } from './auth.js';
+import { calendarAdminRouter, calendarRouter, calendarWebhookRouter } from './routes/calendar.js';
 import { setupRouter } from './routes/setup.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
@@ -67,6 +68,10 @@ export function createApp(): express.Express {
   app.use('/manifest.webmanifest', manifestRouter);
   app.use('/icons', iconsRouter);
   app.get('/healthz', (_req, res) => { res.json({ ok: true, version: config.version }); });
+  // Before the session and the CSRF header on purpose: a change
+  // notification comes from Google or Microsoft rather than from a browser,
+  // and is authenticated by the secret its channel was created with.
+  app.use('/api/calendar/webhook', calendarWebhookRouter);
   app.use('/api', express.json({ limit: '40mb' }), attachUser, csrfGuard);
   app.use('/api/setup', setupRouter);
   app.use('/api/auth', authRouter);
@@ -94,6 +99,8 @@ export function createApp(): express.Express {
   app.use('/api/push', pushRouter);
   app.use('/api/burner', burnerRouter);
   app.use('/api/events', eventsRouter);
+  app.use('/api/calendar', calendarRouter);
+  app.use('/api/admin/calendar', calendarAdminRouter);
   app.all('/api/{*rest}', (_req, res) => { res.status(404).json({ error: 'Not found' }); });
 
   // Static client with SPA fallback. In the container the bundle lives next

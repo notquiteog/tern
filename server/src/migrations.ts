@@ -1100,4 +1100,167 @@ ALTER TABLE send_log ADD COLUMN IF NOT EXISTS reply_intent TEXT;
 CREATE INDEX IF NOT EXISTS send_log_reply_intent_idx ON send_log(sequence_id, reply_intent) WHERE reply_intent IS NOT NULL;
 `,
   },
+  {
+    // F13, an actual calendar.
+    //
+    // `calendar_events` (F10) stays exactly what it was: invitations found in
+    // mail, keyed to the message they arrived in. It is not touched here and
+    // is not the same thing — an invitation is a copy of somebody else's
+    // event that happened to be posted to you, and a calendar is a set of
+    // collections you sync. The two meet in `services/calendar/index.ts`,
+    // where a free/busy question consults both.
+    //
+    // Four tables:
+    //   sources    one connected account (a CalDAV server, Google, Microsoft,
+    //              or a subscribed ICS URL) with its credentials
+    //   calendars  one collection inside a source
+    //   objects    one VEVENT series, with the raw iCalendar kept as the
+    //              truth so that a round trip through Tern never silently
+    //              drops a property the parser does not model
+    //   instances  the expanded occurrences over a rolling window, which is
+    //              what makes "who is free on Thursday" one indexed query
+    //              rather than a recurrence expansion per row
+    //
+    // Everything a person would read is sealed with their own key, as
+    // everywhere else. Times are plain: the grid is ordered by them, free/busy
+    // is computed from them, and an encrypted timestamp could do neither.
+    id: '20260907_1200_calendar',
+    up: `
+CREATE TABLE IF NOT EXISTS calendar_sources (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('caldav','google','microsoft','ics')),
+  label TEXT,
+  base_url TEXT,
+  username TEXT,
+  -- Passwords, app passwords and OAuth refresh tokens, under the server key
+  -- (accounts.auth_secret_enc uses the same one): the sync worker has to
+  -- reach these with nobody signed in.
+  secret_enc TEXT,
+  token_enc TEXT,
+  status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','syncing','auth_error','error')),
+  error TEXT,
+  sync_token TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  poll_seconds INT NOT NULL DEFAULT 300,
+  last_sync_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS calendar_sources_user_idx ON calendar_sources(user_id);
+
+CREATE TABLE IF NOT EXISTS calendars (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source_id BIGINT NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
+  remote_id TEXT,
+  remote_blind BYTEA NOT NULL,
+  name TEXT,
+  color TEXT,
+  timezone TEXT,
+  read_only BOOLEAN NOT NULL DEFAULT false,
+  -- Off means it is connected but neither drawn nor counted as busy, which
+  -- is what somebody wants for a colleague's calendar they can see.
+  selected BOOLEAN NOT NULL DEFAULT true,
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  sync_token TEXT,
+  ctag TEXT,
+  -- A push channel, where the provider offers one.
+  channel_id TEXT,
+  channel_secret TEXT,
+  channel_resource TEXT,
+  channel_expires_at TIMESTAMPTZ,
+  last_sync_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS calendars_source_remote_idx ON calendars(source_id, remote_blind);
+CREATE INDEX IF NOT EXISTS calendars_user_idx ON calendars(user_id);
+CREATE INDEX IF NOT EXISTS calendars_channel_idx ON calendars(channel_id) WHERE channel_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS calendar_objects (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  calendar_id BIGINT NOT NULL REFERENCES calendars(id) ON DELETE CASCADE,
+  uid TEXT,
+  uid_blind BYTEA NOT NULL,
+  remote_id TEXT,
+  etag TEXT,
+  -- The file as the server holds it. Everything below is derived from this,
+  -- so a property Tern does not understand still survives a round trip.
+  ical TEXT,
+  summary TEXT,
+  location TEXT,
+  description TEXT,
+  organizer TEXT,
+  attendees TEXT,
+  starts_at TIMESTAMPTZ,
+  ends_at TIMESTAMPTZ,
+  -- When the series ends, or NULL for one that never does. Lets a sweep find
+  -- the events whose expansion needs extending without opening every row.
+  range_end TIMESTAMPTZ,
+  all_day BOOLEAN NOT NULL DEFAULT false,
+  recurring BOOLEAN NOT NULL DEFAULT false,
+  transparent BOOLEAN NOT NULL DEFAULT false,
+  status TEXT,
+  sequence INT NOT NULL DEFAULT 0,
+  my_partstat TEXT,
+  -- A local edit that has not reached the server yet, and a local delete
+  -- that has not either. Both are pushed on the next sync and cleared there,
+  -- so an edit made while the network was down is not lost.
+  dirty BOOLEAN NOT NULL DEFAULT false,
+  deleted BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS calendar_objects_uid_idx ON calendar_objects(calendar_id, uid_blind);
+CREATE INDEX IF NOT EXISTS calendar_objects_when_idx ON calendar_objects(user_id, starts_at);
+CREATE INDEX IF NOT EXISTS calendar_objects_dirty_idx ON calendar_objects(calendar_id) WHERE dirty OR deleted;
+CREATE INDEX IF NOT EXISTS calendar_objects_extend_idx ON calendar_objects(user_id, range_end) WHERE recurring;
+
+CREATE TABLE IF NOT EXISTS calendar_instances (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  calendar_id BIGINT NOT NULL REFERENCES calendars(id) ON DELETE CASCADE,
+  object_id BIGINT NOT NULL REFERENCES calendar_objects(id) ON DELETE CASCADE,
+  starts_at TIMESTAMPTZ NOT NULL,
+  ends_at TIMESTAMPTZ NOT NULL,
+  all_day BOOLEAN NOT NULL DEFAULT false,
+  -- Whether this occurrence blocks the time: OPAQUE, not cancelled, and not
+  -- one the person declined. Free/busy reads only these.
+  busy BOOLEAN NOT NULL DEFAULT true,
+  recurrence_id TIMESTAMPTZ,
+  summary TEXT,
+  location TEXT
+);
+CREATE INDEX IF NOT EXISTS calendar_instances_when_idx ON calendar_instances(user_id, starts_at);
+CREATE INDEX IF NOT EXISTS calendar_instances_busy_idx ON calendar_instances(user_id, starts_at, ends_at) WHERE busy;
+CREATE INDEX IF NOT EXISTS calendar_instances_object_idx ON calendar_instances(object_id);
+`,
+  },
+  {
+    // F13, the second half: reminders, and the two columns that make them
+    // possible without a second scan of every event.
+    //
+    // `alarm_minutes` is how long before the start the earliest reminder
+    // fires, taken from the event's own VALARM. Only the earliest, because
+    // an event with reminders at an hour and at ten minutes wants one
+    // notification for the person, not two — and the row that decides "is
+    // anything due" has to be one indexed comparison rather than a JSON
+    // scan.
+    //
+    // `notified_at` is on the occurrence rather than the event, because a
+    // weekly stand-up needs a reminder every week and one flag on the series
+    // would fire once and never again. It is also what makes the sweep safe
+    // to run twice.
+    id: '20260907_1800_calendar_reminders',
+    up: `
+ALTER TABLE calendar_objects ADD COLUMN IF NOT EXISTS alarm_minutes INT;
+ALTER TABLE calendar_instances ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ;
+-- The sweep asks one question: which occurrences that block time are due to
+-- start soon and have not been announced. Partial, so it stays small however
+-- many events the install holds.
+CREATE INDEX IF NOT EXISTS calendar_instances_due_idx
+  ON calendar_instances(starts_at)
+  WHERE notified_at IS NULL AND busy;
+`,
+  },
 ];

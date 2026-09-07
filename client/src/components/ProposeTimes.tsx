@@ -26,10 +26,17 @@ export { asksAboutTime, localZone, writeSlot, writeSlots, type Slot } from '../l
 const DURATIONS = [15, 30, 60] as const;
 type Duration = (typeof DURATIONS)[number];
 
-export function useFreeSlots(minutes: Duration, enabled: boolean) {
+export function useFreeSlots(minutes: Duration, enabled: boolean, withEmails: string[] = []) {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Guests whose calendar nobody could answer for. Named rather than
+  // silently treated as free: "everyone is free at three" and "you are free
+  // at three and I could not check the others" are different claims.
+  const [unknown, setUnknown] = useState<string[]>([]);
+  // A stable key, so a caller passing a fresh array each render does not
+  // re-fetch on every keystroke.
+  const key = withEmails.map((e) => e.toLowerCase()).sort().join(',');
 
   useEffect(() => {
     if (!enabled) return;
@@ -37,20 +44,21 @@ export function useFreeSlots(minutes: Duration, enabled: boolean) {
     setLoading(true);
     setError(null);
     const q = new URLSearchParams({ minutes: String(minutes), days: '14', count: '8', tz: localZone() });
-    api.get<{ slots: Slot[] }>(`/api/assist/invitations/slots?${q}`)
-      .then((r) => { if (live) setSlots(r.slots); })
+    if (key) q.set('with', key);
+    api.get<{ slots: Slot[]; unknown?: string[] }>(`/api/assist/invitations/slots?${q}`)
+      .then((r) => { if (live) { setSlots(r.slots); setUnknown(r.unknown ?? []); } })
       .catch((e) => { if (live) setError((e as Error).message); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [minutes, enabled]);
+  }, [minutes, enabled, key]);
 
-  return { slots, loading, error };
+  return { slots, loading, error, unknown };
 }
 
 // The chip that sits beside the model's three suggestions. It is the one
 // suggestion in that row that is not a guess: the others are sentences the
 // model thinks you might say, and this is a fact about your calendar.
-export function ProposeTimesChip({ onInsert }: { onInsert: (text: string) => void }) {
+export function ProposeTimesChip({ onInsert, withEmails }: { onInsert: (text: string) => void; withEmails?: string[] }) {
   const can = useCan('calendar');
   if (!can) return null;
   return (
@@ -69,10 +77,10 @@ export function ProposeTimesChip({ onInsert }: { onInsert: (text: string) => voi
 
 // The picker itself. Shared by the button and the quick-reply chip so the
 // two never drift apart.
-function SlotPicker({ onInsert, onPick, close }: { onInsert: (text: string) => void; onPick?: (slots: Slot[]) => void; close: () => void }) {
+function SlotPicker({ onInsert, onPick, close, withEmails }: { onInsert: (text: string) => void; onPick?: (slots: Slot[]) => void; close: () => void; withEmails?: string[] }) {
   const [minutes, setMinutes] = useState<Duration>(30);
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const { slots, loading, error } = useFreeSlots(minutes, true);
+  const { slots, loading, error, unknown } = useFreeSlots(minutes, true, withEmails ?? []);
 
   // Changing the length changes the times, so a tick against the old ones
   // means nothing. Clearing is the honest response to that.
@@ -97,7 +105,15 @@ function SlotPicker({ onInsert, onPick, close }: { onInsert: (text: string) => v
         />
       </div>
 
-      {loading && <div className="slots-note"><Loader2 size={13} className="spin" /> Reading your calendar</div>}
+      {loading && <div className="slots-note"><Loader2 size={13} className="spin" /> Reading {withEmails?.length ? 'the calendars' : 'your calendar'}</div>}
+      {!loading && unknown.length > 0 && (
+        // Said plainly rather than left to be assumed. A time that avoids
+        // your diary and nobody else's is a proposal, not an agreement.
+        <div className="slots-note">
+          Checked your calendar only — nothing here could say when {unknown.length === 1 ? unknown[0] : `${unknown.length} of the guests`}{' '}
+          {unknown.length === 1 ? 'is' : 'are'} busy.
+        </div>
+      )}
       {error && <div className="slots-note slots-error">{error}</div>}
       {!loading && !error && !slots.length && (
         // The two reasons this list is empty are opposite problems, and
@@ -146,12 +162,14 @@ function SlotPicker({ onInsert, onPick, close }: { onInsert: (text: string) => v
 
 // The composer and reply-bar button. Silent for anyone who has not turned
 // invitations on, like everything else that reads mail for a purpose.
-export function ProposeTimesButton({ onInsert, onPick, compact, label = 'Propose times' }: {
+export function ProposeTimesButton({ onInsert, onPick, compact, label = 'Propose times', withEmails }: {
   onInsert: (text: string) => void;
   /** The slots themselves, for a caller that needs the instant and not the prose. */
   onPick?: (slots: Slot[]) => void;
   compact?: boolean;
   label?: string;
+  /** Who the message is going to, so their diaries count as well. */
+  withEmails?: string[];
 }) {
   const can = useCan('calendar');
   if (!can) return null;
@@ -162,7 +180,7 @@ export function ProposeTimesButton({ onInsert, onPick, compact, label = 'Propose
         ? <IconButton label={label} onClick={open}><CalendarClock size={17} /></IconButton>
         : <Button size="sm" icon={<CalendarClock size={14} />} onClick={open}>{label}</Button>}
     >
-      {(close) => <SlotPicker onInsert={onInsert} onPick={onPick} close={close} />}
+      {(close) => <SlotPicker onInsert={onInsert} onPick={onPick} close={close} withEmails={withEmails} />}
     </Menu>
   );
 }

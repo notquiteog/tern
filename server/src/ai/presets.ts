@@ -57,10 +57,10 @@ export const BUILT_IN_PRESETS: AiPreset[] = [
   {
     id: 'builtin-qwen35-thinking',
     name: 'Qwen3.5 — thinking',
-    note: 'Qwen3.5 while it reasons: the wider sampling it asks for in thinking mode, with room to work out an answer before writing it. Several times slower without a GPU, and worth it for a reply that has to weigh a long thread.',
+    note: 'Qwen3.5 while it reasons: the wider sampling it asks for in thinking mode, and a budget measured to be big enough — at 3,000 tokens it ran out and returned nothing three times in four. Ten to fifty times slower, and measured as no more accurate on long threads, so this is for trying rather than for running.',
     forModel: 'qwen3.5:4b',
     builtIn: true,
-    values: { temperature: 1.0, topP: 0.95, topK: 20, minP: 0, repeatPenalty: 1.0, repeatLastN: 256, presencePenalty: 1.5, frequencyPenalty: 0, maxTokens: 700, allowThinking: true, thinkEffort: 'medium', thinkingBudget: 3000 },
+    values: { temperature: 1.0, topP: 0.95, topK: 20, minP: 0, repeatPenalty: 1.0, repeatLastN: 256, presencePenalty: 1.5, frequencyPenalty: 0, maxTokens: 700, allowThinking: true, thinkEffort: 'medium', thinkingBudget: 6000 },
   },
 ];
 

@@ -35,6 +35,9 @@ export const api = {
   get: <T,>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, { signal }),
   post: <T,>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T,>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
+  // A partial update, where PUT would mean "replace the whole thing": the
+  // calendar routes take one changed field at a time.
+  patch: <T,>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),
   del: <T,>(path: string) => request<T>('DELETE', path),
   // Raw-body upload. The method is a parameter because the endpoints differ:
   // most take POST, but one that replaces a single named thing (a domain's

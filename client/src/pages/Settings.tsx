@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight, Archive } from 'lucide-react';
+import { CalendarDays, Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight, Archive } from 'lucide-react';
 import { api } from '../api';
 import { streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
@@ -20,6 +20,7 @@ import { fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { createPasskey, passkeysSupported } from '../lib/passkeys';
 import MailAppsSettings from './MailApps';
+import { SettingsLayout, type SettingsGroup } from '../components/SettingsLayout';
 import EncryptionSettings from './Encryption';
 
 // Settings is about you: your login, your mailboxes, how the app looks and
@@ -28,28 +29,58 @@ import EncryptionSettings from './Encryption';
 // server refuses their endpoints to non-admins regardless of the UI.
 import FeaturesPage from './Features';
 import ImportPage from './Import';
+import CalendarSettings from './CalendarSettings';
 
 export default function SettingsPage() {
   const { user } = useAuth();
   const admin = user!.role === 'admin';
-  const tabs: [string, string, ReactNode][] = [
-    // Features comes first because every other page's behaviour depends on
-    // what is switched on here.
-    ['features', 'Features', <ToggleRight size={15} />],
-    ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
-    ['mail', 'Mail', <Inbox size={15} />], ['import', 'Import', <Archive size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
+  // Grouped by the question being asked rather than by the order the pages
+  // were written in. Features stays near the top of its group because what is
+  // switched on there decides what the assistant pages can do at all.
+  const groups: SettingsGroup[] = [
+    {
+      title: 'You',
+      items: [
+        { key: 'profile', label: 'Profile', icon: <UserCircle size={16} />, hint: 'Name, picture, signature' },
+        { key: 'security', label: 'Security', icon: <Shield size={16} />, hint: 'Password, passkeys, sessions' },
+        { key: 'encryption', label: 'Encryption', icon: <Lock size={16} />, hint: 'Your OpenPGP keys' },
+      ],
+    },
+    {
+      title: 'Mail',
+      items: [
+        { key: 'accounts', label: 'Accounts', icon: <Mail size={16} />, hint: 'Connected mailboxes' },
+        { key: 'mail', label: 'Reading & sending', icon: <Inbox size={16} />, hint: 'Layout, undo send, replies' },
+        { key: 'mailapps', label: 'Mail apps', icon: <Smartphone size={16} />, hint: 'IMAP and SMTP details' },
+        { key: 'calendars', label: 'Calendars', icon: <CalendarDays size={16} />, hint: 'Calendars and availability' },
+        { key: 'import', label: 'Import', icon: <Archive size={16} />, hint: 'Bring mail in from elsewhere' },
+      ],
+    },
+    {
+      title: 'Assistant',
+      items: [
+        { key: 'features', label: 'Features', icon: <ToggleRight size={16} />, hint: 'What the assistant may read' },
+        { key: 'ai', label: 'AI assistant', icon: <Sparkles size={16} />, hint: 'Tone, drafting, summaries' },
+      ],
+    },
+    {
+      title: 'Look',
+      items: [
+        { key: 'appearance', label: 'Appearance', icon: <Palette size={16} />, hint: 'Theme, palette, density' },
+      ],
+    },
   ];
   return (
-    <div className="page">
-      <div className="settings-head row wrap mb-8">
-        <div className="flex-1"><h1>Settings</h1><div className="small muted">Your login, mailboxes and preferences.</div></div>
-        {admin && <NavLink to="/admin/general" className="btn"><Wrench size={15} />Admin settings</NavLink>}
-      </div>
-      <div className="tabs settings-tabs">
-        {tabs.map(([k, l, i]) => <NavLink key={k} to={`/settings/${k}`} className={({ isActive }) => cls(isActive && 'active')}>{i}{l}</NavLink>)}
-      </div>
+    <SettingsLayout
+      title="Settings"
+      sub="Your login, mailboxes and preferences."
+      base="/settings"
+      groups={groups}
+      action={admin && <NavLink to="/admin/general" className="btn"><Wrench size={15} />Admin settings</NavLink>}
+    >
       <Routes>
         <Route path="features" element={<FeaturesPage />} />
+        <Route path="calendars" element={<CalendarSettings />} />
         <Route path="import" element={<ImportPage />} />
         <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
@@ -65,7 +96,7 @@ export default function SettingsPage() {
         <Route path="mailserver" element={<Navigate to="/admin/mailserver" replace />} />
         <Route path="*" element={<Navigate to="/settings/accounts" replace />} />
       </Routes>
-    </div>
+    </SettingsLayout>
   );
 }
 
@@ -579,7 +610,7 @@ function SecuritySettings() {
         <div className="card-title"><h2>Sessions</h2><Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { all: true }).then(() => { refetch(); toast.success('Other sessions signed out'); })}>Sign out everywhere else</Button></div>
         <DataTable rows={sessions?.sessions ?? []} rowKey={(s) => s.id} cardSize="sm" columns={[
           { key: 'client', header: 'Client', primary: true, cell: (s) => <span className="row gap-4 wrap"><span>{describeUa(s.user_agent)}</span>{s.current ? <Badge kind="success">this device</Badge> : null}</span> },
-          { key: 'ua', secondary: true, className: 'small muted', cell: (s) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 320, verticalAlign: 'bottom' }} title={s.user_agent}>{s.user_agent || 'unknown client'}</span> },
+          { key: 'ua', secondary: true, className: 'small muted', cell: (s) => <span className="truncate" style={{ display: 'inline-block', maxWidth: 'min(100%, 320px)', verticalAlign: 'bottom' }} title={s.user_agent}>{s.user_agent || 'unknown client'}</span> },
           { key: 'seen', header: 'Last active', className: 'small muted', nowrap: true, cell: (s) => fmtRelative(s.last_seen_at) },
           { key: 'started', header: 'Signed in', className: 'small muted', nowrap: true, cell: (s) => fmtDateTime(s.created_at) },
           { key: 'act', actions: true, cell: (s) => !s.current && <Button size="sm" variant="ghost" onClick={() => api.post('/api/auth/sessions/revoke', { id: s.id }).then(() => refetch())}>Sign out</Button> },

@@ -4,6 +4,7 @@ import { logger } from './log.js';
 import { migrate, pool, waitForDb } from './db.js';
 import { syncManager } from './workers/syncManager.js';
 import { startScheduler, stopScheduler } from './workers/scheduler.js';
+import { calendarSync } from './workers/calendarSync.js';
 import { recommendModel } from './ai/models.js';
 
 const log = logger('main');
@@ -20,12 +21,17 @@ async function main(): Promise<void> {
   });
   server.keepAliveTimeout = 65_000;
   await syncManager.start();
+  // Calendars have their own runner: the pacing is different (an incremental
+  // poll is a heartbeat, and two of the four providers push), and a mail
+  // server being down must not stop a calendar syncing or the other way round.
+  await calendarSync.start();
   startScheduler();
 
   const shutdown = (sig: string) => {
     log.info(`received ${sig}, shutting down`);
     stopScheduler();
     syncManager.stop();
+    calendarSync.stop();
     server.close(() => { pool.end().finally(() => process.exit(0)); });
     setTimeout(() => process.exit(0), 8000).unref();
   };

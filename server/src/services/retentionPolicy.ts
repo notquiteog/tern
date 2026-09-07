@@ -106,7 +106,17 @@ export async function retentionFootprint(): Promise<Record<string, number>> {
       (SELECT count(*)::int FROM audit_log) AS audit_log,
       (SELECT count(*)::int FROM briefs) AS briefs,
       (SELECT count(*)::int FROM commitments WHERE status <> 'open') AS closed_commitments,
-      (SELECT count(*)::int FROM calendar_events) AS calendar_events
+      (SELECT count(*)::int FROM calendar_events) AS calendar_events,
+      -- Synced calendars (F13). These are counted but never aged out, and
+      -- the distinction matters: everything else on this page is data Tern
+      -- derived and can rebuild, while a calendar's events are somebody
+      -- else's records that this server holds a copy of. Deleting them on a
+      -- schedule would make the calendar wrong rather than smaller — the
+      -- next sync would simply fetch them again. What does get trimmed is
+      -- the expanded occurrences outside the rolling window, which the
+      -- calendar worker prunes on its own.
+      (SELECT count(*)::int FROM calendar_objects) AS calendar_events_synced,
+      (SELECT count(*)::int FROM calendar_instances) AS calendar_occurrences
   `);
   return rows[0] ?? {};
 }

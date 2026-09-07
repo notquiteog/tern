@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers, Wrench, Gauge, ArrowUp, ArrowDown, Loader2 } from 'lucide-react';
+import { AlarmClock, Archive, ChevronDown, ChevronLeft, ChevronRight, Inbox as InboxIcon, MailOpen, Mail, Paperclip, RefreshCw, ShieldAlert, Star, Tag, Trash2, Columns2, Rows3, PanelBottom, Clock, Play, X, FileText, Pencil, Reply, Forward, ExternalLink, Lock, BellOff, Bell, Eraser, Sparkles, Receipt, BellRing, Tag as TagIcon, BadgeCheck, LayoutGrid, List as ListIcon, ShieldCheck, Layers, Wrench, Gauge, ArrowUp, ArrowDown, Loader2, ListFilter, ArrowDownUp } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose, seedFromDraft } from '../state/compose';
 import { useMailPrefs, type Layout } from '../state/mailPrefs';
 import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
-import { useHotkeys, useMediaQuery } from '../lib/hooks';
+import { useElementSize, useHotkeys } from '../lib/hooks';
 import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm, Progress } from '../components/ui';
 import { SemanticResults } from '../components/SearchExtras';
 import { useTriageFeedback, useTriageWhy } from '../components/ThreadAside';
 import { useCan } from '../state/features';
+
+// The list's filter chips: a short label for the strip, a longer one for the
+// menu the strip becomes where there is no room for a strip.
+const FILTERS: { value: string; label: string; long: string }[] = [
+  { value: 'all', label: 'All', long: 'All conversations' },
+  { value: 'unread', label: 'Unread', long: 'Unread only' },
+  { value: 'read', label: 'Read', long: 'Read only' },
+  { value: 'starred', label: 'Starred', long: 'Starred only' },
+  { value: 'attachments', label: 'Files', long: 'With attachments' },
+];
 
 // The words out of a search, with the operators taken off. Meaning search
 // has nothing to say about `is:unread` or `newer_than:7d`, and feeding them
@@ -102,10 +112,38 @@ export default function MailPage() {
   // Every address that is you, across accounts: what a stack of conversations
   // is keyed on has to be someone else.
   const myEmails = useMemo(() => new Set(accounts.map((a) => a.email.toLowerCase())), [accounts]);
-  const wide = useMediaQuery('(min-width: 1180px)');
-  const tall = useMediaQuery('(min-width: 900px)');
   const [prefs, setPrefs] = useMailPrefs();
-  const layout: Layout = prefs.layout === 'right' && !wide ? (tall ? 'bottom' : 'off') : prefs.layout === 'bottom' && !tall ? 'off' : prefs.layout;
+  // Whether the reading pane fits is a question about the mail area, not about
+  // the window: at 1180px of viewport with the sidebar open this pane is about
+  // 880px, and at 1180px with the sidebar collapsed it is about 1170px. The
+  // old viewport query treated those as the same screen, which is why the
+  // split view was switched on at widths where its two columns did not fit and
+  // the list ran off the edge. These numbers are the pane's own width and
+  // height, so they mean the same thing on every screen.
+  const [bodyRef, bodySize] = useElementSize<HTMLDivElement>();
+  // The list's sticky header, measured so the date separators know where to
+  // pin under it however many lines it has wrapped onto — and so the filters
+  // know whether they have room to be spelled out.
+  const [headRef, headSize] = useElementSize<HTMLDivElement>();
+  // Below this the strip of chips plus the count is two lines whatever order
+  // they are put in: the two segmented controls alone are about 450px.
+  const compactFilters = headSize.width > 0 && headSize.width < 640;
+  // Roomy until measured — one frame — so a desktop's first paint is the
+  // arrangement the preference actually asks for.
+  const availW = bodySize.width || 1200;
+  const availH = bodySize.height || 800;
+  // A list beside a conversation needs about 320px for the list and 450px for
+  // the message before either is worth reading — which is a 1024x768 laptop
+  // with the sidebar open, and is meant to be.
+  const fitsBeside = availW >= 780;
+  // Above and below is a question about height, not width. The list gets 40%
+  // of it, and 40% has to hold the filter header and about four conversations
+  // or the pane is worse than no pane at all — which is what a 1000x820
+  // window used to get: two emails and a lot of nothing.
+  const fitsBelow = availW >= 480 && availH >= 750;
+  const layout: Layout = prefs.layout === 'right' ? (fitsBeside ? 'right' : fitsBelow ? 'bottom' : 'off')
+    : prefs.layout === 'bottom' ? (fitsBelow ? 'bottom' : 'off')
+    : 'off';
   const split = layout !== 'off';
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState(0);
@@ -281,6 +319,13 @@ export default function MailPage() {
 
   const showList = !threadKey || split;
   const showThread = Boolean(threadKey);
+  // With the pane above and below, an empty pane is a waste of half the
+  // screen: there is nothing in it to read and the list it is stealing height
+  // from is the only thing on the page. So the split only happens once there
+  // is something to show in it. Beside the list, an empty pane still earns its
+  // place — it is the column the conversation will open into, and taking it
+  // away would make the list jump sideways every time you opened a message.
+  const splitNow = layout === 'right' ? split : split && showThread;
   const [accIdStr, threadId] = threadKey ? decodeURIComponent(threadKey).split(':') : ['', ''];
   const allSelected = threads.length > 0 && selected.size === threads.length;
   const pageStart = (page - 1) * pageSize + 1;
@@ -353,13 +398,19 @@ export default function MailPage() {
             <IconButton label="Next page" disabled={page * pageSize >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton>
             <Menu align="right" width={260} trigger={(open) => <IconButton label="View options" onClick={open}>{layout === 'right' ? <Columns2 size={16} /> : layout === 'bottom' ? <PanelBottom size={16} /> : <Rows3 size={16} />}</IconButton>}>
               {(c) => <>
-                {tall && <>
-                  <div className="menu-label">Reading pane</div>
-                  <MenuItem active={prefs.layout === 'right'} icon={<Columns2 size={15} />} onClick={() => { setPrefs({ layout: 'right' }); c(); }}>Beside the list</MenuItem>
-                  <MenuItem active={prefs.layout === 'bottom'} icon={<PanelBottom size={15} />} onClick={() => { setPrefs({ layout: 'bottom' }); c(); }}>Below the list</MenuItem>
-                  <MenuItem active={prefs.layout === 'off'} icon={<Rows3 size={15} />} onClick={() => { setPrefs({ layout: 'off' }); c(); }}>Off (full width)</MenuItem>
-                  <div className="menu-sep" />
-                </>}
+                {/* Always offered, including on a phone. The choice is
+                    remembered per person rather than per screen, and hiding it
+                    where it cannot currently be honoured meant someone who set
+                    it on a desktop found the setting simply gone — with no
+                    explanation of why their mail looked different. It is shown,
+                    and the line underneath says what this screen is doing
+                    instead. */}
+                <div className="menu-label">Reading pane</div>
+                <MenuItem active={prefs.layout === 'right'} icon={<Columns2 size={15} />} onClick={() => { setPrefs({ layout: 'right' }); c(); }}>Beside the list</MenuItem>
+                <MenuItem active={prefs.layout === 'bottom'} icon={<PanelBottom size={15} />} onClick={() => { setPrefs({ layout: 'bottom' }); c(); }}>Below the list</MenuItem>
+                <MenuItem active={prefs.layout === 'off'} icon={<Rows3 size={15} />} onClick={() => { setPrefs({ layout: 'off' }); c(); }}>Off (full width)</MenuItem>
+                {layout !== prefs.layout && <div className="menu-note">Not enough room on this screen — showing {layout === 'bottom' ? 'the pane below the list' : 'one pane at a time'} for now.</div>}
+                <div className="menu-sep" />
                 <div className="menu-label">Conversations</div>
                 <MenuItem active={prefs.view === 'list'} icon={<ListIcon size={15} />} onClick={() => { setPrefs({ view: 'list' }); c(); }}>List</MenuItem>
                 <MenuItem active={prefs.view === 'card'} icon={<LayoutGrid size={15} />} onClick={() => { setPrefs({ view: 'card' }); c(); }}>Cards</MenuItem>
@@ -379,9 +430,17 @@ export default function MailPage() {
           </div>
         </>}
       </div>}
-      <div className={cls('mail-body', split && 'split', layout === 'bottom' && 'split-bottom')}>
+      <div ref={bodyRef} className={cls('mail-body', splitNow && 'split', layout === 'bottom' && splitNow && 'split-bottom')}>
         {showList && (
-          <div className="thread-list" ref={listRef}>
+          <div className="thread-list" ref={listRef} style={{ ['--list-head-h' as string]: `${headSize.height}px` }}>
+            {/* The category tabs and the filter row are one sticky header, not
+                two. Separately, both pinned themselves to `top: 0` and landed
+                on top of each other the moment the list was scrolled; and the
+                date separators below them were offsetting by a hardcoded 44px,
+                which was the filter row's height only while it stayed on one
+                line. The block measures itself and the separators offset by
+                whatever it actually is. */}
+            <div className="list-head" ref={headRef}>
             {tabbed && accounts.length > 0 && (
               <div className="cat-tabs" role="tablist" aria-label="Categories">
                 {CATEGORY_TABS.map((t) => {
@@ -399,21 +458,50 @@ export default function MailPage() {
             )}
             {accounts.length > 0 && !box.startsWith('mailbox:') && (
               <div className="list-filters">
-                <Segmented value={filter || 'all'} onChange={(v) => setFilter(v === 'all' ? '' : v)} options={[{ value: 'all', label: 'All' }, { value: 'unread', label: 'Unread' }, { value: 'read', label: 'Read' }, { value: 'starred', label: 'Starred' }, { value: 'attachments', label: 'Files' }]} />
-                {canTriage && (
-                  <Segmented
-                    value={sort === 'priority' ? 'priority' : 'newest'}
-                    onChange={(v) => setParams((p) => { if (v === 'priority') p.set('sort', 'priority'); else p.delete('sort'); p.delete('page'); return p; })}
-                    options={[{ value: 'newest', label: 'Newest' }, { value: 'priority', label: 'Needs you' }]}
-                  />
+                {/* Five filter chips and two sort chips are 450px of controls.
+                    In a reading-pane list that is 320px wide they wrapped onto
+                    three lines and took a quarter of the height of the list —
+                    so where the list is narrow the same choices are two
+                    dropdowns instead, on one line. Nothing is dropped; the
+                    labels move from being always-on to being one tap away. */}
+                {compactFilters ? (
+                  <>
+                    <Menu trigger={(open) => <Button size="sm" icon={<ListFilter size={14} />} onClick={open}>{FILTERS.find((f) => f.value === (filter || 'all'))!.label}<ChevronDown size={13} /></Button>}>
+                      {(c) => <>
+                        <div className="menu-label">Show</div>
+                        {FILTERS.map((f) => <MenuItem key={f.value} active={(filter || 'all') === f.value} onClick={() => { setFilter(f.value === 'all' ? '' : f.value); c(); }}>{f.long}</MenuItem>)}
+                      </>}
+                    </Menu>
+                    {canTriage && (
+                      <Menu trigger={(open) => <Button size="sm" icon={<ArrowDownUp size={14} />} onClick={open}>{sort === 'priority' ? 'Needs you' : 'Newest'}<ChevronDown size={13} /></Button>}>
+                        {(c) => <>
+                          <div className="menu-label">Order</div>
+                          <MenuItem active={sort !== 'priority'} onClick={() => { setParams((p) => { p.delete('sort'); p.delete('page'); return p; }); c(); }}>Newest first</MenuItem>
+                          <MenuItem active={sort === 'priority'} onClick={() => { setParams((p) => { p.set('sort', 'priority'); p.delete('page'); return p; }); c(); }}>Needs you first</MenuItem>
+                        </>}
+                      </Menu>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Segmented value={filter || 'all'} onChange={(v) => setFilter(v === 'all' ? '' : v)} options={FILTERS.map((f) => ({ value: f.value, label: f.label }))} />
+                    {canTriage && (
+                      <Segmented
+                        value={sort === 'priority' ? 'priority' : 'newest'}
+                        onChange={(v) => setParams((p) => { if (v === 'priority') p.set('sort', 'priority'); else p.delete('sort'); p.delete('page'); return p; })}
+                        options={[{ value: 'newest', label: 'Newest' }, { value: 'priority', label: 'Needs you' }]}
+                      />
+                    )}
+                  </>
                 )}
                 <span className="ml-auto row gap-4">
-                  {total > 0 && <span className="small faint">{total} conversation{total === 1 ? '' : 's'}</span>}
+                  {total > 0 && !compactFilters && <span className="small faint">{total} conversation{total === 1 ? '' : 's'}</span>}
                   <IconButton label={prefs.view === 'card' ? 'Switch to the list' : 'Switch to cards'} className="btn-sm"
                     onClick={() => setPrefs({ view: prefs.view === 'card' ? 'list' : 'card' })}>{prefs.view === 'card' ? <ListIcon size={15} /> : <LayoutGrid size={15} />}</IconButton>
                 </span>
               </div>
             )}
+            </div>
             {isLoading && <ThreadListSkeleton />}
             {!isLoading && !threads.length && (
               accounts.length === 0
@@ -465,7 +553,7 @@ export default function MailPage() {
           </div>
         )}
         {showThread && <div className="thread-pane"><ThreadView key={threadKey} accountId={Number(accIdStr)} threadId={threadId} box={box} onBack={back} onPrev={goPrev} onNext={goNext} hasPrev={currentIndex > 0} hasNext={currentIndex >= 0 && currentIndex < threads.length - 1} /></div>}
-        {!showThread && split && <div className="thread-pane center" style={{ color: 'var(--text-3)' }}><div className="col center"><Mail size={28} /><span className="small">Select a conversation</span><span className="tiny faint">j / k to move, Enter to open, c to compose, ? for every shortcut</span></div></div>}
+        {!showThread && splitNow && <div className="thread-pane center" style={{ color: 'var(--text-3)' }}><div className="col center"><Mail size={28} /><span className="small">Select a conversation</span><span className="tiny faint">j / k to move, Enter to open, c to compose, ? for every shortcut</span></div></div>}
       </div>
       <button className="fab" aria-label="Compose" onClick={() => compose.open({ accountId: acctFilter === 'all' ? null : Number(acctFilter) || null })}><Pencil size={22} /></button>
       {ctx && createPortal(

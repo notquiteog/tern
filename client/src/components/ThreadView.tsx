@@ -91,6 +91,9 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   }
   const last = messages[messages.length - 1];
   const lastInbound = [...messages].reverse().find((m) => m.from_email !== me) ?? last;
+  // Who a proposed time would have to suit, besides the person proposing it:
+  // whoever wrote the message being replied to.
+  const otherParty = [lastInbound?.from_email].filter((e): e is string => Boolean(e) && e !== me);
   const starred = messages.some((m) => m.is_flagged);
   const inInbox = messages.some((m) => m.mailbox_ids.some((id) => roleOf.get(id)?.role === 'inbox'));
 
@@ -305,7 +308,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                       It stands down while the suggestions are on screen: the
                       chip among them is the same control, and two of them a
                       centimetre apart is one too many. */}
-                  {!timesChipShowing && <ProposeTimesButton onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />}
+                  {!timesChipShowing && <ProposeTimesButton withEmails={otherParty} onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />}
                 </div>
                 <AiThinking trace={quickThinking} busy={Boolean(quick?.loading)} />
                 {quick && !quick.loading && quick.items.length > 0 && (
@@ -317,7 +320,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
                         cannot see the calendar. This chip is that suggestion,
                         answered properly. */}
                     {timesChipShowing && (
-                      <ProposeTimesChip onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
+                      <ProposeTimesChip withEmails={otherParty} onInsert={(t) => openInline(lastInbound, 'reply', { initialText: t })} />
                     )}
                   </div>
                 )}

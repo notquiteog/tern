@@ -37,6 +37,18 @@ export interface DraftInput {
     /** The new date, written out, or absent when there is not one yet. */
     now?: string;
   };
+  // What the sender's calendar says about the days this email is about (F13).
+  //
+  // Times only, and never titles: the model is told "you are busy from two
+  // until three on Thursday", not what the meeting is. The point is to stop
+  // it proposing a time that is already taken — which it did constantly
+  // before there was a calendar to check — without handing a language model
+  // the contents of somebody's diary.
+  availability?: {
+    /** How the days read where the sender is, e.g. "Thursday 10 September". */
+    days: { day: string; busy: string[]; free: string[] }[];
+    tz?: string;
+  };
   // How many characters of the conversation may be spent. Derived from the
   // model's context window by `threadBudgetChars`; the default suits the
   // 8192-token window Tern ships with.
@@ -327,6 +339,27 @@ export function agreedFactsBlock(thread: DraftInput['thread']): string {
   return `Figures, dates and terms already stated in this conversation, taken from it word for word. Use these exactly where the reply needs them, and state no others:\n${lines.join('\n')}`;
 }
 
+// What the sender's diary says, as a few lines the model can act on.
+//
+// Kept deliberately blunt. A model given a table of ISO timestamps reasons
+// about time zones and gets it wrong; given "Thursday 10 September — busy
+// 09:00-10:00, 14:00-15:30; free 10:00-12:00" it simply picks a free one.
+export function availabilityBlock(a: DraftInput['availability']): string {
+  if (!a?.days?.length) return '';
+  const lines = a.days.slice(0, 7).map((d) => {
+    const busy = d.busy.length ? `busy ${d.busy.slice(0, 6).join(', ')}` : 'nothing booked';
+    const free = d.free.length ? `; free ${d.free.slice(0, 4).join(', ')}` : '';
+    return `- ${d.day}: ${busy}${free}`;
+  });
+  return [
+    `The sender's calendar${a.tz ? ` (times in ${a.tz})` : ''}:`,
+    ...lines,
+    // Without this the model treats the list as a suggestion and proposes a
+    // time inside a busy block anyway, roughly one time in four.
+    'Never propose or agree to a time that falls inside a busy period above. If none of the free periods suits what is being asked, say you will check your diary and come back rather than naming a time.',
+  ].join('\n');
+}
+
 export function buildMessages(input: DraftInput): ChatMessage[] {
   const tone = input.tone ? `Tone: ${input.tone}.` : 'Tone: friendly and professional.';
   const len = LENGTH[input.length ?? 'medium'];
@@ -464,6 +497,12 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
   // the person's own draft.
   if (['reply', 'summarize'].includes(input.mode)) {
     const fb = agreedFactsBlock(input.thread); if (fb) parts.push(fb);
+  }
+  // Only the modes that can commit the sender to a time. A summary or a
+  // subject line has no business knowing the diary, and spending context on
+  // it would cost the conversation room it needs.
+  if (['reply', 'compose', 'reschedule', 'nudge', 'quick_replies'].includes(input.mode)) {
+    const avb = availabilityBlock(input.availability); if (avb) parts.push(avb);
   }
   if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
   if (input.template) parts.push(`Brief / template:\n${input.template}`);

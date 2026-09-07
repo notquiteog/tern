@@ -161,6 +161,19 @@ export function AdminRetention() {
         {' '}{fmtNumber(holding.briefs ?? 0)} briefs.
       </Callout>
 
+      {Boolean(holding.calendar_events_synced) && (
+        <Callout>
+          Also held, and <b>not</b> covered by anything on this page:{' '}
+          {fmtNumber(holding.calendar_events_synced)} events synced from connected calendars
+          {holding.calendar_occurrences ? <> ({fmtNumber(holding.calendar_occurrences)} occurrences worked out from them)</> : null}.
+          Everything else here is a by-product Tern made and can make again; those are somebody
+          else&rsquo;s records that this server holds a copy of, so deleting them on a timer would make
+          the calendar wrong rather than smaller — the next sync would fetch them straight back. They
+          go when the calendar is disconnected, or when someone turns the Calendar feature off.
+          Occurrences outside the rolling window are trimmed automatically.
+        </Callout>
+      )}
+
       <div className="retention-grid">
         {FIELDS.map(([key, label, hint]) => (
           <Field key={key} label={label} hint={<>{hint} Default {defaults[key]}.</>}>

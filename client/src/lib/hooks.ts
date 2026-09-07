@@ -102,3 +102,53 @@ export function useInterval(fn: () => void, ms: number | null) {
     return () => clearInterval(t);
   }, [ms]);
 }
+
+// The size of a box, as it changes. Layout decisions in this app used to be
+// made against the viewport, which is the wrong number: a list sitting beside
+// a 260px sidebar has 260px less than the window says it does, and a panel
+// inside a settings pane has less again. Every one of those decisions was
+// therefore wrong on some screen — a split view that would not fit was still
+// switched on at 1180px, and a table that needed 640px was still drawn in a
+// 500px column.
+//
+// This is the CSS container query written in JavaScript, for the cases where
+// the answer changes what is rendered rather than only how it is painted.
+// ResizeObserver reports the content box in the element's own CSS pixels, so
+// the numbers compared against here mean the same thing at every page zoom.
+export function useElementSize<T extends HTMLElement>(): [(el: T | null) => void, { width: number; height: number }] {
+  // A callback ref, not a ref object with a mount-time effect. The elements
+  // worth measuring are often the ones that appear late — a list header that
+  // is empty until the accounts load, a table that is not rendered until its
+  // query returns — and an effect that reads `ref.current` once on mount ends
+  // up observing either nothing or a node React has since replaced, and then
+  // reports zero for ever.
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const observer = useRef<ResizeObserver | null>(null);
+  const setRef = useCallback((el: T | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (!box) return;
+      // Whole pixels: a fractional resize every frame during a drag would
+      // otherwise re-render the tree for a change nobody can see.
+      const width = Math.round(box.width);
+      const height = Math.round(box.height);
+      setSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    });
+    ro.observe(el);
+    observer.current = ro;
+    // Measure once here as well, during the commit that attached the node.
+    // The observer's first callback lands a frame later, which is a frame of
+    // the wrong layout — a table drawn too wide before it becomes cards. This
+    // reads the box while React is still committing, so the first paint is
+    // already right.
+    const box = el.getBoundingClientRect();
+    const width = Math.round(box.width);
+    const height = Math.round(box.height);
+    setSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+  }, []);
+  useEffect(() => () => observer.current?.disconnect(), []);
+  return [setRef, size];
+}

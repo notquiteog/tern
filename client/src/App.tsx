@@ -29,6 +29,7 @@ const ReviewPage = lazy(() => import('./pages/Review'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const AdminSettingsPage = lazy(() => import('./pages/AdminSettings'));
 const HomePage = lazy(() => import('./pages/Home'));
+const CalendarPage = lazy(() => import('./pages/Calendar'));
 
 // A chunk usually arrives in the same frame it is asked for, so the fallback
 // exists to be correct rather than to be seen; it is deliberately quiet.
@@ -51,6 +52,7 @@ function Gate() {
           <Route path="/home" element={<HomePage />} />
         <Route path="/brief" element={<BriefPage />} />
         <Route path="/commitments" element={<CommitmentsPage />} />
+        <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/mail/:box" element={<MailPage />} />
           <Route path="/mail/:box/t/:threadKey" element={<MailPage />} />
           <Route path="/contacts" element={<ContactsPage />} />

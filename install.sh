@@ -158,11 +158,11 @@ TOTAL_GIB="$(awk -v kb="$TOTAL_KB" 'BEGIN { printf "%.1f", kb/1024/1024 }')"
 # Same tiers as server/src/ai/models.ts; change both.
 rec_model() {
   awk -v g="$TOTAL_GIB" 'BEGIN {
-    if (g >= 20) m="qwen2.5:14b"; else if (g >= 10) m="qwen2.5:7b"; else if (g >= 6) m="qwen2.5:3b"; else if (g >= 3.5) m="qwen2.5:1.5b"; else m="qwen2.5:0.5b"; print m }'
+    if (g >= 24) m="gemma4:12b"; else if (g >= 16) m="qwen3.5:9b"; else if (g >= 10) m="qwen3.5:4b"; else if (g >= 6) m="qwen3.5:2b"; else m="qwen3.5:0.8b"; print m }'
 }
 RECOMMENDED="$(rec_model)"
 note "This machine has ${TOTAL_GIB} GB of RAM; recommended model: $RECOMMENDED"
-note "Tiers: <3.5 GB qwen2.5:0.5b · 3.5-6 GB qwen2.5:1.5b · 6-10 GB qwen2.5:3b · 10-20 GB qwen2.5:7b · 20+ GB qwen2.5:14b"
+note "Tiers: <6 GB qwen3.5:0.8b · 6-10 GB qwen3.5:2b · 10-16 GB qwen3.5:4b · 16-24 GB qwen3.5:9b · 24+ GB gemma4:12b"
 ask_yn AI_ENABLED "Enable the AI assistant?" y
 if [ "$AI_ENABLED" = 1 ]; then
   ask AI_MODEL "Model to download (any name from ollama.com/library)" "${AI_MODEL:-$RECOMMENDED}"
@@ -392,7 +392,15 @@ start_stack() {
   done
   ok "app is healthy"
   for svc in $(compose config --services 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$'); do
-    compose exec -T "$svc" true >/dev/null 2>&1 || die "The $svc container is not running. See: ./bin/tern logs $svc"
+    compose exec -T "$svc" true >/dev/null 2>&1 && continue
+    # Dictation is optional and the app says so when the transcriber is
+    # absent, so a whisper that will not start is a warning, not the end of
+    # an otherwise good install. Everything else is load-bearing.
+    if [ "$svc" = whisper ]; then
+      warn "the whisper container is not running; dictation stays off. See: ./bin/tern logs whisper"
+    else
+      die "The $svc container is not running. See: ./bin/tern logs $svc"
+    fi
   done
   ok "all containers running"
 }
@@ -445,18 +453,25 @@ if [ "$AI_ENABLED" = 1 ]; then
   fi
 fi
 
-# The speech model, into the whisper container's volume. whisper.cpp ships
-# the download script in the image, so this needs no network tooling here.
+# The speech model. The container fetches its own weights on first start
+# (see compose.voice.yml): whisper-server exits when the model file is
+# missing, so it could never be downloaded through a running container. All
+# that is left here is to wait for it and say what is happening, since a
+# first start is a 150-500 MB download before the port opens.
 if [ "${VOICE_ENABLED:-0}" = 1 ]; then
   if compose exec -T whisper test -s "/models/ggml-${WHISPER_MODEL}.bin" 2>/dev/null; then
     ok "speech model $WHISPER_MODEL already present"
   else
-    say "  Downloading the '$WHISPER_MODEL' speech model (once; 150 MB to 500 MB)…"
-    if compose exec -T whisper sh -c "./models/download-ggml-model.sh ${WHISPER_MODEL} /models"; then
+    say "  Fetching the '$WHISPER_MODEL' speech model (once; 150 MB to 500 MB)…"
+    VOICE_OK=0
+    for i in $(seq 1 150); do
+      if compose exec -T whisper wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1; then VOICE_OK=1; break; fi
+      sleep 4
+    done
+    if [ "$VOICE_OK" = 1 ]; then
       ok "speech model ready"
-      compose restart whisper >/dev/null 2>&1 || true
     else
-      warn "Speech model download failed; dictation will be unavailable until it is fetched. Retry with: ./bin/tern compose exec whisper ./models/download-ggml-model.sh ${WHISPER_MODEL} /models"
+      warn "the speech model is still not in place; dictation stays off until it is. Watch it with: ./bin/tern logs whisper"
     fi
   fi
 fi

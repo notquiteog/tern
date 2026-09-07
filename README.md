@@ -190,7 +190,19 @@ build. A test then walks the source for the one hole types cannot close.
   and the model is never involved again.
 - **Invitations.** The `text/calendar` part of a message read properly —
   folded lines, escapes, time zones — shown in your own time, with a warning
-  when it clashes, and Yes/Maybe/No that sends a real `METHOD:REPLY`.
+  when it clashes, and Yes/Maybe/No that sends a real `METHOD:REPLY` and puts
+  the meeting in your calendar.
+- **Calendar.** Month, week and agenda views over the calendars you already
+  use: Google, Outlook, iCloud, Fastmail, Nextcloud or any CalDAV server, plus
+  read-only subscriptions to a published `.ics` address. Two-way, with push
+  where the provider offers it and cheap incremental polling where it does
+  not, full RFC 5545 recurrence (including the wall-clock rule that keeps a
+  nine o'clock meeting at nine across a clock change), and events sealed with
+  your own key like everything else. What it buys the rest of the app is that
+  Tern stops proposing times you are already busy — the composer, the
+  invitation card, the assistant and the daily brief all read real free/busy.
+  Only *when* you are busy, never what you are doing. See
+  [docs/CALENDAR.md](docs/CALENDAR.md).
 - **Dictation** (optional container). Speak into any text box. The recording
   never touches disk on either side and the transcript is never stored. The
   transcriber can be the bundled whisper.cpp container or one on another

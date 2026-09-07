@@ -19,7 +19,16 @@ import { countTokens } from './tokens.js';
 import { assertUndeliverable } from './sendGuard.js';
 
 const RUNS = Number(process.env.RUNS || 10);
-const DEPTH = Number(process.env.DEPTH || 22);
+// The full spine, which ends on the question the other side actually asked.
+//
+// This defaulted to 22, and with the rewritten fixture — which slices from
+// the start rather than keeping the tail — message 22 is one of *ours*. The
+// responder was being asked to answer our own email, the name resolver
+// correctly refused to greet the sender by their own name, and every run
+// opened "Hi there,". A responder only ever fires on inbound mail, so a
+// fixture that ends on an outbound message is not a responder scenario at
+// all; the assertion below makes that impossible to configure by accident.
+const DEPTH = Number(process.env.DEPTH || 24);
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
 
 // The other side writes from a client that puts the surname first — the
@@ -88,6 +97,13 @@ async function main(): Promise<void> {
     reply_all: true, humanize: true,
   };
   const email = await openEmail(acc.user_id, 'ai.responders', (await one<any>('SELECT * FROM emails WHERE id=$1', [lastId]))!);
+  // A responder answers mail somebody sent us. If the fixture ends on one of
+  // our own messages there is nothing to answer, and every check below would
+  // measure the wrong thing while appearing to work.
+  const lastFrom = String(email.from_addr?.[0]?.email ?? '').toLowerCase();
+  if (lastFrom === acc.email.toLowerCase()) {
+    throw new Error(`DEPTH=${DEPTH} ends on a message from ${acc.email}. A responder only replies to inbound mail — pick a depth whose last message is from the other side.`);
+  }
 
   // Named checks, so a failure says which promise broke rather than only that
   // one did — the same shape live.eval.ts and campaign.eval.ts use.

@@ -18,6 +18,7 @@ import { logger } from '../log.js';
 import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
 import { requireCapability } from '../services/capabilities.js';
+import { availabilityFor } from '../services/calendar/index.js';
 import { powGuard } from '../services/workGuard.js';
 import { getVoiceSettings, saveVoiceSettings, voiceDefaults, voiceHealth, type VoiceSettings } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
@@ -382,6 +383,13 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
   const tuning = modeTuning(b.mode);
   const threadChars = Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity);
   const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: DRAFT_MODES.has(b.mode) && b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice, threadChars };
+  // What the sender's diary says about the next few working days (F13), for
+  // the modes that can commit them to a time. Times only — never a title —
+  // and absent entirely for somebody with no calendar connected, so the
+  // prompt is unchanged for an install that does not use the feature.
+  if (['reply', 'compose', 'reschedule', 'nudge', 'quick_replies'].includes(b.mode)) {
+    input.availability = await availabilityFor(req.user!.id, { tz: b.tz, days: 5 }).catch(() => undefined);
+  }
   if (b.contactId) {
     const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [b.contactId, req.user!.id]);
     if (c) input.recipient = { name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email, company: c.company, title: c.title, notes: c.notes, fields: c.fields };

@@ -44,7 +44,15 @@ const ERASE: Partial<Record<Capability, string[]>> = {
     `DELETE FROM commitment_scans s USING accounts a WHERE a.id=s.account_id AND a.user_id=$1`,
   ],
   brief: [`DELETE FROM briefs WHERE user_id=$1`],
-  calendar: [`DELETE FROM calendar_events WHERE user_id=$1`],
+  calendar: [
+    `DELETE FROM calendar_events WHERE user_id=$1`,
+    // The connections go with the data (F13). Leaving a source behind would
+    // mean a background worker still holding a credential and still talking
+    // to Google on behalf of somebody who has just said stop; the cascade
+    // takes the calendars, objects and instances with it.
+    `DELETE FROM calendar_sources WHERE user_id=$1`,
+    `DELETE FROM calendars WHERE user_id=$1`,
+  ],
   'ai.responders': [
     // The responders themselves are the person's own configuration and are
     // left alone; what goes is the work queued on their behalf, which is a
@@ -64,7 +72,8 @@ const COUNT: Partial<Record<Capability, string>> = {
   attachments: `SELECT count(*)::int AS n FROM attachment_text t JOIN accounts a ON a.id=t.account_id WHERE a.user_id=$1`,
   commitments: `SELECT count(*)::int AS n FROM commitments WHERE user_id=$1 AND status='open'`,
   brief: `SELECT count(*)::int AS n FROM briefs WHERE user_id=$1`,
-  calendar: `SELECT count(*)::int AS n FROM calendar_events WHERE user_id=$1`,
+  calendar: `SELECT (SELECT count(*) FROM calendar_events WHERE user_id=$1)
+                  + (SELECT count(*) FROM calendar_objects WHERE user_id=$1) AS n`,
 };
 
 export async function capabilityFootprint(userId: number): Promise<Partial<Record<Capability, number>>> {

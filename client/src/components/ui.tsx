@@ -129,7 +129,15 @@ export function Progress({ value, max, warnAt = 0.8 }: { value: number; max: num
   return <div className={cls('progress', r >= 1 && 'full', r >= warnAt && r < 1 && 'warn')}><div style={{ width: `${r * 100}%` }} /></div>;
 }
 
-export function Drawer({ open, onClose, title, children, actions }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
+// A side panel with its own dimmer.
+//
+// It used to borrow `.modal-backdrop`, which is wrong in a way that is easy to
+// miss and impossible to unsee: that class carries `backdrop-filter` and a
+// z-index above the panel, so the dimmer was painted *over* the drawer and
+// blurred it along with the page behind it — and swallowed every click meant
+// for the panel. The drawer gets a dimmer of its own, under it, with no
+// filter.
+export function Drawer({ open, onClose, title, children, actions, size }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; actions?: ReactNode; size?: 'wide' }) {
   useEffect(() => {
     if (!open) return;
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -139,9 +147,9 @@ export function Drawer({ open, onClose, title, children, actions }: { open: bool
   if (!open) return null;
   return createPortal(
     <>
-      <div className="modal-backdrop" style={{ justifyContent: 'flex-end', padding: 0, background: 'rgba(10,12,20,.25)' }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} />
-      <div className="drawer" role="dialog">
-        <div className="drawer-head"><div className="flex-1 strong">{title}</div>{actions}<IconButton label="Close" onClick={onClose}><X size={18} /></IconButton></div>
+      <div className="drawer-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} />
+      <div className={cls('drawer', size === 'wide' && 'drawer-wide')} role="dialog" aria-modal="true">
+        <div className="drawer-head"><div className="flex-1 strong drawer-title">{title}</div>{actions && <div className="row gap-4 drawer-acts">{actions}</div>}<IconButton label="Close" onClick={onClose}><X size={18} /></IconButton></div>
         <div className="drawer-body">{children}</div>
       </div>
     </>,

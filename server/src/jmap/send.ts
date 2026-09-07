@@ -38,6 +38,17 @@ export interface OutgoingMessage {
   attachments?: OutgoingAttachment[];
   messageId?: string;
   pgp?: PgpPayload | null;
+  /**
+   * An iCalendar invitation, reply or cancellation.
+   *
+   * It travels twice on purpose, which looks redundant and is not. As a
+   * `text/calendar` alternative beside the HTML it is what Outlook, Gmail
+   * and Apple Mail read to draw Accept/Decline buttons; as an `.ics`
+   * attachment it is what everything else lets the person open by hand. A
+   * message carrying only one of the two is inert in half the world's mail
+   * clients.
+   */
+  calendar?: { method: string; ical: string } | null;
 }
 export interface SendOutcome { messageId: string; jmapEmailId: string | null; threadId: string | null; via: 'jmap' | 'smtp' }
 
@@ -73,6 +84,14 @@ export async function buildInnerMime(msg: { html: string; text?: string; attachm
   const split = built.indexOf('\r\n\r\n');
   const headers = built.slice(0, split).split('\r\n').filter((l: string) => !/^(Date|Message-ID|MIME-Version):/i.test(l));
   return headers.join('\r\n') + built.slice(split);
+}
+
+// An encrypted or signed invitation: the calendar part goes inside the
+// protected body as an attachment. Scheduling buttons will not appear —
+// nothing can read a part it cannot decrypt — but the file is there.
+export function withCalendarAttachment(msg: OutgoingMessage): OutgoingAttachment[] {
+  if (!msg.calendar) return msg.attachments ?? [];
+  return [...(msg.attachments ?? []), { filename: 'invite.ics', content: Buffer.from(msg.calendar.ical, 'utf8'), contentType: 'text/calendar; charset=utf-8' }];
 }
 
 function pgpEnvelope(msg: OutgoingMessage, messageId: string): any {
@@ -117,7 +136,16 @@ export async function buildMime(msg: OutgoingMessage): Promise<{ raw: Buffer; me
     inReplyTo: msg.inReplyTo ? bracket(msg.inReplyTo) : undefined,
     references: msg.references?.length ? msg.references.map(bracket).join(' ') : undefined,
     headers: msg.headers,
-    attachments: msg.attachments?.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid, contentDisposition: a.cid ? 'inline' : 'attachment' })),
+    // The method has to be on the part's own Content-Type as well as on the
+    // body, or a receiving client treats it as a published event rather than
+    // as something addressed to them.
+    alternatives: msg.calendar
+      ? [{ contentType: `text/calendar; charset=utf-8; method=${msg.calendar.method}`, content: msg.calendar.ical, contentTransferEncoding: 'quoted-printable' as const }]
+      : undefined,
+    attachments: [
+      ...(msg.attachments ?? []).map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid, contentDisposition: a.cid ? 'inline' as const : 'attachment' as const })),
+      ...(msg.calendar ? [{ filename: 'invite.ics', content: Buffer.from(msg.calendar.ical, 'utf8'), contentType: 'text/calendar; charset=utf-8', contentDisposition: 'attachment' as const }] : []),
+    ],
     date: new Date(),
   });
   return { raw: info.message as Buffer, messageId };

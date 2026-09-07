@@ -121,14 +121,29 @@ test('the raw key is only reachable from files that are meant to have it', () =>
     'services/commitments.ts',
     'services/brief.ts',
     'services/calendarMail.ts',
+    // F13. The calendar store seals and opens a person's own calendar rows
+    // the way mailVault does for their mail; the orchestrator opens the
+    // remote ids it needs to match a server's listing against what is
+    // already held. Neither reads anybody else's row.
+    'services/calendar/store.ts',
+    'services/calendar/index.ts',
     'services/guard.ts',
     'services/mailImport.ts',
     'routes/mail.ts',
     'routes/review.ts',
     'routes/contacts.ts',
+    // The end-to-end suites open sealed columns on purpose: proving that
+    // what lands in Postgres is unreadable means reading it back with the
+    // key and checking it matches. That is the check, not a way around it.
+    'e2e/features.e2e.ts',
+    'e2e/calendar.e2e.ts',
   ]);
+  // Importing it under another name was a way past this: `dataKey as
+  // dataKeyFor` never produces the call shape below, so a file could take
+  // the key and never be counted. The import is checked as well as the call.
+  const reaches = (text: string) => /\bdataKey\(/.test(text) || /\bdataKey\s+as\s+\w+/.test(text);
   const offenders = sources()
-    .filter(({ file, text }) => !allowList.has(file) && /\bdataKey\(/.test(text))
+    .filter(({ file, text }) => !allowList.has(file) && reaches(text))
     .map(({ file }) => file);
   assert.deepEqual(offenders, [], `these files reach the raw data key without being on the list:\n${offenders.join('\n')}`);
 });

@@ -13,32 +13,58 @@
 #
 # What it does not do. No audio is written to disk on either side: the app
 # holds the clip in memory, zeroes the buffer when the transcript comes back,
-# and stores neither. This container has no volume for that reason, only a
-# read-only one for the weights.
+# and stores neither. The one volume here holds model weights and nothing
+# else; no clip and no transcript is ever written to it.
 services:
   whisper:
-    image: ${WHISPER_IMAGE:-docker.io/ggerganov/whisper.cpp:main}
+    # Upstream publishes to GHCR, not Docker Hub, and the project moved from
+    # ggerganov/ to ggml-org/. There is no whisper.cpp repository on Docker
+    # Hub at all, so a docker.io reference here fails the pull outright.
+    image: ${WHISPER_IMAGE:-ghcr.io/ggml-org/whisper.cpp:main}
     restart: unless-stopped
-    # `--convert` lets it accept whatever the browser recorded (WebM/Opus,
-    # MP4, Ogg) rather than only 16 kHz PCM; ffmpeg is in the image.
-    command: >
-      ./build/bin/whisper-server
-      --model /models/ggml-${WHISPER_MODEL:-base}.bin
-      --host 0.0.0.0 --port 8080
-      --threads ${WHISPER_THREADS:-2}
-      --convert
+    # The image's entrypoint is `bash -c`, so the command has to arrive as a
+    # ONE-element list: a plain multi-token `command:` is split into argv and
+    # bash then takes only the first word as the script, silently dropping
+    # every flag after it — the server would come up on 127.0.0.1 with the
+    # default model path and be both unreachable and modelless.
+    #
+    # First start downloads the weights into the volume. Doing it here rather
+    # than from install.sh is what makes the container able to start at all:
+    # whisper-server exits 3 when the model file is missing, so anything that
+    # waits for a healthy container before fetching the model can never get
+    # there. This also repairs a volume that was pruned, on plain `up`.
+    #
+    # `--inference-path` moves the transcribe route from whisper.cpp's own
+    # /inference to the OpenAI path the app posts to; without it every
+    # dictation gets a 404. `--convert` lets it accept whatever the browser
+    # recorded (WebM/Opus, MP4, Ogg) rather than only 16 kHz PCM; ffmpeg is
+    # in the image.
+    command:
+      - >-
+        test -s /models/ggml-${WHISPER_MODEL:-base}.bin ||
+        ./models/download-ggml-model.sh ${WHISPER_MODEL:-base} /models;
+        exec ./build/bin/whisper-server
+        --model /models/ggml-${WHISPER_MODEL:-base}.bin
+        --host 0.0.0.0 --port 8080
+        --threads ${WHISPER_THREADS:-2}
+        --inference-path /v1/audio/transcriptions
+        --convert
     volumes:
       - tern-whisper:/models:z
     # Never published to the host. The app reaches it over the compose
     # network, and nothing outside this box can send it audio.
     expose:
       - "8080"
+    # GET / is the only path this server answers without a clip: /v1/models
+    # is a 404 here, which is why the app falls back to / when it probes.
+    # The window is wide because a first start is fetching 150-500 MB of
+    # weights before the port opens at all.
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 600s
     mem_limit: ${WHISPER_MEM_LIMIT:-1024m}
 
   app:

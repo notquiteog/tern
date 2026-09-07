@@ -575,14 +575,19 @@ Add the container by re-running `./install.sh` and answering yes, or by hand:
 
 ```bash
 echo 'COMPOSE_FILE=compose.yml:compose.voice.yml' >> .env   # append to the existing value
+echo 'WHISPER_MODEL=base' >> .env                           # optional; base is the default
 ./bin/tern up
-./bin/tern compose exec whisper ./models/download-ggml-model.sh base /models
 ```
+
+The container downloads its own weights the first time it starts, so the
+first `up` takes a few minutes and the port does not answer until it is
+done — `./bin/tern logs whisper` shows the progress. Deleting the
+`tern-whisper` volume is how you make it fetch them again.
 
 `WHISPER_MODEL` chooses the speech model (`base` is 150 MB and fits a 4.5 GB
 box beside a chat model; `small` is 500 MB and better on accents and names).
-Without the container the Dictation switch says so rather than failing at the
-microphone.
+Change it and restart the container to switch. Without the container the
+Dictation switch says so rather than failing at the microphone.
 
 #### A transcriber on another machine
 

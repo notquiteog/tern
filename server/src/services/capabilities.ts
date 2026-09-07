@@ -150,10 +150,10 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
     readsMail: false, usesAi: true, heavy: true,
   },
   calendar: {
-    id: 'calendar', label: 'Invitations and times',
-    what: 'Recognises invitations in your mail and offers times to suggest. Reads the calendar parts of messages.',
+    id: 'calendar', label: 'Calendar',
+    what: 'Recognises invitations in your mail, and syncs the calendars you connect (Google, Outlook, iCloud or any CalDAV server, or a subscribed address). Your events are stored encrypted on this server; connecting a calendar sends your availability to and from that provider, and nothing else leaves. Where a time matters — proposing one, answering an invitation, the daily brief — Tern reads which hours are taken, never what the meetings are.',
     readsMail: true, usesAi: false, heavy: false,
-    erases: 'the invitations it has recognised',
+    erases: 'your connected calendars, the events synced from them, and the invitations found in your mail',
   },
   links: {
     id: 'links', label: 'Link cleaning',
