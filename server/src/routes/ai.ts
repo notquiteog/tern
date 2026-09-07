@@ -322,21 +322,16 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
     const c = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=lower($2)', [req.user!.id, b.recipientEmail]);
     input.recipient = c ? { name: [c.first_name, c.last_name].filter(Boolean).join(' ') || b.recipientName, email: c.email, company: c.company, title: c.title, notes: c.notes, fields: c.fields } : { name: b.recipientName?.trim() || undefined, email: b.recipientEmail };
   }
-  if (b.threadKey) {
-    const [accId, threadId] = b.threadKey.split(':');
-    const tacc = await getUserAccount(req.user!.id, Number(accId));
-    if (!tacc) throw notFound('Thread not found');
-    const msgs = await openEmails(req.user!.id, 'ai.compose', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
-    input.thread = msgs.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() }));
-    // A reply goes to whoever wrote to us; if we only have their address, the thread usually has their name.
-    if (input.recipient?.email && !input.recipient.name) {
-      const hit = msgs.map((m) => m.from_addr?.[0]).find((a: any) => a?.email && a.name && String(a.email).toLowerCase() === input.recipient!.email!.toLowerCase());
-      if (hit) input.recipient.name = String(hit.name);
-    }
-  }
-  // The ledger entry behind a reschedule or a nudge, and the dates written the
-  // way a person writes them — the model is poor at turning an ISO timestamp
-  // into "Thursday the 11th" and has no business trying.
+  // The ledger entry behind a reschedule or a nudge.
+  //
+  // Read before the conversation below, because who this is addressed to
+  // comes out of the ledger and the thread then fills in their name. Getting
+  // that order wrong is how a reschedule ends up opening "Hi there" and
+  // signing off with the recipient's own name.
+  //
+  // The dates are written out here rather than left as timestamps: the model
+  // is poor at turning an ISO instant into "Thursday the 11th" and has no
+  // business trying.
   if (b.mode === 'reschedule' || b.mode === 'nudge') {
     if (!b.commitmentId) throw badRequest('Which commitment this is about was not given');
     const c = await getCommitment(req.user!.id, b.commitmentId);
@@ -350,11 +345,43 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
       was: c.dueAt ? writeDate(c.dueAt, b.tz) : undefined,
       now: b.dueAt ? writeDate(b.dueAt, b.tz) : undefined,
     };
-    // The counterparty is who this goes to; the thread usually supplies the
-    // name, but a manual item may only ever have had an address.
-    if (!input.recipient && c.counterparty) input.recipient = { name: c.counterparty };
+    // A counterparty is whatever was recorded: sometimes an address, often
+    // just a name. An address is worth a contact lookup and lets the thread
+    // supply the name; a bare name is used as one.
+    const party = c.counterparty?.trim();
+    if (!input.recipient && party) {
+      if (party.includes('@')) {
+        const known = await one<any>('SELECT * FROM contacts WHERE user_id=$1 AND lower(email)=lower($2)', [req.user!.id, party]);
+        input.recipient = known
+          ? { name: [known.first_name, known.last_name].filter(Boolean).join(' '), email: known.email, company: known.company, title: known.title, notes: known.notes, fields: known.fields }
+          : { email: party };
+      } else {
+        input.recipient = { name: party };
+      }
+    }
   }
 
+  if (b.threadKey) {
+    const [accId, threadId] = b.threadKey.split(':');
+    const tacc = await getUserAccount(req.user!.id, Number(accId));
+    if (!tacc) throw notFound('Thread not found');
+    const msgs = await openEmails(req.user!.id, 'ai.compose', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
+    input.thread = msgs.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() }));
+    // A reply goes to whoever wrote to us; if we only have their address, the thread usually has their name.
+    if (input.recipient?.email && !input.recipient.name) {
+      const hit = msgs.map((m) => m.from_addr?.[0]).find((a: any) => a?.email && a.name && String(a.email).toLowerCase() === input.recipient!.email!.toLowerCase());
+      if (hit) input.recipient.name = String(hit.name);
+    }
+    // A commitment can carry no counterparty at all — plenty are written down
+    // without one. The conversation it came from always knows: it is whoever
+    // last wrote to us in it. Without this the email opens "Hi there" to
+    // somebody whose name is three lines below.
+    if (!input.recipient?.email && (b.mode === 'reschedule' || b.mode === 'nudge')) {
+      const mine = String(tacc.email).toLowerCase();
+      const them = [...msgs].reverse().map((m: any) => m.from_addr?.[0]).find((a: any) => a?.email && String(a.email).toLowerCase() !== mine);
+      if (them) input.recipient = { name: them.name ? String(them.name) : input.recipient?.name, email: String(them.email) };
+    }
+  }
   const send = sse(res);
   const abort = new AbortController();
   req.on('close', () => abort.abort());

@@ -493,7 +493,49 @@ export function stripModelSignature(text: string, ctx: FinalizeContext): string 
     const idx = lines.map((l) => l.trim()).reduce<number[]>((acc, l, i) => (l ? [...acc, i] : acc), []);
     if (idx.length >= 2 && isName(lines[idx[idx.length - 1]]) && isName(lines[idx[idx.length - 2]])) lines.splice(idx[idx.length - 1], 1);
   }
-  return lines.join('\n');
+  return stripRecipientSignoff(lines.join('\n'), ctx.recipient);
+}
+
+// A sign-off in the recipient's name.
+//
+// Handed a conversation, a small model will sometimes end an email "Best
+// regards, Bob" — where Bob is the person it is writing *to*. The existing
+// stripper only knows the sender's name, so it leaves this alone, and the
+// result reads as though the recipient wrote it themselves. Seen from the
+// dev model on a real thread, which is the only reason it is worth code.
+//
+// Only a genuine sign-off is touched: a trailing line that is the name and
+// nothing else, or a name after a valediction. Bob's name in the body of an
+// email addressed to Bob is left alone, because that is just writing.
+const VALEDICTION = /(?:best(?:\s+(?:regards|wishes))?|regards|kind regards|warm(?:ly|est)?|thanks(?:\s+again)?|many thanks|cheers|sincerely|yours(?:\s+(?:sincerely|faithfully|truly))?|speak soon|all the best)/i;
+
+export function stripRecipientSignoff(text: string, recipient?: DraftInput['recipient']): string {
+  const full = cleanRecipientName(recipient?.name);
+  const first = firstNameOf(recipient?.name);
+  if (!first) return text;
+  const names = [...new Set([full, first].filter(Boolean))].map(escapeRe).join('|');
+  const lines = text.split('\n');
+  let i = lines.length - 1;
+  while (i >= 0 && !lines[i].trim()) i -= 1;
+  if (i < 0) return text;
+  const last = lines[i].trim();
+
+  // "Best regards, Bob" — all on one line, which is how it arrives when the
+  // model wrote the whole email as a single paragraph.
+  const inline = new RegExp(`^(.*?)(?:^|[\\s,])(${VALEDICTION.source}),?\\s+(?:${names})[.!]?$`, 'i');
+  const m = inline.exec(last);
+  if (m) {
+    const head = `${m[1]}${m[1] && !/\s$/.test(m[1]) ? ' ' : ''}${m[2]},`.trim();
+    lines[i] = head;
+    return lines.join('\n');
+  }
+
+  // The name on a line of its own, under a valediction or under a blank line.
+  if (new RegExp(`^[-–—]?\\s*(?:${names})[,.!]?$`, 'i').test(last)) {
+    lines.splice(i, 1);
+    return lines.join('\n').replace(/\n+$/, '');
+  }
+  return text;
 }
 
 // Three one-line suggestions, whatever decoration the model added: numbers,

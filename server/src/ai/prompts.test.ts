@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureCommitmentDate, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureCommitmentDate, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, stripRecipientSignoff, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -369,4 +369,45 @@ test('finalizeOutput applies the greeting and the date guarantee together', () =
   assert.ok(out.startsWith('Hi Alice,'), 'greets the actual recipient');
   assert.ok(out.includes('Thursday 10 September at 12:00'));
   assert.ok(!/October/.test(out));
+});
+
+test('an email is never signed off in the name of the person it is addressed to', () => {
+  const bob = { name: 'Bob Probe', email: 'bob@probe.test' };
+  // The real failure, observed from the dev model on a real thread.
+  assert.equal(
+    stripRecipientSignoff('The quote will be with you Thursday. Best regards, Bob', bob),
+    'The quote will be with you Thursday. Best regards,',
+  );
+  // The same thing laid out over lines.
+  assert.equal(
+    stripRecipientSignoff('It will be Thursday.\n\nBest regards,\nBob', bob),
+    'It will be Thursday.\n\nBest regards,',
+  );
+  // A bare name on the last line.
+  assert.equal(stripRecipientSignoff('It will be Thursday.\n\nBob', bob), 'It will be Thursday.');
+  // The full name, and a dash before it.
+  assert.equal(stripRecipientSignoff('Thursday.\n\n— Bob Probe', bob), 'Thursday.');
+});
+
+test('the recipient name is left alone wherever it is not a sign-off', () => {
+  const bob = { name: 'Bob Probe', email: 'bob@probe.test' };
+  for (const keep of [
+    'Hi Bob,\n\nThe quote will be with you Thursday.',
+    'Bob asked for 20 seats, so the quote covers that.',
+    'It will be Thursday.\n\nBest regards,\nAlice',
+    'I will check with Bob and come back to you.',
+  ]) assert.equal(stripRecipientSignoff(keep, bob), keep);
+  // Nobody named: nothing to match on, nothing removed.
+  assert.equal(stripRecipientSignoff('Thanks,\nBob', {}), 'Thanks,\nBob');
+});
+
+test('finalizeOutput removes a recipient sign-off along with its other guarantees', () => {
+  const out = finalizeOutput('Hi Bob,\n\nIt will be Thursday 10 September at 12:00.\n\nBest regards,\nBob', 'reschedule', {
+    recipient: { name: 'Bob Probe', email: 'bob@probe.test' },
+    senderName: 'Alice Probe', senderEmail: 'alice@probe.test',
+    commitment: { kind: 'owed', what: 'Send the quote', now: 'Thursday 10 September at 12:00' },
+  });
+  assert.ok(out.startsWith('Hi Bob,'), 'the greeting names the recipient — that is correct');
+  assert.ok(!/Best regards,\s*\nBob/.test(out), 'the sign-off in their name is gone');
+  assert.ok(out.includes('Thursday 10 September at 12:00'));
 });
