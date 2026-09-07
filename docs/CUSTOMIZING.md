@@ -208,6 +208,29 @@ polish, shorten, expand, subject).
   parameter it does not know; these two are accepted by OpenAI, vLLM,
   llama.cpp and Ollama alike, so on that provider they are the only
   repetition controls there are.
+- **Presets** hold a set of these numbers under a name, because one model
+  does not want what another wants — and a reasoning model does not want what
+  it wants itself with thinking off. Pick one and **Apply**; **Save current
+  as…** keeps the sliders as they stand as a preset of your own, which you can
+  update or delete. Three ship with Tern and cannot be edited or deleted
+  (save a copy instead):
+  - **Balanced (small models)** — Tern's own defaults: qwen2.5, llama3.2,
+    gemma3, thinking off.
+  - **Qwen3.5 — straight answer** — temperature 0.7, top-p 0.8, top-k 20,
+    presence penalty 1.5, thinking off. What Qwen3.5 asks for in
+    non-thinking mode, and the setting for email on a CPU-only box.
+  - **Qwen3.5 — thinking** — temperature 1.0, top-p 0.95, top-k 20, presence
+    penalty 1.5, thinking on at medium effort with a 3000-token budget. The
+    wider sampling Qwen3.5 asks for while it reasons.
+
+  Both Qwen3.5 presets leave the repeat penalty at 1.0: on that model the
+  presence penalty does that job, and stacking the two flattens the writing.
+  A preset carries sampling, reply length and the thinking settings only —
+  never the context window, the keep-alive, the provider or the model, which
+  are decisions about the machine rather than about how the assistant writes
+  (a preset that resized the context would resize every parallel slot with
+  it). The model a preset was written for is shown as a badge, and warns when
+  you are running something else.
 - Some parameters are deliberately not settings. **Stop sequences** are set
   per task — a subject line ends at its first newline, every mode stops if
   the model starts a second turn of the conversation — because they are

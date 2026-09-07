@@ -347,6 +347,18 @@ function AiMemoryMeter({ provider }: { provider: string }) {
 function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch: any) => void }) {
   const c = data.concurrency;
   if (!c) return null;
+  // Somebody else's endpoint decides how much it will do at once, and it is
+  // not sharing this machine's memory with anything: none of the slot
+  // arithmetic below means anything there, so it is not shown.
+  if (f.provider !== 'ollama') {
+    return (
+      <div className="card mb-16">
+        <div className="card-title"><h2>Memory</h2><span className="small muted">{c.users} user{c.users === 1 ? '' : 's'}</span></div>
+        <p className="small muted">Generations run on the endpoint you have configured, which decides for itself how many it takes at once, so Tern does not queue them here. This is the memory on this machine.</p>
+        <AiMemoryMeter provider={f.provider} />
+      </div>
+    );
+  }
   return (
     <div className="card mb-16">
       <div className="card-title"><h2>Memory and concurrency</h2><span className="small muted">{c.users} user{c.users === 1 ? '' : 's'} · {f.concurrency ? `${c.configured} slot${c.configured === 1 ? '' : 's'}` : `1 of ${c.configured} slots in use`}</span></div>
