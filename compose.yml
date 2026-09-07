@@ -36,6 +36,9 @@ services:
       # the ollama service below.
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      # The embedding model meaning search uses. Nobody's mail is embedded
+      # until they turn the feature on for themselves.
+      AI_EMBED_MODEL: ${AI_EMBED_MODEL:-all-minilm}
       CLIENT_DIST: /app/client/dist
       PORT: "3080"
       TERN_VERSION: ${TERN_VERSION:-0.1.0}

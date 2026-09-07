@@ -1239,3 +1239,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .semantic-hit { grid-template-columns: 1fr auto; }
   .semantic-preview { grid-column: 1 / -1; }
 }
+
+/* "Describe it" above the rule form. A row rather than a panel: what it
+   produces goes into the fields below, so it should read as a shortcut to
+   filling them in rather than as an alternative way of making a rule. */
+.describe-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.describe-row .input { flex: 1; min-width: 0; }
+@media (max-width: 640px) { .describe-row { flex-wrap: wrap; } .describe-row .input { flex-basis: 100%; } }

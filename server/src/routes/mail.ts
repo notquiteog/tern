@@ -138,6 +138,19 @@ mailRouter.get('/threads', async (req, res) => {
   }
 
   const whereSql = where.join(' AND ');
+  // How the list is ordered. Newest first unless the person asked for what
+  // the priority model thinks needs them — and even then the date is the tie
+  // break, so an unscored conversation lands in its normal place rather than
+  // at the bottom of everything.
+  //
+  // Ordering is the only thing the model is allowed to do to the list.
+  // Nothing is hidden, moved or marked read on the strength of a guess: the
+  // failure mode of a wrong prediction has to be a message further down a
+  // list, not a message nobody ever saw.
+  const sort = String(req.query.sort ?? '');
+  const orderSql = sort === 'priority' && await allowed(req.user!.id, 'triage')
+    ? 't.priority DESC NULLS LAST, last_at DESC, t.account_id DESC, t.thread_id DESC'
+    : 'last_at DESC, t.account_id DESC, t.thread_id DESC';
   // Membership in the box decides which threads appear; the count, the
   // latest message and the ordering come from the whole conversation, the
   // way Gmail does it, so a reply you sent still bumps the thread.
@@ -145,7 +158,11 @@ mailRouter.get('/threads', async (req, res) => {
   // that turns into a real exchange follows the reply into Primary.
   const agg = `SELECT e.account_id, e.thread_id, bool_or(e.is_unread) AS unread, bool_or(e.is_flagged) AS starred, bool_or(e.has_attachment) AS has_attachment, bool_or(e.is_draft) AS has_draft,
                  bool_or(e.list_unsubscribe IS NOT NULL) AS bulk,
-                 COALESCE((array_agg(e.category ORDER BY e.received_at DESC))[1], 'primary') AS category
+                 COALESCE((array_agg(e.category ORDER BY e.received_at DESC))[1], 'primary') AS category,
+                 -- The learned score of the newest message in the conversation
+                 -- (F2). Null when priority ordering is off or the message has
+                 -- not been scored yet, which sorts last rather than first.
+                 (array_agg(e.priority ORDER BY e.received_at DESC))[1] AS priority
                FROM emails e WHERE ${whereSql} GROUP BY e.account_id, e.thread_id`;
   // Tabs are an inbox idea; Sent, Trash and a label are shown whole.
   const tabbed = box === 'inbox';
@@ -158,7 +175,7 @@ mailRouter.get('/threads', async (req, res) => {
   // same aggregate four times.
   const counts = tabbed
     ? await rememberCounts(
-        `${req.user!.id}|${accountIds.join(',')}|${box}|${q}|${filter}`,
+        `${req.user!.id}|${accountIds.join(',')}|${box}|${q}|${filter}|${sort}`,
         accountIds,
         async () => Object.fromEntries((await query<{ category: string; n: number; unread: number }>(
           `SELECT t.category, count(*)::int AS n, count(*) FILTER (WHERE t.unread)::int AS unread FROM (${agg}) t GROUP BY t.category`, params,
@@ -188,7 +205,7 @@ mailRouter.get('/threads', async (req, res) => {
        (SELECT s.until_at FROM snoozes s WHERE s.account_id=t.account_id AND s.thread_id=t.thread_id AND NOT s.restored LIMIT 1) AS snoozed_until,
        EXISTS (SELECT 1 FROM muted_threads mt WHERE mt.account_id=t.account_id AND mt.thread_id=t.thread_id) AS muted,
        (SELECT c.id FROM contact_threads ct JOIN contacts c ON c.id=ct.contact_id WHERE ct.account_id=t.account_id AND ct.thread_id=t.thread_id LIMIT 1) AS contact_id
-     FROM (${agg}) t${catSql} ORDER BY last_at DESC, t.account_id DESC, t.thread_id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+     FROM (${agg}) t${catSql} ORDER BY ${orderSql} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
     params,
   );
   const dek = await dataKey(req.user!.id);

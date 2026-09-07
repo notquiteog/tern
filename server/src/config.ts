@@ -79,6 +79,10 @@ export const config = {
   // AI
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiModel: env('AI_MODEL', ''),
+  // The small model that turns a message into a vector for meaning search.
+  // A separate setting because it is a different, much smaller model from
+  // the one that writes, and an install may want one without the other.
+  aiEmbedModel: env('AI_EMBED_MODEL', 'all-minilm'),
   aiEnabled: bool('AI_ENABLED', true),
   // What Ollama itself was started with. The app cannot change these — they
   // are read when the container starts — but it has to know them: the number
@@ -96,8 +100,6 @@ export const config = {
   // Anything speaking the OpenAI /v1/audio/transcriptions shape works;
   // compose.voice.yml runs whisper.cpp behind its own small server.
   whisperUrl: env('WHISPER_URL', '').replace(/\/+$/, ''),
-  // Where an upload being imported is staged before it is read and deleted.
-  uploadDir: env('UPLOAD_DIR', '/tmp/tern-uploads'),
   // Bundled Stalwart (optional). When set, the "Stalwart (this server)" preset
   // in the add-account form fills the session URL in automatically.
   stalwartUrl: env('STALWART_URL', '').replace(/\/+$/, ''),

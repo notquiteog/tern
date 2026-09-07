@@ -10,6 +10,7 @@ import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm } from '../components/ui';
 import { SemanticResults } from '../components/SearchExtras';
+import { useCan } from '../state/features';
 
 // The words out of a search, with the operators taken off. Meaning search
 // has nothing to say about `is:unread` or `newer_than:7d`, and feeding them
@@ -68,6 +69,10 @@ export default function MailPage() {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const filter = params.get('f') ?? '';
+  // F2's only surface in the list: another way to sort it. Never a filter —
+  // nothing is hidden on the strength of a guess.
+  const sort = params.get('sort') ?? '';
+  const canTriage = useCan('triage');
   const cat = (params.get('cat') ?? 'primary') as Category;
   const page = Math.max(1, Number(params.get('page') ?? 1));
   const [ctx, setCtx] = useState<{ x: number; y: number; row: ThreadRow } | null>(null);
@@ -98,8 +103,8 @@ export default function MailPage() {
   // the tab you happen to be on. Off, this is one inbox and one list.
   const tabbed = prefs.categories && box === 'inbox' && !q;
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['threads', box, accountsParam, q, page, filter, tabbed ? cat : ''],
-    queryFn: () => api.get<{ threads: ThreadRow[]; total: number; pageSize: number; counts: Record<string, { n: number; unread: number }> | null }>(`/api/mail/threads?box=${encodeURIComponent(box)}&accounts=${accountsParam}&q=${encodeURIComponent(q)}&page=${page}&f=${filter}${tabbed ? `&cat=${cat}` : ''}`),
+    queryKey: ['threads', box, accountsParam, q, page, filter, sort, tabbed ? cat : ''],
+    queryFn: () => api.get<{ threads: ThreadRow[]; total: number; pageSize: number; counts: Record<string, { n: number; unread: number }> | null }>(`/api/mail/threads?box=${encodeURIComponent(box)}&accounts=${accountsParam}&q=${encodeURIComponent(q)}&page=${page}&f=${filter}${sort ? `&sort=${sort}` : ''}${tabbed ? `&cat=${cat}` : ''}`),
     enabled,
     placeholderData: (prev) => prev,
   });
@@ -141,7 +146,7 @@ export default function MailPage() {
   const mailboxName = box.startsWith('mailbox:') ? mailboxes.find((m) => `mailbox:${m.account_id}:${m.jmap_id}` === box)?.name ?? 'Label' : BOX_TITLES[box] ?? box;
   const roleOf = useMemo(() => new Map(mailboxes.map((m) => [`${m.account_id}:${m.jmap_id}`, m])), [mailboxes]);
 
-  useEffect(() => { setSelected(new Set()); setFocus(0); setOpenStacks(new Set()); summaryProgress.current = { settled: -1, idle: 0 }; }, [box, q, page, accountsParam, filter, cat]);
+  useEffect(() => { setSelected(new Set()); setFocus(0); setOpenStacks(new Set()); summaryProgress.current = { settled: -1, idle: 0 }; }, [box, q, page, accountsParam, filter, sort, cat]);
   // The background picks up the mood of whatever is being read. Only while
   // the tabs are actually in use; otherwise the inbox is one thing and the
   // colour behind it should not keep changing.
@@ -149,7 +154,7 @@ export default function MailPage() {
   useEffect(() => { if (!ctx) return; const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); window.addEventListener('keydown', close); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); window.removeEventListener('keydown', close); }; }, [ctx]);
   useEffect(() => { if (threadKey) { const i = threads.findIndex((t) => t.key === threadKey); if (i >= 0) setFocus(i); } }, [threadKey, threads]);
 
-  const qs = () => { const p = new URLSearchParams(); if (q) p.set('q', q); if (filter) p.set('f', filter); const s = p.toString(); return s ? `?${s}` : ''; };
+  const qs = () => { const p = new URLSearchParams(); if (q) p.set('q', q); if (filter) p.set('f', filter); if (sort) p.set('sort', sort); const s = p.toString(); return s ? `?${s}` : ''; };
   function openThread(t: ThreadRow) { nav(`/mail/${box}/t/${encodeURIComponent(t.key)}${qs()}`); }
   function back() { nav(`/mail/${box}${qs()}`); }
   function setFilter(f: string) { setParams((p) => { if (f) p.set('f', f); else p.delete('f'); p.delete('page'); return p; }); }
@@ -347,6 +352,13 @@ export default function MailPage() {
             {accounts.length > 0 && !box.startsWith('mailbox:') && (
               <div className="list-filters">
                 <Segmented value={filter || 'all'} onChange={(v) => setFilter(v === 'all' ? '' : v)} options={[{ value: 'all', label: 'All' }, { value: 'unread', label: 'Unread' }, { value: 'read', label: 'Read' }, { value: 'starred', label: 'Starred' }, { value: 'attachments', label: 'Files' }]} />
+                {canTriage && (
+                  <Segmented
+                    value={sort === 'priority' ? 'priority' : 'newest'}
+                    onChange={(v) => setParams((p) => { if (v === 'priority') p.set('sort', 'priority'); else p.delete('sort'); p.delete('page'); return p; })}
+                    options={[{ value: 'newest', label: 'Newest' }, { value: 'priority', label: 'Needs you' }]}
+                  />
+                )}
                 <span className="ml-auto row gap-4">
                   {total > 0 && <span className="small faint">{total} conversation{total === 1 ? '' : 's'}</span>}
                   <IconButton label={prefs.view === 'card' ? 'Switch to the list' : 'Switch to cards'} className="btn-sm"

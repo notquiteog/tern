@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight } from 'lucide-react';
+import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight, Archive } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
@@ -26,6 +26,7 @@ import EncryptionSettings from './Encryption';
 // model, branding) live under Admin, in pages/AdminSettings.tsx, and the
 // server refuses their endpoints to non-admins regardless of the UI.
 import FeaturesPage from './Features';
+import ImportPage from './Import';
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -35,7 +36,7 @@ export default function SettingsPage() {
     // what is switched on here.
     ['features', 'Features', <ToggleRight size={15} />],
     ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
-    ['mail', 'Mail', <Inbox size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
+    ['mail', 'Mail', <Inbox size={15} />], ['import', 'Import', <Archive size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
   ];
   return (
     <div className="page">
@@ -48,6 +49,7 @@ export default function SettingsPage() {
       </div>
       <Routes>
         <Route path="features" element={<FeaturesPage />} />
+        <Route path="import" element={<ImportPage />} />
         <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
         <Route path="mailapps" element={<MailAppsSettings />} />

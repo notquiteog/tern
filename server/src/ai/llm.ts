@@ -89,7 +89,7 @@ const DEFAULTS: AiSettings = {
   maxTokens: 700,
   wipeAfterUse: true,
   wipeIdleSeconds: 90,
-  embedModel: 'all-minilm',
+  embedModel: config.aiEmbedModel,
   concurrency: true,
 };
 

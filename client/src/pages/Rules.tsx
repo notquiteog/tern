@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ListFilter, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown, X } from 'lucide-react';
+import { ListFilter, Loader2, Pencil, Play, Plus, Sparkles, Trash2, ArrowUp, ArrowDown, X } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useAccounts, useMailboxes } from '../lib/queries';
 import { Badge, Button, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Toggle } from '../components/ui';
 import { ConditionsEditor } from '../components/Conditions';
+import { DictateButton } from '../components/Dictate';
+import { useCan } from '../state/features';
+import { postWithWork } from '../lib/work';
 const ACTIONS = [['archive', 'Skip the inbox (archive)'], ['mark_read', 'Mark as read'], ['star', 'Star it'], ['label', 'Apply label'], ['trash', 'Delete it'], ['spam', 'Mark as junk']];
 
 export default function RulesPage() {
@@ -60,6 +63,9 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   const [conds, setConds] = useState<any[]>(isNew ? [{ field: 'from', op: 'contains', value: '' }] : rule.conditions);
   const [acts, setActs] = useState<any[]>(isNew ? [{ type: 'archive' }] : rule.actions);
   const [busy, setBusy] = useState(false);
+  const [sentence, setSentence] = useState('');
+  const [describing, setDescribing] = useState(false);
+  const canDescribe = useCan('nlrules');
   const labels = mailboxes.filter((m) => !m.role && (accountId === '' || m.account_id === accountId));
   async function save() {
     setBusy(true);
@@ -69,8 +75,39 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
       onSaved(); onClose(); toast.success('Saved');
     } catch (e) { toast.error(e); } finally { setBusy(false); }
   }
+  // F7: a sentence becomes a draft of a rule, filled into this form. The
+  // model runs once, here, and what it produces is editable before it is
+  // saved — after that the rule executes deterministically for ever and no
+  // model is in the loop.
+  async function describe(text: string) {
+    setDescribing(true);
+    try {
+      const r = await postWithWork<{ draft: { name: string; match: 'all' | 'any'; conditions: any[]; actions: any[] } }>('ai', '/api/assist/rule', { text });
+      if (!name.trim()) setName(r.draft.name);
+      setMatch(r.draft.match);
+      setConds(r.draft.conditions);
+      setActs(r.draft.actions);
+      setSentence('');
+      toast.success('Filled in below — check it before saving');
+    } catch (e) { toast.error(e); } finally { setDescribing(false); }
+  }
+
   return (
     <Modal open onClose={onClose} title={isNew ? 'New rule' : 'Edit rule'} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} disabled={!name.trim() || !conds.length || !acts.length} onClick={save}>Save</Button></>}>
+      {canDescribe && (
+        <div className="describe-row">
+          <Input
+            value={sentence}
+            onChange={(e) => setSentence(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && sentence.trim().length > 3) { e.preventDefault(); void describe(sentence.trim()); } }}
+            placeholder="Describe it: “when a receipt from Stripe arrives, label it Finance and skip the inbox”"
+          />
+          <DictateButton title="Describe the rule out loud" onText={(t) => setSentence((v) => (v ? `${v} ${t}` : t))} />
+          <Button icon={describing ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} loading={describing} disabled={sentence.trim().length < 4} onClick={() => void describe(sentence.trim())}>
+            Fill in
+          </Button>
+        </div>
+      )}
       <div className="form-row">
         <Field label="Name"><Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Newsletters out of the inbox" /></Field>
         <Field label="Applies to"><Select value={accountId} onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : '')}><option value="">All accounts</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.email}</option>)}</Select></Field>
@@ -86,7 +123,10 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
         ))}
         <Button size="sm" icon={<Plus size={13} />} onClick={() => setActs((l) => [...l, { type: 'mark_read' }])}>Add action</Button>
       </Field>
-      <div className="help-text">Rules only run on messages that arrive in the inbox. Use "Run on inbox" afterwards to apply a new rule to what is already there.</div>
+      <div className="help-text">
+        Rules only run on messages that arrive in the inbox. Use "Run on inbox" afterwards to apply a new rule to what is already there.
+        {canDescribe && ' A rule written from a sentence is a draft: once you save it, it runs exactly as shown here and the model is not involved again.'}
+      </div>
     </Modal>
   );
 }

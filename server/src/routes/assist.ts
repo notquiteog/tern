@@ -7,13 +7,9 @@
 // a fixed count. The cheap ones (reading a stored brief, listing
 // commitments) carry neither, because they are ordinary reads.
 import { Router, raw } from 'express';
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { requireAuth } from '../auth.js';
 import { parse, z, idParam } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { config } from '../config.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { requireCapability } from '../services/capabilities.js';
 import { powGuard } from '../services/workGuard.js';
@@ -175,10 +171,13 @@ assistRouter.post('/import/:id/cancel', requireCapability('import'), async (req,
   res.json({ cancelled: await cancelImport(req.user!.id, idParam(req.params.id)) });
 });
 
-// The file is staged on disk rather than held in memory for the length of
-// the import, and is deleted the moment the run ends — see runImport's
-// `finally`. Two gigabytes is a decade of most people's mail.
-const IMPORT_LIMIT = 2 * 1024 * 1024 * 1024;
+// The archive is held in memory and never written down, which is what makes
+// "nothing is left behind" a fact rather than a promise about cleanup code.
+// The price is a ceiling: this has to fit in the app container, which is
+// sized for a 4.5 GB box. 256 MB is a large personal archive — a decade of
+// text mail is usually well under it — and a Takeout that is bigger can be
+// imported a folder at a time, which docs/CUSTOMIZING.md says.
+const IMPORT_LIMIT = 256 * 1024 * 1024;
 
 assistRouter.post(
   '/import',
@@ -194,14 +193,10 @@ assistRouter.post(
     const filename = typeof req.query.filename === 'string' ? req.query.filename : null;
 
     const id = await startImport(req.user!.id, acc.id, filename);
-    await mkdir(config.uploadDir, { recursive: true });
-    const staged = path.join(config.uploadDir, `import-${id}-${randomUUID().slice(0, 8)}.mbox`);
-    await writeFile(staged, req.body, { mode: 0o600 });
-
     // The browser gets the id at once and polls; a decade of mail is not a
     // request anybody should hold open.
     res.json({ import: await progress(req.user!.id, id) });
-    void runImport(req.user!.id, acc, id, staged, req.body);
+    void runImport(req.user!.id, acc, id, req.body);
   },
 );
 

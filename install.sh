@@ -170,9 +170,32 @@ if [ "$AI_ENABLED" = 1 ]; then
   GPU_DEFAULT=n
   if have nvidia-smi && ls /etc/cdi/*.yaml >/dev/null 2>&1; then GPU_DEFAULT=y; fi
   ask_yn GPU_ENABLED "Give Ollama an NVIDIA GPU (needs nvidia container toolkit + CDI)?" "$GPU_DEFAULT"
+  # Meaning search needs a second, much smaller model. all-minilm is 46 MB
+  # and 384 dimensions, which is enough for "find the thread about the
+  # price"; nomic-embed-text is 274 MB and noticeably better, and is the
+  # default once the box has room to hold it beside the chat model.
+  if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 6) }'; then EMBED_DEFAULT="nomic-embed-text"; else EMBED_DEFAULT="all-minilm"; fi
+  AI_EMBED_MODEL="${AI_EMBED_MODEL:-$EMBED_DEFAULT}"
+  note "Meaning search will use $AI_EMBED_MODEL. Nobody's mail is read until they turn the feature on for themselves."
+  # Dictation. Separate question because it is a separate container and the
+  # only thing on the list that costs the base install real memory.
+  if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 4) }'; then
+    ask_yn VOICE_ENABLED "Add dictation (speak into any text box; a whisper.cpp container, about 500 MB)?" "$( [ "${VOICE_ENABLED:-0}" = 1 ] && echo y || echo n )"
+    if [ "${VOICE_ENABLED:-0}" = 1 ]; then
+      if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 8) }'; then WHISPER_MODEL="${WHISPER_MODEL:-small}"; WHISPER_MEM_LIMIT="1536m";
+      else WHISPER_MODEL="${WHISPER_MODEL:-base}"; WHISPER_MEM_LIMIT="768m"; fi
+      note "Dictation will use the '$WHISPER_MODEL' model. Recordings are never written to disk and transcripts are never stored."
+    fi
+  else
+    VOICE_ENABLED=0
+  fi
 else
-  AI_MODEL="${AI_MODEL:-$RECOMMENDED}"; AI_ENABLED_VAL=false; GPU_ENABLED=0
+  AI_MODEL="${AI_MODEL:-$RECOMMENDED}"; AI_ENABLED_VAL=false; GPU_ENABLED=0; VOICE_ENABLED=0
 fi
+VOICE_ENABLED="${VOICE_ENABLED:-0}"
+WHISPER_MODEL="${WHISPER_MODEL:-base}"
+WHISPER_MEM_LIMIT="${WHISPER_MEM_LIMIT:-768m}"
+AI_EMBED_MODEL="${AI_EMBED_MODEL:-all-minilm}"
 # Memory limits scale with the box so a 4.5 GB VPS never swaps itself to death.
 if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_MEM_LIMIT="2300m"; APP_MEM_LIMIT="640m"; STALWART_MEM_LIMIT="512m";
 elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_MEM_LIMIT="4500m"; APP_MEM_LIMIT="768m"; STALWART_MEM_LIMIT="768m";
@@ -230,6 +253,7 @@ ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(gen_secret 32)}"
 COMPOSE_FILE="compose.yml"
 [ "$STALWART_ENABLED" = 1 ] && COMPOSE_FILE="$COMPOSE_FILE:compose.stalwart.yml"
 [ "${GPU_ENABLED:-0}" = 1 ] && COMPOSE_FILE="$COMPOSE_FILE:compose.gpu.yml"
+[ "${VOICE_ENABLED:-0}" = 1 ] && COMPOSE_FILE="$COMPOSE_FILE:compose.voice.yml"
 TERN_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' package.json | head -1)"
 
 umask 077
@@ -253,7 +277,11 @@ ADMIN_USER=$ADMIN_USER
 
 AI_ENABLED=$AI_ENABLED_VAL
 AI_MODEL=$AI_MODEL
+AI_EMBED_MODEL=$AI_EMBED_MODEL
 GPU_ENABLED=${GPU_ENABLED:-0}
+VOICE_ENABLED=${VOICE_ENABLED:-0}
+WHISPER_MODEL=$WHISPER_MODEL
+WHISPER_MEM_LIMIT=$WHISPER_MEM_LIMIT
 OLLAMA_KEEP_ALIVE=10m
 OLLAMA_NUM_PARALLEL=$OLLAMA_NUM_PARALLEL
 OLLAMA_KV_CACHE_TYPE=q8_0
@@ -407,6 +435,30 @@ if [ "$AI_ENABLED" = 1 ]; then
     say "  Downloading $AI_MODEL (once; sizes range from 400 MB to several GB)…"
     if compose exec -T ollama ollama pull "$AI_MODEL"; then ok "model ready"; else warn "Model download failed; pull it later from Settings → AI or with: ./bin/tern pull-model $AI_MODEL"; fi
   fi
+  # The embedding model for meaning search. Small, and pulled now so the
+  # first person to turn the feature on does not wait for a download.
+  if compose exec -T ollama ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$AI_EMBED_MODEL\(:latest\)\?"; then
+    ok "embedding model $AI_EMBED_MODEL already present"
+  else
+    say "  Downloading $AI_EMBED_MODEL for meaning search (46-274 MB)…"
+    if compose exec -T ollama ollama pull "$AI_EMBED_MODEL"; then ok "embedding model ready"; else warn "Embedding model download failed; meaning search will say so until it is pulled: ./bin/tern pull-model $AI_EMBED_MODEL"; fi
+  fi
+fi
+
+# The speech model, into the whisper container's volume. whisper.cpp ships
+# the download script in the image, so this needs no network tooling here.
+if [ "${VOICE_ENABLED:-0}" = 1 ]; then
+  if compose exec -T whisper test -s "/models/ggml-${WHISPER_MODEL}.bin" 2>/dev/null; then
+    ok "speech model $WHISPER_MODEL already present"
+  else
+    say "  Downloading the '$WHISPER_MODEL' speech model (once; 150 MB to 500 MB)…"
+    if compose exec -T whisper sh -c "./models/download-ggml-model.sh ${WHISPER_MODEL} /models"; then
+      ok "speech model ready"
+      compose restart whisper >/dev/null 2>&1 || true
+    else
+      warn "Speech model download failed; dictation will be unavailable until it is fetched. Retry with: ./bin/tern compose exec whisper ./models/download-ggml-model.sh ${WHISPER_MODEL} /models"
+    fi
+  fi
 fi
 
 # ---------- Stalwart bootstrap ----------
@@ -470,7 +522,10 @@ say ""
 say "  Web app:        ${B}$APP_URL${N}"
 say "  Sign in as:     $ADMIN_USER"
 if [ "$ADMIN_PASSWORD_GENERATED" = 1 ]; then say "  Password:       ${B}$ADMIN_PASSWORD${N}   ${D}(generated; change it in Settings → Security)${N}"; else say "  Password:       ${D}unchanged (reset with: ./bin/tern cli set-password --username $ADMIN_USER --password '…')${N}"; fi
-[ "$AI_ENABLED" = 1 ] && say "  AI model:       $AI_MODEL  ${D}(change under Settings → AI)${N}"
+[ "$AI_ENABLED" = 1 ] && say "  AI model:       $AI_MODEL  ${D}(change under Admin → AI model)${N}"
+[ "$AI_ENABLED" = 1 ] && say "  Meaning search: $AI_EMBED_MODEL  ${D}(off until each person turns it on)${N}"
+[ "${VOICE_ENABLED:-0}" = 1 ] && say "  Dictation:      whisper $WHISPER_MODEL  ${D}(off until each person turns it on)${N}"
+say "  Features:       every one that reads mail or uses the model is off by default; Settings → Features"
 if [ "$STALWART_ENABLED" = 1 ]; then
   say ""
   say "  Mail server:    https://$STALWART_HOST/admin   ${D}(Stalwart admin panel)${N}"
