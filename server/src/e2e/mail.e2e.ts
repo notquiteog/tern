@@ -11,7 +11,8 @@
 import pg from 'pg';
 import { createHash, randomBytes } from 'node:crypto';
 import net from 'node:net';
-import { openEmails } from '../services/mailVault.js';
+import { openDraft, openEmails } from '../services/mailVault.js';
+import { leadingZeroBits } from '../pow.js';
 import { grant } from '../services/capabilities.js';
 
 const BASE = process.env.TERN_BASE ?? 'http://127.0.0.1:3090';
@@ -37,8 +38,22 @@ async function api<T = any>(method: string, path: string, body?: unknown): Promi
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   return { status: res.status, data };
 }
+// The generation endpoints are behind a proof of work, which the browser
+// solves before every call. The difficulty climbs with how much this session
+// has already asked for, so it is fetched fresh each time rather than reused.
+async function workHeaders(purpose = 'ai'): Promise<Record<string, string>> {
+  const w = await api<{ challenge: string; difficulty: number }>('GET', `/api/features/work?purpose=${purpose}`);
+  if (w.status !== 200 || !w.data?.challenge) return {};
+  const { challenge, difficulty } = w.data;
+  for (let n = 0; ; n++) {
+    const nonce = String(n);
+    if (leadingZeroBits(createHash('sha256').update(`${challenge}.${nonce}`).digest()) >= difficulty) {
+      return { 'X-Work-Challenge': challenge, 'X-Work-Nonce': nonce };
+    }
+  }
+}
 async function stream(path: string, body: unknown): Promise<{ text: string; tokens: number; error?: string }> {
-  const res = await fetch(BASE + path, { method: 'POST', headers: { 'X-Requested-With': 'tern', 'Content-Type': 'application/json', Cookie: cookie, Accept: 'text/event-stream' }, body: JSON.stringify(body) });
+  const res = await fetch(BASE + path, { method: 'POST', headers: { ...(await workHeaders()), 'X-Requested-With': 'tern', 'Content-Type': 'application/json', Cookie: cookie, Accept: 'text/event-stream' }, body: JSON.stringify(body) });
   const raw = await res.text();
   if (!res.ok) return { text: '', tokens: 0, error: raw };
   let text = '', tokens = 0, error: string | undefined;
@@ -592,7 +607,10 @@ const aiGroup = group('ai', async () => {
     const s2 = `Demo request ${uid()}`;
     await send(ALICE, { to: [{ name: 'Bob Probe', email: 'bob@probe.test' }], subject: s2, html: '<p>Hi Bob, can we see a demo of the reporting module? Alice</p>' });
     b = await arrived(BOB, s2);
-    const draft = await waitFor('responder draft', async () => (await sql(`SELECT * FROM drafts WHERE account_id=$1 AND thread_id=$2 AND source='ai'`, [BOB, b.thread_id]))[0], 90_000, 1500);
+    const draftRow = await waitFor('responder draft', async () => (await sql(`SELECT * FROM drafts WHERE account_id=$1 AND thread_id=$2 AND source='ai'`, [BOB, b.thread_id]))[0], 90_000, 1500);
+    // `OpenedDraft` widens the opened fields to optional; the checks below
+    // want the plain values.
+    const draft = (await openDraft<any>(USER, draftRow)) as any;
     eq(draft.to_addr.map((x: any) => x.email), ['alice@probe.test']);
     eq(draft.subject, `Re: ${s2}`);
     const text = String(draft.body_html).split('<div class="tern-quote"')[0].replace(/<[^>]+>/g, '\n').trim();
