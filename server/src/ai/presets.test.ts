@@ -1,7 +1,7 @@
 // The shipped presets, and the rules a saved one has to follow.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILT_IN_PRESETS, PRESET_FIELDS, presetId, presetValues, defaultTuningFor, matchesPreset } from './presets.js';
+import { BUILT_IN_PRESETS, PRESET_FIELDS, presetId, presetValues, defaultTuningFor, matchesPreset, presetFor, hasThinkingProfile } from './presets.js';
 
 test('a preset carries how the model writes and nothing about the machine', () => {
   // The context window and the keep-alive are memory decisions — a preset
@@ -66,31 +66,55 @@ test('every shipped preset is applicable and inside the bounds the API enforces'
   }
 });
 
-test('the shipped tuning follows the model rather than a constant', () => {
-  // The audit finding: Tern's defaults were qwen2.5's numbers and were being
-  // applied to whatever model an install ran.
-  const q35 = defaultTuningFor('qwen3.5:4b');
-  assert.equal(q35.topP, 0.8);
-  assert.equal(q35.topK, 20);
-  assert.equal(q35.presencePenalty, 1.5);
-  // Thinking stays off even on a model that can do it: measured at 11x-50x
-  // the latency for a difference inside the noise.
-  assert.equal(q35.allowThinking, false);
-  // The whole family, however it is tagged.
+test('every shipped preset carries the vendor\'s own published numbers', () => {
+  // Qwen publish both modes and state min_p = 0 for each. Ollama bakes the
+  // *thinking* pair in as the model default, which is the wrong one for a
+  // mail client answering straight — so the straight profile has to be set
+  // explicitly rather than left to the model file.
+  const straight = presetFor('qwen3.5:4b', 'straight');
+  assert.equal(straight.temperature, 0.7);
+  assert.equal(straight.topP, 0.8);
+  assert.equal(straight.topK, 20);
+  assert.equal(straight.minP, 0);
+  assert.equal(straight.presencePenalty, 1.5);
+  // Presence penalty and repeat penalty are two repetition controls; Qwen ask
+  // for the first, so the second is off rather than stacked on top.
+  assert.equal(straight.repeatPenalty, 1.0);
+  assert.equal(straight.allowThinking, false);
+
+  const thinking = presetFor('qwen3.5:4b', 'thinking');
+  assert.equal(thinking.temperature, 1.0);
+  assert.equal(thinking.topP, 0.95);
+  assert.equal(thinking.topK, 20);
+  assert.equal(thinking.minP, 0);
+  assert.equal(thinking.allowThinking, true);
+  // Measured: uncapped reasoning runs to 12,479 tokens on a long thread.
+  assert.ok((thinking.thinkingBudget ?? 0) >= 13_000, 'the budget must clear the measured maximum');
+
+  // Mistral's one published number, and it is unusually low.
+  assert.equal(presetFor('mistral-small:24b', 'straight').temperature, 0.15);
+  // Phi-4 has no official recommendation; these are its report's own numbers.
+  assert.equal(presetFor('phi4:14b', 'straight').temperature, 0.5);
+  assert.equal(presetFor('phi4:14b', 'straight').topK, 50);
+  // Anything unknown gets the general-purpose set.
+  for (const tag of ['qwen2.5:1.5b', 'llama3.2:3b', 'gemma3:4b', '']) {
+    assert.equal(presetFor(tag, 'straight').topK, 40, tag);
+  }
+});
+
+test('the whole qwen3.5 family is matched, however it is tagged', () => {
   for (const tag of ['qwen3.5:9b', 'qwen3.5:4b-instruct-q4_K_M', 'QWEN3.5:4B']) {
-    assert.equal(defaultTuningFor(tag).topK, 20, tag);
+    assert.equal(presetFor(tag, 'straight').topP, 0.8, tag);
   }
-  // Anything else gets the general-purpose set.
-  for (const tag of ['qwen2.5:1.5b', 'llama3.2:3b', 'phi4:14b', 'mistral-small:24b', '']) {
-    assert.equal(defaultTuningFor(tag).topK, 40, tag);
-  }
+  // A model with one mode does not pretend to have two.
+  assert.equal(hasThinkingProfile('qwen3.5:4b'), true);
+  assert.equal(hasThinkingProfile('mistral-small:24b'), false);
+  assert.equal(hasThinkingProfile('phi4:14b'), false);
 });
 
 test('"untouched" is exact equality, so a hand-tuned install keeps its numbers', () => {
   const q35 = defaultTuningFor('qwen3.5:4b');
   assert.equal(matchesPreset(q35, q35), true);
   assert.equal(matchesPreset({ ...q35, temperature: 0.9 }, q35), false);
-  // A different model's numbers are not a match, which is what makes the
-  // migration on a model change safe.
-  assert.equal(matchesPreset(defaultTuningFor('qwen2.5:1.5b'), q35), false);
+  assert.equal(matchesPreset(defaultTuningFor('mistral-small:24b'), q35), false);
 });

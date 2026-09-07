@@ -26,11 +26,11 @@ Every question shows its default in brackets; press Enter to accept. The install
 
    | RAM | Model | Notes |
    |---|---|---|
-   | under 3.5 GB | `qwen2.5:0.5b` | subject lines and light rewrites |
-   | 3.5 to 6 GB | `qwen2.5:1.5b` | the pick for a 4.5 GB VPS |
-   | 6 to 10 GB | `qwen2.5:3b` | noticeably better tone |
-   | 10 to 20 GB | `qwen2.5:7b` | strong writing, slow on CPU |
-   | 20 GB and up | `qwen2.5:14b` | best quality, wants a GPU |
+   | under 6 GB | `qwen3.5:0.8b` | the pick for a 4.5 GB VPS: subject lines, light rewrites, simple drafts |
+   | 6 to 10 GB | `qwen3.5:2b` | steadier tone and structure |
+   | 10 to 16 GB | `qwen3.5:4b` | the best value measured: 36 of 42 cases for 3.4 GB |
+   | 16 to 24 GB | `qwen3.5:9b` | the strongest measured here, 39 of 42; wants a GPU |
+   | 24 GB and up | `gemma4:12b` | a true 12B in 7.6 GB, newest Gemma |
 
    Any model from ollama.com/library works; type its name instead, either
    short (`gemma3:4b`) or fully qualified (`ollama.com/library/gemma3:4b`) —
@@ -119,7 +119,7 @@ switch on the same page, off by default.
 | Restore | `./bin/tern restore backups/tern-backup-….tar.gz` |
 | Reset a password | `./bin/tern cli set-password --username alice --password '…'` |
 | Disable someone's 2FA | `./bin/tern cli disable-totp --username alice` |
-| Pull a model | `./bin/tern pull-model qwen2.5:3b` |
+| Pull a model | `./bin/tern pull-model qwen3.5:4b` |
 | Give everyone their own AI slot | `./bin/tern ai-slots` |
 
 Back up `.env` with the database: `ENCRYPTION_KEY` in it decrypts the stored mailbox credentials.

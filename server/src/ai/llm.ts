@@ -5,12 +5,13 @@
 import { config } from '../config.js';
 import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
-import { recommendModel, recommendNumCtx } from './models.js';
+import { clampNumCtx, recommendModel, recommendNumCtx } from './models.js';
 import { defaultTuningFor, matchesPreset, PRESET_FIELDS } from './presets.js';
 import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
 import { logger } from '../log.js';
+import { explainOutboundError, inspectCertificate, normalizeBaseUrl, outboundFetch, type CertInfo, type TlsTrust } from '../util/outbound.js';
 
 const log = logger('ai');
 
@@ -19,6 +20,11 @@ export interface AiSettings {
   provider: 'ollama' | 'openai';
   baseUrl: string;
   apiKey: string;
+  // Whether a certificate this machine cannot verify is accepted from the
+  // model server. Off, and it has to be one a public authority vouches for.
+  // On is for a model server that issued itself a certificate at boot, which
+  // is what a rented GPU host does — see util/outbound.ts.
+  tlsInsecure: boolean;
   model: string;
   temperature: number;
   numCtx: number;
@@ -27,6 +33,13 @@ export interface AiSettings {
   // their working-out and the reply. Tern wants the reply, so thinking is
   // off unless an admin turns it on — and when it is on, the reasoning is
   // paid for out of its own budget rather than out of the email's.
+  //
+  // It is off by default because of the clock, not the quality: measured on
+  // the hardest recall cases it is more accurate with thinking on (15 clean
+  // runs of 15, against 27 of 30 without), and it takes about 75 seconds a
+  // draft instead of under a second. Nobody waits that long at a composer.
+  // A responder answering one message in the background is the case where
+  // the trade goes the other way.
   allowThinking: boolean;
   thinkEffort: 'low' | 'medium' | 'high';
   thinkingBudget: number;
@@ -74,6 +87,7 @@ const BASE_DEFAULTS: AiSettings = {
   provider: 'ollama',
   baseUrl: config.ollamaUrl,
   apiKey: '',
+  tlsInsecure: false,
   model: DEFAULT_MODEL,
   temperature: 0.7,
   // How much conversation the model is shown, sized to the machine rather
@@ -83,15 +97,31 @@ const BASE_DEFAULTS: AiSettings = {
   numCtx: recommendNumCtx(config.totalMemBytes),
   keepAlive: '10m',
   allowThinking: false,
+  // Ollama accepts an effort level, and on qwen3.5:4b it changes nothing:
+  // low, medium and high produce byte-identical output, seed for seed, over
+  // six runs each. The model has one reasoning mode and Ollama passes any
+  // truthy value through as "on". Kept because models that do expose levels
+  // (gpt-oss and friends) honour it, but on the model Tern ships with this
+  // setting is inert and the tuning panel should not promise otherwise.
   thinkEffort: 'low',
-  // Measured rather than guessed. With thinking on, 26 of 33 generations in
-  // the live suite spent their whole budget reasoning and returned nothing,
-  // and only the retry-without-thinking fallback produced an answer at all —
-  // so "thinking on" was in practice "thinking off, forty seconds later".
-  // The exhausted generations used a median of about 4,000 tokens of
-  // reasoning and a maximum of 4,600, so 3,000 guaranteed the failure it was
-  // meant to bound. 6,000 leaves headroom above the observed maximum.
-  thinkingBudget: 6000,
+  // How much reasoning a generation may spend before the ceiling stops it.
+  //
+  // This was 3,000, and the first attempt at fixing it — 6,000 — was wrong
+  // for an instructive reason. The evidence was the `thoughtChars` of
+  // generations that had *run out*, which is a censored measurement: it says
+  // where the wall was, not how far the model wanted to walk. Every sample
+  // was piled against the cap, so a bigger cap just moved the pile.
+  //
+  // Measured properly, by removing the ceiling and watching where reasoning
+  // stops on its own — six runs on the deep-thread reply, identical at every
+  // effort level: 3,223 / 3,924 / 5,595 / 6,082 / 7,308 / 12,479 tokens. A
+  // budget of 3,000 truncates all six; 6,000 truncates three; 16,000
+  // truncates none and leaves room above the observed maximum.
+  //
+  // It costs nothing to set generously — it is a ceiling, not an allocation,
+  // and only tokens actually generated are paid for. What it must not exceed
+  // is the context window, which `predictTokens` below enforces.
+  thinkingBudget: 16000,
   systemPrompt: '',
   topP: 0.9,
   topK: 40,
@@ -100,7 +130,12 @@ const BASE_DEFAULTS: AiSettings = {
   repeatLastN: 256,
   presencePenalty: 0,
   frequencyPenalty: 0,
-  maxTokens: 700,
+  // The ceiling on the reply itself, separate from the reasoning budget. 700
+  // was tight: a "long" draft plus a sign-off runs close to it, and a
+  // summary of a 50-message thread closer still. It is a ceiling rather than
+  // a target — the prompt is what decides length — so a generous one costs
+  // nothing and stops the occasional answer being cut mid-sentence.
+  maxTokens: 1500,
   wipeAfterUse: true,
   wipeIdleSeconds: 90,
   embedModel: config.aiEmbedModel,
@@ -116,13 +151,19 @@ let cache: { at: number; value: AiSettings } | null = null;
 export async function getAiSettings(): Promise<AiSettings> {
   if (cache && Date.now() - cache.at < 15_000) return cache.value;
   const row = await one<{ value: Partial<AiSettings> }>(`SELECT value FROM settings WHERE key='ai'`);
-  const value = { ...DEFAULTS, ...(row?.value ?? {}) };
+  const merged = { ...DEFAULTS, ...(row?.value ?? {}) };
+  // Normalised coming out as well as going in: an install that saved a
+  // trailing slash before this was fixed answered 404 to every call, and
+  // repairing it here means an upgrade fixes it rather than an admin having
+  // to notice and re-save.
+  const value = { ...merged, baseUrl: normalizeBaseUrl(merged.baseUrl) };
   cache = { at: Date.now(), value };
   return value;
 }
 export async function saveAiSettings(patch: Partial<AiSettings>): Promise<AiSettings> {
   const current = await getAiSettings();
   let next = { ...current, ...patch };
+  next.baseUrl = normalizeBaseUrl(next.baseUrl);
   // Changing the model moves the sampling with it — but only when nobody has
   // touched the sampling by hand.
   //
@@ -156,6 +197,11 @@ export async function providerHeaders(s?: AiSettings): Promise<Record<string, st
   const cfg = s ?? (await getAiSettings());
   return cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {};
 }
+
+// The TLS trust for this install's model server, in the shape
+// util/outbound.ts wants. Read from the same settings as the key, so a single
+// place decides both halves of "how do we talk to that box".
+export function trustOf(s: AiSettings): TlsTrust { return { insecure: Boolean(s.tlsInsecure) }; }
 
 // Ollama's keep_alive is either a duration string ("10m", "1h") or a number
 // of seconds, where -1 means "keep it loaded" and 0 "unload at once". A bare
@@ -235,7 +281,8 @@ async function describeModel(baseUrl: string, model: string): Promise<{ capabili
   if (known !== undefined) return known;
   let out: { capabilities: string[]; info: Record<string, unknown> } | null = null;
   try {
-    const res = await fetch(`${baseUrl}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders()) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) });
+    const s = await getAiSettings();
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) }, trustOf(s));
     if (res.ok) {
       const j: any = await res.json();
       out = { capabilities: Array.isArray(j.capabilities) ? j.capabilities : [], info: j.model_info ?? {} };
@@ -262,6 +309,19 @@ export async function modelKvBytesPerToken(baseUrl: string, model: string, cache
   return kvBytesPerToken((await describeModel(baseUrl, model))?.info, cacheType);
 }
 
+// What the model was actually trained for, out of /api/show. Null when the
+// endpoint does not say. Ollama will happily accept a `num_ctx` larger than
+// this and extend the model past its training length, which costs quality
+// silently — phi4 is trained to 16k, mistral-small to 32k, qwen3.5 to 262k.
+export async function modelContextLimit(baseUrl: string, model: string): Promise<number | null> {
+  const info = (await describeModel(baseUrl, model))?.info;
+  if (!info) return null;
+  for (const [k, v] of Object.entries(info)) {
+    if (k.endsWith('.context_length') && typeof v === 'number' && v > 0) return v;
+  }
+  return null;
+}
+
 export function forgetModelCapabilities(): void { described.clear(); }
 
 // How the model picks its next token. Shared so the Ollama and the
@@ -284,6 +344,28 @@ export function samplingOptions(s: AiSettings, temperature?: number): Record<str
     ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
     ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
   };
+}
+
+
+// How many tokens a generation may produce, given what the window has left.
+//
+// `num_predict` is not bounded by `num_ctx`: ask for more than the window can
+// hold and the generation is cut off by the context limit instead, which
+// looks identical to a model that stopped early and is much harder to
+// diagnose. With thinking on and a generous budget that is easy to hit — a
+// 16,000-token budget on an 8,192-token window cannot possibly be honoured.
+//
+// So the ceiling is computed rather than sent blind: the window, minus a
+// conservative estimate of the prompt, minus a little slack. When that leaves
+// less than the reply needs there is nothing useful to do but say so.
+export function predictTokens(opts: { numCtx: number; promptChars: number; replyTokens: number; thinkingTokens: number }): { numPredict: number; clamped: boolean } {
+  // 3.2 characters per token deliberately over-estimates the prompt on
+  // English prose (measured nearer 3.9), which is the safe direction.
+  const promptTokens = Math.ceil(opts.promptChars / 3.2);
+  const room = opts.numCtx - promptTokens - 128;
+  const wanted = opts.replyTokens + Math.max(0, opts.thinkingTokens);
+  if (room <= 0) return { numPredict: opts.replyTokens, clamped: true };
+  return room < wanted ? { numPredict: Math.max(256, room), clamped: true } : { numPredict: wanted, clamped: false };
 }
 
 export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
@@ -340,7 +422,21 @@ async function* ollamaGeneration(s: AiSettings, model: string, opts: ChatOptions
 
 async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, think: boolean, stats: { thoughtChars: number }): AsyncGenerator<string> {
   const reply = opts.maxTokens ?? s.maxTokens;
-  const res = await fetch(`${s.baseUrl}/api/chat`, {
+  // Never ask for a window the model was not trained for.
+  const ctx = clampNumCtx(s.numCtx, await modelContextLimit(s.baseUrl, model));
+  if (ctx < s.numCtx) log.debug('context window clamped to the model\'s own limit', { model, asked: s.numCtx, limit: ctx });
+  const predict = predictTokens({
+    numCtx: ctx,
+    promptChars: opts.messages.reduce((n, m) => n + m.content.length, 0),
+    replyTokens: reply,
+    thinkingTokens: think ? s.thinkingBudget : 0,
+  });
+  if (predict.clamped) {
+    log.warn('the reply and reasoning budget do not fit the context window; shortening them', {
+      model, numCtx: s.numCtx, asked: reply + (think ? s.thinkingBudget : 0), allowed: predict.numPredict,
+    });
+  }
+  const res = await outboundFetch(`${s.baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
@@ -354,18 +450,23 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       think: think ? s.thinkEffort : false,
       keep_alive: keepAliveValue(s.keepAlive),
       options: {
-        num_ctx: s.numCtx,
-        num_predict: think ? reply + Math.max(0, s.thinkingBudget) : reply,
+        num_ctx: ctx,
+        num_predict: predict.numPredict,
         ...samplingOptions(s, opts.temperature),
         ...(opts.stop?.length ? { stop: opts.stop } : {}),
         ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
       },
     }),
     signal: opts.signal,
-  });
+  }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => '');
-    if (res.status === 404 && /not found/i.test(body)) throw new Error(`Model "${model}" is not downloaded. Pull it in Settings → AI.`);
+    // A 404 with Ollama's own "model not found" body is a missing model; a
+    // 404 with anything else is the address being wrong, and saying "pull
+    // the model" for that sends an admin to fix the one thing that is fine.
+    if (res.status === 404 && /not found/i.test(body) && /model/i.test(body)) throw new Error(`Model "${model}" is not downloaded. Pull it in Settings → AI.`);
+    if (res.status === 404) throw new Error(`No Ollama API at ${s.baseUrl}. Check the base URL in Admin → AI model: it wants the server's root, with no path and no trailing slash.`);
+    if (res.status === 401 || res.status === 403) throw new Error(`That model server refused the request (HTTP ${res.status}). It is behind authentication: put its token in the API key field in Admin → AI model.`);
     // Ollama's own queue is full (OLLAMA_MAX_QUEUE). That is a busy machine,
     // not a broken one, and saying so is the difference between "try again in
     // a moment" and an admin reading logs for a fault that is not there.
@@ -404,7 +505,7 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
 
 async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
   const reply = opts.maxTokens ?? s.maxTokens;
-  const res = await fetch(`${s.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
+  const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
     body: JSON.stringify({
@@ -488,23 +589,23 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   const session = beginSession();
   try {
     if (s.provider === 'openai') {
-      const res = await fetch(`${s.baseUrl.replace(/\/+$/, '')}/v1/embeddings`, {
+      const res = await outboundFetch(`${s.baseUrl}/v1/embeddings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
         body: JSON.stringify({ model, input }),
         signal,
-      });
+      }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
       if (!res.ok) throw new Error(`Embedding endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
       const j: any = await res.json();
       const vectors = (j.data ?? []).map((d: any) => (Array.isArray(d.embedding) ? d.embedding : []));
       return { vectors, model, dims: vectors[0]?.length ?? 0 };
     }
-    const res = await fetch(`${s.baseUrl}/api/embed`, {
+    const res = await outboundFetch(`${s.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
       body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
       signal,
-    });
+    }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       if (res.status === 404) throw new Error(`The embedding model "${model}" is not downloaded. Pull it in Admin → AI model.`);
@@ -524,24 +625,92 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
 
 // ---------- Ollama management ----------
 
-export async function ollamaHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
-  const s = await getAiSettings();
+export async function ollamaHealth(candidate?: AiSettings): Promise<{ ok: boolean; version?: string; error?: string }> {
+  const s = candidate ?? (await getAiSettings());
+  if (!s.baseUrl) return { ok: false, error: 'No address is set for the model server' };
   try {
-    const res = await fetch(`${s.baseUrl}/api/version`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const res = await outboundFetch(`${s.baseUrl}/api/version`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, trustOf(s));
+    if (!res.ok) return { ok: false, error: httpHint(res.status, s) };
     const j: any = await res.json();
     return { ok: true, version: j.version };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    // The reason, not `fetch failed`: a self-signed certificate, a closed
+    // port and a bad hostname have three different fixes.
+    return { ok: false, error: explainOutboundError(e, s.baseUrl) };
   }
 }
 
-export async function listModels(): Promise<{ name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string }[]> {
+// What a refusal from the other end most likely means. Written for the two
+// that a remote model server actually produces: a proxy wanting a token, and
+// a base URL with a path or a trailing slash on it.
+export function httpHint(status: number, s: AiSettings): string {
+  if (status === 401 || status === 403) return `HTTP ${status}: that server wants authentication. Put its token in the API key field — it is sent as \`Authorization: Bearer\`.`;
+  if (status === 404) return `HTTP 404: nothing is serving the Ollama API at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
+  if (status === 502 || status === 503 || status === 504) return `HTTP ${status}: a proxy in front of that server could not reach it.`;
+  return `HTTP ${status}`;
+}
+
+// Whether a provider an admin has typed in but not yet saved actually works,
+// and if not, precisely which part of it does not.
+//
+// Saving first and reading the status line afterwards was the only way to
+// find out, and saving has side effects — it unloads the model the install
+// was using. This asks the question without changing anything, which is what
+// makes a wrong address recoverable in one step instead of three.
+export interface ProviderCheck {
+  ok: boolean;
+  version?: string;
+  error?: string;
+  models?: string[];
+  modelInstalled?: boolean;
+  cert?: CertInfo | null;
+}
+
+export async function checkProvider(candidate: AiSettings): Promise<ProviderCheck> {
+  const s = { ...candidate, baseUrl: normalizeBaseUrl(candidate.baseUrl) };
+  if (!s.baseUrl) return { ok: false, error: 'Give the model server\'s address first' };
+  // Looked at whichever way the check goes: an admin deciding whether to
+  // trust a certificate should be able to see it, and an admin who already
+  // has should be able to confirm it is still the same one.
+  const cert = await inspectCertificate(s.baseUrl).catch(() => null);
+
+  if (s.provider === 'openai') {
+    try {
+      const res = await outboundFetch(`${s.baseUrl}/v1/models`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, trustOf(s));
+      if (!res.ok) return { ok: false, error: httpHint(res.status, s), cert };
+      const j: any = await res.json().catch(() => null);
+      const models = Array.isArray(j?.data) ? j.data.map((m: any) => String(m?.id ?? '')).filter(Boolean) : undefined;
+      return { ok: true, models, modelInstalled: models ? models.includes(s.model) : undefined, cert };
+    } catch (e) {
+      return { ok: false, error: explainOutboundError(e, s.baseUrl), cert };
+    }
+  }
+
+  const health = await ollamaHealth(s);
+  if (!health.ok) return { ok: false, error: health.error, cert };
+  // Reachable is not the same as usable: the model named in the settings has
+  // to be one this server actually has, and on somebody else's Ollama it
+  // very often is not.
+  try {
+    const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, trustOf(s));
+    if (!res.ok) return { ok: true, version: health.version, cert, error: `Reachable, but it would not list its models: ${httpHint(res.status, s)}` };
+    const j: any = await res.json();
+    const models = (j.models ?? []).map((m: any) => String(m.name ?? '')).filter(Boolean);
+    return { ok: true, version: health.version, models, modelInstalled: models.some((n: string) => sameModel(n, s.model)), cert };
+  } catch (e) {
+    return { ok: true, version: health.version, cert, error: explainOutboundError(e, s.baseUrl) };
+  }
+}
+
+export async function listModels(): Promise<{ name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string; capabilities: string[] }[]> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`);
+  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  if (!res.ok) throw new Error(httpHint(res.status, s));
   const j: any = await res.json();
-  return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at, family: m.details?.family, parameterSize: m.details?.parameter_size, quantization: m.details?.quantization_level }));
+  // `capabilities` is what separates a model that writes from one that only
+  // embeds. Without it the page offered "Use" on all-minilm, which would have
+  // set the drafting model to something that cannot draft.
+  return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at, family: m.details?.family, parameterSize: m.details?.parameter_size, quantization: m.details?.quantization_level, capabilities: Array.isArray(m.capabilities) ? m.capabilities : [] }));
 }
 
 // What Ollama currently holds in memory. `size` is the total the model is
@@ -550,7 +719,7 @@ export async function listModels(): Promise<{ name: string; size: number; modifi
 // figure there makes a resident 3 GB model look free.
 export async function loadedModels(): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) });
+  const res = await outboundFetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, trustOf(s));
   if (!res.ok) return [];
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
@@ -558,8 +727,8 @@ export async function loadedModels(): Promise<{ name: string; size: number; size
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {
   const s = await getAiSettings();
-  const res = await fetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name, stream: true }), signal });
-  if (!res.ok || !res.body) throw new Error(`Ollama returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
+  const res = await outboundFetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name, stream: true }), signal }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  if (!res.ok || !res.body) throw new Error(`${httpHint(res.status, s)}${(await res.text().catch(() => '')).slice(0, 200)}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -584,7 +753,7 @@ export async function deleteModel(name: string): Promise<void> {
   // copy that is already resident stays in RAM holding exactly the memory
   // the deletion was meant to give back.
   await unloadModel(s.baseUrl, name).catch(() => {});
-  const res = await fetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name }) });
+  const res = await outboundFetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name }) }, trustOf(s));
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     if (res.status === 404) throw new Error(`Ollama has no model called "${name}"`);
@@ -608,11 +777,12 @@ export function sameModel(a: string, b: string): boolean {
 // is a no-op rather than a surprise 4 GB read.
 async function setResidency(baseUrl: string, model: string, keepAlive: string | number): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders()) },
+    const s = await getAiSettings();
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
       body: JSON.stringify({ model, keep_alive: keepAlive }),
       signal: AbortSignal.timeout(15_000),
-    });
+    }, trustOf(s));
     if (!res.ok) return false;
     await res.text().catch(() => '');
     return true;
@@ -622,7 +792,8 @@ async function setResidency(baseUrl: string, model: string, keepAlive: string | 
 // Which of the models Ollama is holding right now matches `model`.
 async function residentAt(baseUrl: string, model: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/api/ps`, { headers: await providerHeaders(), signal: AbortSignal.timeout(4000) });
+    const s = await getAiSettings();
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, trustOf(s));
     if (!res.ok) return false;
     const j: any = await res.json();
     return (j.models ?? []).some((m: any) => sameModel(String(m.name ?? ''), model));
@@ -644,8 +815,15 @@ export async function unloadModel(baseUrl: string, model: string): Promise<boole
 // model Tern was using is dropped; anything else on a shared Ollama is left
 // alone, because it is not ours to evict.
 export async function releaseReplacedModel(before: AiSettings, after: AiSettings): Promise<void> {
-  if (before.provider !== 'ollama' || !before.model) return;
+  if (before.provider !== 'ollama') return;
   const movedOff = after.provider !== 'ollama' || after.baseUrl !== before.baseUrl;
+  // The embedding model is resident in its own right — it loads beside the
+  // writing one rather than instead of it — so replacing it leaves the old
+  // one holding memory until its keep-alive runs out unless it is dropped.
+  if (before.embedModel && (movedOff || !sameModel(before.embedModel, after.embedModel))) {
+    await unloadModel(before.baseUrl, before.embedModel).catch(() => {});
+  }
+  if (!before.model) return;
   const swapped = !sameModel(before.model, after.model);
   if (movedOff || swapped) { await unloadModel(before.baseUrl, before.model); return; }
   // Same model, same server: only the keep-alive can have changed, and a

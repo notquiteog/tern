@@ -531,11 +531,31 @@ function AiAdminSettings() {
   const [f, setF] = useState<any>(null);
   const [pull, setPull] = useState<{ name: string; status: string; pct: number } | null>(null);
   const [customModel, setCustomModel] = useState('');
-  const [del, setDel] = useState<{ name: string; inUse: boolean; loaded: boolean } | null>(null);
+  const [customEmbed, setCustomEmbed] = useState('');
+  const [del, setDel] = useState<{ name: string; inUse: boolean; loaded: boolean; kind: 'write' | 'embed' } | null>(null);
   const [busy, setBusy] = useState('');
+  const [probe, setProbe] = useState<any>(null);
+  const [probing, setProbing] = useState(false);
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   async function save(patch: any) {
-    try { await api.put('/api/ai/settings', patch); qc.invalidateQueries({ queryKey: ['ai-status'] }); toast.success('Saved'); } catch (e) { toast.error(e); }
+    try {
+      const r = await api.put<any>('/api/ai/settings', patch);
+      qc.invalidateQueries({ queryKey: ['ai-status'] });
+      // Changing the embedding model queues every message indexed by the old
+      // one for rebuilding, which is worth saying out loud rather than
+      // leaving as background work nobody asked for.
+      toast.success(r?.reindex ? `Saved — ${r.reindex.toLocaleString()} message${r.reindex === 1 ? '' : 's'} queued for re-indexing` : 'Saved');
+    } catch (e) { toast.error(e); }
+  }
+  // Ask whether the address in the form works before committing to it.
+  // Saving unloads the model the install is using, so trying three spellings
+  // of a remote URL by saving each one takes the assistant down three times.
+  async function testProvider() {
+    setProbing(true); setProbe(null);
+    try {
+      const r = await api.post<any>('/api/ai/test', { provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model });
+      setProbe(r);
+    } catch (e: any) { setProbe({ result: { ok: false, error: e?.message ?? String(e) } }); } finally { setProbing(false); }
   }
   async function doPull(name: string) {
     setPull({ name, status: 'starting', pct: 0 });
@@ -568,9 +588,21 @@ function AiAdminSettings() {
   // What Ollama is holding in memory, matched the same way: the settings say
   // "qwen2.5", /api/ps says "qwen2.5:latest".
   const findLoaded = (n: string) => (data.loaded ?? []).find((x: any) => x.name === n || x.name === `${n}:latest`);
+  // Ollama tags an untagged name with `:latest`, so "all-minilm" in the
+  // settings and "all-minilm:latest" in the model list are the same thing.
+  const sameName = (a: string, b: string) => { const n = (v: string) => (String(v ?? '').includes(':') ? String(v) : `${v}:latest`); return Boolean(a) && n(a) === n(b); };
+  // A model that only embeds cannot draft. Listing one in the table below
+  // offered a "Use" button that would set it as the writing model and break
+  // every AI feature; they get their own card instead.
+  const embeds = (x: any) => (x.capabilities ?? []).includes('embedding');
+  const knownEmbed = (n: string) => (data.embedModels ?? []).some((c: any) => sameName(c.name, n));
   const modelRows: { name: string; inst: any; loaded: any; active: boolean; note: string; sizeGB?: number }[] = [
     ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
-    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name) && !embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+  ];
+  const embedRows: any[] = [
+    ...(data.embedModels ?? []).map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: sameName(data.settings.embedModel, m.name), note: m.note, params: m.params, contextTokens: m.contextTokens, sizeBytes: m.sizeBytes, needsBytes: m.needsBytes })),
+    ...data.models.filter((x: any) => embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: sameName(data.settings.embedModel, x.name), note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
   const residentGB = (data.loaded ?? []).reduce((n: number, m: any) => n + (m.size ?? m.sizeVram ?? 0), 0) / 1024 ** 3;
   return (
@@ -582,12 +614,33 @@ function AiAdminSettings() {
         <div className="card-title"><h2>Provider and model</h2><div className="row"><Toggle checked={f.enabled} onChange={(v) => { setF({ ...f, enabled: v }); void save({ enabled: v }); }} /><span className="small">Enabled</span></div></div>
         <div className="form-row">
           <Field label="Provider"><Select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option></Select></Field>
-          <Field label="Base URL"><Input value={f.baseUrl} onChange={(e) => setF({ ...f, baseUrl: e.target.value })} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
-          <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it. The bundled container needs nothing here.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => setF({ ...f, apiKey: e.target.value })} /></Field>
+          <Field label="Base URL" hint="The server's root — scheme, host and port, with no path and no trailing slash. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
+          <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it — as Authorization: Bearer. A hosted box usually calls it an instance or open-button token. The bundled container needs nothing here.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => { setF({ ...f, apiKey: e.target.value }); setProbe(null); }} /></Field>
           <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
+        {/* Only asked about for an https address, because it is only https
+            that can fail this way. A hosted GPU box issues itself a
+            certificate at boot and no public authority will vouch for it. */}
+        {/^https:/i.test(f.baseUrl ?? '') && (
+          <div className="mt-16">
+            <div className="row"><Toggle checked={Boolean(f.tlsInsecure)} onChange={(v) => { setF({ ...f, tlsInsecure: v }); setProbe(null); }} /><span className="small">Trust this server's certificate even if it cannot be verified</span></div>
+            <p className="small muted">
+              Off, the certificate has to be one a public authority vouches for. Turn it on for a model server
+              that issued its own — the usual case on a rented GPU host. The connection is still encrypted, but
+              nothing proves the machine on the other end is the one you meant, so only turn it on for a server
+              whose address you control.
+            </p>
+            {f.tlsInsecure && (data.cert ?? probe?.result?.cert) && (
+              <p className="small muted">
+                Currently presenting: <code>{(data.cert ?? probe.result.cert).subject}</code>, issued by{' '}
+                <code>{(data.cert ?? probe.result.cert).issuer}</code>, fingerprint{' '}
+                <code style={{ wordBreak: 'break-all' }}>{(data.cert ?? probe.result.cert).fingerprint}</code>.
+              </p>
+            )}
+          </div>
+        )}
         {data.local === false && (
           <Callout kind="warning">
             That address is not on this box. Everything the assistant is given — the text of the emails it
@@ -596,7 +649,23 @@ function AiAdminSettings() {
             knowing that it is the setting where mail starts leaving your server.
           </Callout>
         )}
-        <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
+        {probe && (
+          <Callout kind={probe.result?.ok ? (probe.result?.error || probe.result?.modelInstalled === false ? 'warning' : 'success') : 'danger'}>
+            {probe.result?.ok
+              ? <>Connected{probe.result.version ? <> to Ollama {probe.result.version}</> : null}.{' '}
+                  {probe.result.modelInstalled === false
+                    ? <>That server does not have <code>{f.model}</code>{probe.result.models?.length ? <> — it has {probe.result.models.slice(0, 6).map((m: string) => <code key={m}> {m}</code>)}{probe.result.models.length > 6 ? ` and ${probe.result.models.length - 6} more` : ''}</> : ''}.</>
+                    : probe.result.modelInstalled ? <><code>{f.model}</code> is there.</> : null}
+                  {probe.result.error ? <> {probe.result.error}</> : null}
+                  {probe.local === false ? <><br />That address is not on this box: mail text will be sent there.</> : null}
+                </>
+              : probe.result?.error ?? 'That address could not be reached'}
+          </Callout>
+        )}
+        <div className="row">
+          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
+          <Button variant="ghost" loading={probing} disabled={!f.baseUrl} onClick={testProvider}>Test connection</Button>
+        </div>
       </div>
       <div className="card mb-16">
         <div className="card-title"><h2>System prompt</h2><Button size="sm" variant="ghost" onClick={() => setF({ ...f, systemPrompt: '' })}>Reset to default</Button></div>
@@ -653,13 +722,42 @@ function AiAdminSettings() {
             { key: 'act', actions: true, cell: (m) => m.inst ? <>
               <Button size="sm" disabled={m.active} onClick={() => save({ model: m.name })}>{m.active ? 'Selected' : 'Use'}</Button>
               {m.loaded && <Button size="sm" variant="ghost" loading={busy === m.name} onClick={() => doUnload(m.name)}>Unload</Button>}
-              <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded) })}><Trash2 size={14} /></IconButton>
+              <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'write' })}><Trash2 size={14} /></IconButton>
             </> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
           ]} /></div>
           <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || Boolean(pull)} onClick={() => { doPull(customModel); setCustomModel(''); }}>Pull</Button></div>
           <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.name}?`} confirmLabel="Delete model"
-            message={<>The files are removed from the <code>ollama</code> volume and can only come back by downloading them again.{del?.loaded && ' It is in memory now and will be unloaded first.'}{del?.inUse && <><br /><br /><b>This is the model the assistant is set to use.</b> Drafting will fail until you pick another one.</>}</>}
+            message={<>The files are removed from the <code>ollama</code> volume and can only come back by downloading them again.{del?.loaded && ' It is in memory now and will be unloaded first.'}{del?.inUse && (del.kind === 'embed'
+              ? <><br /><br /><b>This is the model meaning search is set to use.</b> Search falls back to matching words until you pick another one, and the vectors already stored stay unusable until something is indexed again.</>
+              : <><br /><br /><b>This is the model the assistant is set to use.</b> Drafting will fail until you pick another one.</>)}</>}
             onConfirm={() => { const n = del!.name; setDel(null); return doDelete(n); }} />
+        </div>
+      )}
+      {f.provider === 'ollama' && (
+        <div className="card mb-16">
+          <div className="card-title"><h2>Meaning search</h2><span className="small muted">In use: <b>{data.settings.embedModel}</b>{findInstalled(data.settings.embedModel) ? '' : ' · not downloaded'}</span></div>
+          <Callout kind={findInstalled(data.settings.embedModel) ? 'info' : 'warning'}>
+            {findInstalled(data.settings.embedModel)
+              ? <>Search by meaning turns each message into a vector with a second, much smaller model — it loads beside the writing model rather than instead of it, so the memory it wants is on top. It never writes a word.</>
+              : <><b>{data.settings.embedModel}</b> is not downloaded, so meaning search cannot index anything and falls back to matching words. Pull it below.</>}
+            {' '}Vectors are only comparable with others from the same model, so changing it queues every indexed message to be embedded again.
+          </Callout>
+          <div className="mt-16"><DataTable rows={embedRows} rowKey={(m: any) => m.name} columns={[
+            { key: 'model', header: 'Model', primary: true, cell: (m: any) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.loaded && <Badge kind="warning" dot>loaded</Badge>}</span> },
+            // The download and, separately, what it occupies once loaded —
+            // which is the number that decides whether it fits beside the
+            // writing model, and the one people actually need.
+            { key: 'size', header: 'Size', className: 'muted', nowrap: true, cell: (m: any) => m.inst ? fmtBytes(m.inst.size) : m.sizeBytes ? <>{fmtBytes(m.sizeBytes)} <span className="faint">· wants {fmtBytes(m.needsBytes)}</span></> : '—' },
+            { key: 'ctx', header: 'Per vector', className: 'muted small', nowrap: true, cell: (m: any) => m.contextTokens ? <span title="How much of a message goes into one vector before it is truncated">{m.params} · {m.contextTokens.toLocaleString()} tok</span> : <span className="faint">—</span> },
+            { key: 'mem', header: 'In memory', className: 'muted small', nowrap: true, cell: (m: any) => m.loaded ? <span title={`Expires ${fmtDateTime(m.loaded.expiresAt)}`}>{fmtBytes(m.loaded.size || m.loaded.sizeVram)}{m.loaded.sizeVram > 0 && ' on GPU'}</span> : <span className="faint">—</span> },
+            { key: 'note', header: 'Note', secondary: true, className: 'muted small', cell: (m: any) => m.note },
+            { key: 'act', actions: true, cell: (m: any) => m.inst ? <>
+              <Button size="sm" disabled={m.active} onClick={() => save({ embedModel: m.name })}>{m.active ? 'Selected' : 'Use'}</Button>
+              {m.loaded && <Button size="sm" variant="ghost" loading={busy === m.name} onClick={() => doUnload(m.name)}>Unload</Button>}
+              <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'embed' })}><Trash2 size={14} /></IconButton>
+            </> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
+          ]} /></div>
+          <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed || Boolean(pull)} onClick={() => { doPull(customEmbed); setCustomEmbed(''); }}>Pull</Button></div>
         </div>
       )}
       <AiVoiceCard />

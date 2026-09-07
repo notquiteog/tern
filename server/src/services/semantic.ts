@@ -119,6 +119,26 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   return { done: rows.length, remaining };
 }
 
+// Vectors made by one model are not comparable with another's: the cosine
+// distance between an all-minilm vector and a nomic-embed-text one is noise,
+// not similarity. So changing the embedding model invalidates everything
+// already indexed — and leaving those rows alone would not break search
+// visibly, it would quietly make it worse, which is harder to notice and
+// harder to explain.
+//
+// The rows are marked for re-indexing rather than deleted: search keeps
+// answering from what is there while the background pass rebuilds them, which
+// is a much better failure than an empty index for the length of a rebuild.
+export async function invalidateVectorsFrom(model: string): Promise<number> {
+  const rows = await query<{ id: number }>(
+    `UPDATE emails SET embedded=false
+      WHERE embedded AND id IN (SELECT email_id FROM email_vectors WHERE model <> $1)
+      RETURNING id`,
+    [model],
+  );
+  return rows.length;
+}
+
 // ---------- Searching ----------
 
 export interface SemanticHit { emailId: number; accountId: number; threadId: string; score: number }

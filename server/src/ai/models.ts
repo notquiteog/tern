@@ -28,12 +28,21 @@ export function recommendModel(totalBytes: number): ModelTier {
   return pick;
 }
 
+// Ordered by size. qwen2.5 is gone from here: it was two generations behind
+// and was still being offered as the default for every tier.
+//
+// Sizes are the real downloads, checked against registry.ollama.ai. Worth
+// repeating that check whenever this list is edited — a tag that looks
+// plausible and does not resolve fails at the pull, which is the least useful
+// place to find out.
 export const CURATED_MODELS = [
-  { name: 'qwen2.5:0.5b', sizeGB: 0.4, note: 'tiny' },
-  { name: 'qwen2.5:1.5b', sizeGB: 1.0, note: 'small, recommended for 4-6 GB' },
-  { name: 'qwen2.5:3b', sizeGB: 1.9, note: 'medium' },
-  { name: 'qwen2.5:7b', sizeGB: 4.7, note: 'large' },
-  { name: 'qwen2.5:14b', sizeGB: 9.0, note: 'extra large' },
+  { name: 'qwen3.5:0.8b', sizeGB: 1.0, note: 'tiny, current generation, Q8 so less lossy than its size suggests' },
+  { name: 'qwen3.5:2b', sizeGB: 2.7, note: 'small, current generation, Q8' },
+  { name: 'gemma3:1b', sizeGB: 0.8, note: 'tiny alternative' },
+  { name: 'llama3.2:1b', sizeGB: 1.3, note: 'tiny alternative' },
+  { name: 'llama3.2:3b', sizeGB: 2.0, note: 'small alternative' },
+  { name: 'phi4-mini', sizeGB: 2.5, note: 'small alternative' },
+  { name: 'gemma3:4b', sizeGB: 3.3, note: 'medium alternative, good writer' },
   // Reasoning-capable. Leave thinking off: measured at 11x to 50x the latency
   // for a difference inside the noise on every recall case tested.
   { name: 'qwen3.5:4b', sizeGB: 3.4, note: 'medium, the best value measured; can think' },
@@ -42,22 +51,12 @@ export const CURATED_MODELS = [
   // strongest model measured on this suite: 39 of 42 cases against the 4b's
   // 36, for 2.4 GB more and about half the speed.
   { name: 'qwen3.5:9b', sizeGB: 6.6, note: 'large, best measured quality; can think' },
-  { name: 'llama3.2:1b', sizeGB: 1.3, note: 'small alternative' },
-  { name: 'llama3.2:3b', sizeGB: 2.0, note: 'medium alternative' },
-  { name: 'gemma3:1b', sizeGB: 0.8, note: 'small alternative' },
-  { name: 'gemma3:4b', sizeGB: 3.3, note: 'medium alternative, good writer' },
-  { name: 'phi4-mini', sizeGB: 2.5, note: 'medium alternative' },
-  // Measured alongside the others: level with qwen3.5:4b on quality and
-  // roughly three times the memory, so it is an alternative rather than an
-  // upgrade.
-  { name: 'phi4:14b', sizeGB: 9.1, note: 'large alternative' },
-  // Current generation, added after checking every tag resolves. qwen3.8 and
-  // qwen3.6 ship only at 27b, so there is no small build of those to offer.
-  { name: 'qwen3.5:0.8b', sizeGB: 1.0, note: 'tiny, current generation, Q8' },
-  { name: 'qwen3.5:2b', sizeGB: 2.7, note: 'small, current generation, Q8' },
   // A true 12B in a smaller file than gemma4:e4b, which is a nested build
   // with only about 4B parameters active. Size is not capability here.
   { name: 'gemma4:12b', sizeGB: 7.6, note: 'large, newest Gemma, true 12B' },
+  // Measured alongside the others: level with qwen3.5:4b on quality and
+  // roughly three times the memory, so an alternative rather than an upgrade.
+  { name: 'phi4:14b', sizeGB: 9.1, note: 'large alternative' },
   { name: 'gemma4:e4b', sizeGB: 9.6, note: 'large alternative, nested: ~4B active, fast but weaker than gemma4:12b' },
   { name: 'qwen3.8:27b', sizeGB: 17.7, note: 'extra large, newest Qwen; 27b is the only size it ships' },
 ];
@@ -85,6 +84,54 @@ export const UNCENSORED_MODELS = [
   { name: 'huihui_ai/mistral-small-abliterated:24b', sizeGB: 14.3, note: 'extra large, wants 24 GB — too tight on 16 GB to leave room for context' },
 ];
 
+// ---------- Meaning search ----------
+//
+// The model that turns a message into a vector. A different job from writing,
+// and a much smaller model: it never generates a word, it only has to place
+// similar messages near each other. It loads *beside* the writing model
+// rather than instead of it, which is why "wants" here matters more than the
+// download size — that is the memory it occupies while search is in use.
+//
+// The same three, with the same numbers, are what perch offers on the GPU
+// side (`server/src/system.ts`, EMBED_MODELS). Change one, change both:
+// somebody choosing a model there and setting it here should not be reading
+// two different descriptions of it.
+//
+// Changing this is not free in a way the writing model is: existing vectors
+// were made by the old model and are not comparable with the new one's, so
+// meaning search is degraded until they are rebuilt.
+export interface EmbedModel {
+  name: string;
+  /** The download. */
+  sizeBytes: number;
+  /** Roughly what it occupies once loaded, which is the number that decides whether it fits. */
+  needsBytes: number;
+  params: string;
+  /** How much of a message goes into one vector before it is truncated. */
+  contextTokens: number;
+  note: string;
+}
+
+export const EMBED_MODELS: EmbedModel[] = [
+  {
+    name: 'all-minilm', sizeBytes: 0.05e9, needsBytes: 0.3e9, params: '23M', contextTokens: 512,
+    note: 'The default. Tiny, and loads beside the writing model without competing for room.',
+  },
+  {
+    name: 'nomic-embed-text', sizeBytes: 0.27e9, needsBytes: 0.6e9, params: '137M', contextTokens: 8192,
+    note: 'Better search quality and a much longer input window, so a whole message embeds as one vector instead of just its opening.',
+  },
+  {
+    name: 'embeddinggemma', sizeBytes: 0.62e9, needsBytes: 1.1e9, params: '300M', contextTokens: 2048,
+    note: 'Larger again. Worth it only if you search a big mailbox and find the others imprecise.',
+  },
+];
+
+export function isEmbedModel(name: string): boolean {
+  const bare = String(name ?? '').replace(/:latest$/, '');
+  return EMBED_MODELS.some((m) => m.name === bare);
+}
+
 // ---------- How much conversation the model is given ----------
 //
 // `num_ctx` shipped as a flat 8192 whatever the machine was, and paired with
@@ -105,14 +152,31 @@ export const UNCENSORED_MODELS = [
 // tier table rather than a constant, and a ceiling well below what the model
 // advertises: qwen3.5:4b claims 262k, which no box this ships to can afford
 // and no 4B model uses well.
+//
+// The tiers were raised once the thread budget stopped being capped at 14,000
+// characters: with the window actually governing how much conversation the
+// model sees, the bottom tier had to be able to hold a real thread rather
+// than a fragment of one. `clampNumCtx` then bounds the result by what the
+// model itself was trained for.
 export interface CtxTier { minGiB: number; numCtx: number; note: string }
 
 export const CTX_TIERS: CtxTier[] = [
-  { minGiB: 0, numCtx: 4096, note: 'Small box: a short thread, trimmed from the middle beyond that.' },
-  { minGiB: 6, numCtx: 8192, note: 'Enough for most conversations; a long one is packed from both ends.' },
-  { minGiB: 12, numCtx: 16384, note: 'Holds a 50-message thread whole.' },
-  { minGiB: 24, numCtx: 32768, note: 'Room for the longest threads and several parallel slots.' },
+  { minGiB: 0, numCtx: 8192, note: 'Small box: most conversations fit; a long one is packed from both ends.' },
+  { minGiB: 8, numCtx: 16384, note: 'Holds a 50-message thread whole.' },
+  { minGiB: 16, numCtx: 32768, note: 'Room for the longest threads, or for thinking, on top.' },
+  { minGiB: 32, numCtx: 65536, note: 'Nothing this app produces will trouble it.' },
 ];
+
+// A window is only as big as the model was trained for. Ollama will accept a
+// larger `num_ctx` and extend the model past its training length, which
+// degrades quality quietly rather than failing — and the models here differ
+// enormously: qwen3.5 is trained to 262k, mistral-small to 32k, and phi4 to
+// only 16k. A default sized from host memory alone would have run phi4 at
+// double its native window without a word.
+export function clampNumCtx(wanted: number, modelLimit: number | null): number {
+  if (!modelLimit || modelLimit <= 0) return wanted;
+  return Math.min(wanted, modelLimit);
+}
 
 export function recommendNumCtx(totalBytes: number): number {
   const gib = totalBytes / 1024 ** 3;

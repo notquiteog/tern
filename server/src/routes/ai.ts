@@ -3,12 +3,12 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
-import { CURATED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
+import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { getCommitment } from '../services/commitments.js';
 import { config } from '../config.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
@@ -19,11 +19,17 @@ import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
 import { requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
+import { invalidateVectorsFrom } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
 import { getVoiceSettings, saveVoiceSettings, voiceDefaults, voiceHealth, type VoiceSettings } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
+import { inspectCertificate, normalizeBaseUrl } from '../util/outbound.js';
 
 const log = logger('ai');
+
+// `z.string().url()` accepts anything `new URL()` parses, which includes
+// `file:` and `javascript:`. The only two schemes ever fetched are these.
+function httpUrl(v: string): boolean { return /^https?:\/\//i.test(v); }
 
 export const aiRouter = Router();
 aiRouter.use(requireAuth);
@@ -64,6 +70,9 @@ aiRouter.get('/status', async (req, res) => {
     // email text leaves the building, so it is never left to be inferred
     // from a URL.
     local: await isLocalReach(s.baseUrl),
+    // Only when the admin has turned verification off: the page shows what
+    // is being trusted rather than leaving it as a checkbox with no subject.
+    cert: s.tlsInsecure ? await inspectCertificate(s.baseUrl).catch(() => null) : null,
     health,
     models,
     loaded,
@@ -74,6 +83,9 @@ aiRouter.get('/status', async (req, res) => {
     recommended: recommendModel(config.totalMemBytes),
     tiers: MODEL_TIERS,
     curated: CURATED_MODELS,
+    // The models for meaning search, which are a different job and a
+    // different size from the ones that write. See ai/models.ts.
+    embedModels: EMBED_MODELS,
     totalMemGiB: Math.round((config.totalMemBytes / 1024 ** 3) * 10) / 10,
     defaults: (({ apiKey: _k, ...d }) => d)(aiDefaults()),
     defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
@@ -165,7 +177,7 @@ aiRouter.delete('/presets/:id', requireAdmin, async (req, res) => {
 });
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
-  const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(120).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+  const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().max(300).refine(httpUrl, 'The base URL must start with http:// or https://').optional(), apiKey: z.string().max(500).optional(), tlsInsecure: z.boolean().optional(), model: z.string().min(1).max(120).optional(), embedModel: z.string().min(1).max(120).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
@@ -173,16 +185,49 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
   if (b.keepAlive !== undefined && !isValidKeepAlive(b.keepAlive)) {
     throw badRequest('Keep model loaded needs a duration with a unit (30s, 10m, 1h), or a number of seconds (-1 to never unload, 0 to unload at once)');
   }
-  if (b.model !== undefined || b.baseUrl !== undefined || b.provider !== undefined) forgetModelCapabilities();
+  if (b.model !== undefined || b.embedModel !== undefined || b.baseUrl !== undefined || b.provider !== undefined) forgetModelCapabilities();
   const before = await getAiSettings();
   const next = await saveAiSettings(b);
   // Picking a different model drops the previous one from memory rather than
   // leaving it to time out beside its replacement. Best effort: a mail server
   // that cannot reach Ollama should still be able to save its settings.
   try { await releaseReplacedModel(before, next); } catch { /* reported by /status */ }
+  // A different embedding model means the stored vectors were made in a
+  // different space, so they are queued for rebuilding rather than left to
+  // degrade search silently. The count goes back so the page can say how much
+  // work it just asked for.
+  let reindex = 0;
+  if (b.embedModel !== undefined && b.embedModel !== before.embedModel) {
+    reindex = await invalidateVectorsFrom(next.embedModel).catch(() => 0);
+    if (reindex) log.info('embedding model changed; queued messages for re-indexing', { from: before.embedModel, to: next.embedModel, messages: reindex });
+  }
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
-  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) } });
+  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, reindex });
+});
+
+// Try a provider without saving it.
+//
+// The address, the key and the certificate all have to be right before
+// anything works, and each is wrong in its own way. Saving to find out is the
+// expensive way to ask: it unloads the model the install was using, so an
+// admin checking a rented GPU box takes the assistant down to do it. This
+// answers from the form.
+aiRouter.post('/test', requireAdmin, async (req, res) => {
+  const b = parse(z.object({
+    provider: z.enum(['ollama', 'openai']).optional(),
+    baseUrl: z.string().max(300),
+    apiKey: z.string().max(500).optional(),
+    tlsInsecure: z.boolean().optional(),
+    model: z.string().max(120).optional(),
+  }), req.body);
+  const baseUrl = normalizeBaseUrl(b.baseUrl);
+  if (!/^https?:\/\//i.test(baseUrl)) throw badRequest('The base URL must start with http:// or https://');
+  const current = await getAiSettings();
+  // A blank key means "keep the stored one", the same as the form says on
+  // save — otherwise testing would report a 401 for a key that is fine.
+  const candidate: AiSettings = { ...current, ...b, baseUrl, apiKey: b.apiKey || current.apiKey };
+  res.json({ result: await checkProvider(candidate), local: await isLocalReach(baseUrl) });
 });
 
 // ---------- The transcriber (F9) ----------

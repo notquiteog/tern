@@ -3,7 +3,7 @@
 // answers with nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions } from './llm.js';
+import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions, predictTokens } from './llm.js';
 
 test('a duration keeps its unit and travels as a string', () => {
   for (const v of ['10m', '1h', '30s', '500ms']) assert.equal(keepAliveValue(v), v);
@@ -102,4 +102,31 @@ test('different models, and empty names, are not the same model', () => {
   // away from "nothing configured" would try to unload "".
   assert.equal(sameModel('', ''), false);
   assert.equal(sameModel('', 'qwen2.5'), false);
+});
+
+test('the reply and reasoning budget are clamped to what the window can hold', () => {
+  // `num_predict` is not bounded by `num_ctx`. Ask for more than the window
+  // has room for and the generation is cut off by the context limit instead,
+  // which looks exactly like a model that stopped early. A 16,000-token
+  // thinking budget on an 8,192-token window cannot possibly be honoured.
+  const big = predictTokens({ numCtx: 8192, promptChars: 20_000, replyTokens: 700, thinkingTokens: 16_000 });
+  assert.equal(big.clamped, true);
+  assert.ok(big.numPredict < 16_700, `asked for 16,700 and got ${big.numPredict}`);
+  // 20,000 chars is ~6,250 tokens of prompt by the conservative estimate, so
+  // roughly 1,800 remain.
+  assert.ok(big.numPredict <= 8192 - Math.ceil(20_000 / 3.2), 'must not exceed the window');
+
+  // A window with room for the whole thing passes it straight through.
+  const fits = predictTokens({ numCtx: 32_768, promptChars: 34_000, replyTokens: 700, thinkingTokens: 16_000 });
+  assert.equal(fits.clamped, false);
+  assert.equal(fits.numPredict, 16_700);
+
+  // Thinking off is just the reply.
+  assert.deepEqual(predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 0 }), { numPredict: 700, clamped: false });
+
+  // A prompt that already fills the window still asks for something rather
+  // than a negative number.
+  const full = predictTokens({ numCtx: 4096, promptChars: 40_000, replyTokens: 700, thinkingTokens: 16_000 });
+  assert.equal(full.clamped, true);
+  assert.ok(full.numPredict > 0);
 });

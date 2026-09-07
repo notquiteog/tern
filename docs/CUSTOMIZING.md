@@ -214,7 +214,7 @@ polish, shorten, expand, subject).
   as…** keeps the sliders as they stand as a preset of your own, which you can
   update or delete. Three ship with Tern and cannot be edited or deleted
   (save a copy instead):
-  - **Balanced (small models)** — Tern's own defaults: qwen2.5, llama3.2,
+  - **Balanced (small models)** — Tern's own defaults: qwen3.5, gemma3,
     gemma3, thinking off.
   - **Qwen3.5 — straight answer** — temperature 0.7, top-p 0.8, top-k 20,
     presence penalty 1.5, thinking off. What Qwen3.5 asks for in
@@ -563,11 +563,36 @@ at the same time. `workers/enrichment.ts`.
 
 ### The embedding model
 
-`AI_EMBED_MODEL` in `.env`, or Admin → AI model. The installer picks
-`nomic-embed-text` when the box has 6 GB or more and `all-minilm` below that.
-Changing it does not re-index automatically: turn meaning search off and on
-again for the accounts that should be rebuilt, which erases the old vectors
-first.
+**Admin → AI model → Meaning search**, or `AI_EMBED_MODEL` in `.env` before
+the first start. The installer picks `nomic-embed-text` when the box has 6 GB
+or more and `all-minilm` below that, and downloads it.
+
+Meaning search uses a second model from the one that writes, and a much
+smaller one: it never generates a word, it only has to place similar messages
+near each other. It loads *beside* the writing model rather than instead of
+it, so the figure that decides whether it fits is what it wants loaded, not
+the download — which is why the card shows both.
+
+| Model | Download | Loaded | Per vector | |
+|---|---|---|---|---|
+| `all-minilm` | 46 MB | ~286 MB | 23M · 512 tok | The default below 6 GB. Loads beside the writing model without competing for room. |
+| `nomic-embed-text` | 274 MB | ~572 MB | 137M · 8,192 tok | Better quality and a much longer window, so a whole message embeds as one vector instead of just its opening. |
+| `embeddinggemma` | 621 MB | ~1.0 GB | 300M · 2,048 tok | Larger again. Worth it only if you search a big mailbox and find the others imprecise. |
+
+The card downloads, deletes, loads and unloads them, the same as the writing
+models above, and anything else from the registry can be pulled by name — a
+model Ollama reports as `embedding`-capable appears here rather than in the
+writing list, so it cannot be picked as the drafting model by mistake.
+
+**Changing it re-indexes.** A vector made by one model is not comparable with
+one made by another — the cosine distance between an `all-minilm` vector and a
+`nomic-embed-text` one is noise, not similarity — so switching queues every
+message already indexed to be embedded again, and the page says how many. Old
+vectors are not deleted: search keeps answering from them while the background
+pass rebuilds, which is a better failure than an empty index for the length of
+a rebuild. On a large mailbox that pass takes a while; it shares the
+twenty-second enrichment tick with everything else, so it will not monopolise
+the model.
 
 ### Dictation
 
@@ -620,6 +645,37 @@ server: everything the assistant is shown — the text of the emails it drafts
 replies to — is sent wherever that URL points. The card says so plainly when
 the address is not local. It is a supported choice, and the right one when the
 model is on your own hardware elsewhere; it is not one to make by accident.
+
+Three things have to be right, and each is wrong in its own way, so there is a
+**Test connection** button beside **Save settings** that asks without saving —
+worth using, because saving unloads whatever model the install was on.
+
+- **The base URL is the server's root.** Scheme, host and port, nothing else:
+  `https://203.0.113.10:40123`, not `.../api` and not with a trailing slash.
+  Every call appends its own path, so a stored slash makes `//api/chat`, which
+  Ollama answers 404 to — health, model list and drafting alike. Tern now
+  trims it on the way in and on the way out, so an address pasted from a copy
+  button works, but it is still the shape to aim for.
+- **The API key is the proxy's token.** Ollama has no authentication of its
+  own, so anything reachable off the box is behind something that does. The
+  key is sent as `Authorization: Bearer` on every request, management calls
+  included. Rented GPU hosts usually call it an instance or open-button token.
+- **The certificate has to be one this machine can verify** — unless you say
+  otherwise. A host that generates its own certificate at boot, which is the
+  norm for a rented GPU box reached at its IP, will fail verification, and the
+  page says so and offers **Trust this server's certificate even if it cannot
+  be verified**. Turning it on keeps the connection encrypted but stops
+  proving the machine at the other end is the one you meant, so it is for a
+  server whose address you control; the page shows the certificate's subject,
+  issuer and fingerprint so you can see what you are trusting. Where the host
+  offers a proxied URL with a real certificate, prefer that and leave the
+  switch off.
+
+A hosted Ollama — the [Vast.ai Ollama template](https://docs.vast.ai/ollama-webui)
+is the shape of it — is all three at once: the port is mapped to an external
+one, the token is required, and the certificate is self-signed. Base URL
+`https://<instance-ip>:<external-port>`, the instance token in the API key
+field, and the trust switch on unless you are going through the host's proxy.
 
 ### Importing an archive
 
