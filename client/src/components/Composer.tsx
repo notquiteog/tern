@@ -13,6 +13,7 @@ import { useMailPrefs } from '../state/mailPrefs';
 import { AddressInput } from './AddressInput';
 import { Editor, type EditorHandle } from './Editor';
 import { AiPanel } from './AiPanel';
+import { DictateButton } from './Dictate';
 import { Avatar, Button, IconButton, Menu, MenuItem, Modal, Input, Field } from './ui';
 import { cls, fmtBytes, localDateTimeValue, textToHtml, type Addr } from '../lib/format';
 import { bodyText, isBlankHtml, joinBody, mentionsAttachment, splitBody } from '../lib/body';
@@ -341,9 +342,15 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
         )}
         {showCc && <div className="addr-row"><label>Cc</label><AddressInput value={cc} onChange={(v) => { setCc(v); setDirty(true); }} /></div>}
         {showBcc && <div className="addr-row"><label>Bcc</label><AddressInput value={bcc} onChange={(v) => { setBcc(v); setDirty(true); }} /></div>}
-        {subjectShown && <div className="subject-row"><input value={subject} onChange={(e) => { setSubject(e.target.value); setDirty(true); }} placeholder="Subject" autoFocus={variant === 'window' && Boolean(seed.to?.length) && !seed.subject} /></div>}
+        {subjectShown && (
+          <div className="subject-row">
+            <input value={subject} onChange={(e) => { setSubject(e.target.value); setDirty(true); }} placeholder="Subject" autoFocus={variant === 'window' && Boolean(seed.to?.length) && !seed.subject} />
+            <DictateButton title="Dictate the subject" onText={(t) => { setSubject((v) => (v ? `${v} ${t}` : t)); setDirty(true); }} />
+          </div>
+        )}
         <Editor ref={editor} initialHtml={html.current} placeholder={isReply ? 'Write your reply…' : 'Write your message…'} minHeight={variant === 'inline' ? 110 : 120} autoFocus={variant === 'inline' || Boolean(seed.subject && seed.to?.length)}
-          onChange={(h) => { html.current = h; setDirty(true); }} onFiles={filesIntoEditor} onInsertImage={insertImage} />
+          onChange={(h) => { html.current = h; setDirty(true); }} onFiles={filesIntoEditor} onInsertImage={insertImage}
+          extraToolbar={<DictateButton onText={(t) => { editor.current?.insertText(t); setDirty(true); }} />} />
         {quote && !quoteShown && <button type="button" className="quote-toggle" title="Show quoted text" onClick={showQuote}><MoreHorizontal size={14} /></button>}
         {(attachments.length > 0 || fwdAttachments.length > 0) && (
           <div className="compose-attach">

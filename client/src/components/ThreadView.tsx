@@ -11,6 +11,8 @@ import { useMailboxes } from '../lib/queries';
 import { useMailPrefs } from '../state/mailPrefs';
 import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input } from './ui';
 import { MessageBody } from './MessageBody';
+import { GuardBanner } from './GuardBanner';
+import { InvitationCard } from './InvitationCard';
 import { SafeHtml } from './SafeHtml';
 import { EncryptedMessage, pgpKindOf } from './EncryptedMessage';
 import { Composer, type ComposeKind, type KindOptions } from './Composer';
@@ -369,6 +371,11 @@ function MessageCard({ m, accountId, me, isContact, open, single, onToggle, onRe
               {unsub.url && unsub.mailto && <a className="small" href={unsub.url} target="_blank" rel="noopener noreferrer">open list page</a>}
             </div>
           )}
+          {/* The guard's line and any invitation sit above the message, not
+              inside it: both are statements about the message rather than
+              part of what the sender wrote. */}
+          <GuardBanner emailId={m.id} />
+          <InvitationCard emailId={m.id} accountId={accountId} />
           <div className="msg-body">{pgpKind ? <EncryptedMessage m={m} accountId={accountId} kind={pgpKind} /> : <MessageBody html={m.body_html} text={m.body_text} attachments={m.attachments} accountId={accountId} senderEmail={from?.email} autoAllow={prefs.showImagesFromContacts && isContact} />}</div>
           {pgpKind !== 'pgp/mime' && atts.length > 0 && (
             <div className="attachments">

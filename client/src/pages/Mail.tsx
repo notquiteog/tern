@@ -9,6 +9,18 @@ import { useMailPrefs, type Layout } from '../state/mailPrefs';
 import { useAccountFilter, useAccounts, useMailboxes } from '../lib/queries';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { Avatar, Button, Empty, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input, Segmented, Confirm } from '../components/ui';
+import { SemanticResults } from '../components/SearchExtras';
+
+// The words out of a search, with the operators taken off. Meaning search
+// has nothing to say about `is:unread` or `newer_than:7d`, and feeding them
+// to it would embed the syntax rather than the question.
+function searchWords(query: string): string {
+  return (query.match(/(?:-?[a-z_]+:(?:"[^"]*"|\S+))|-?"[^"]*"|\S+/gi) ?? [])
+    .filter((t) => !/^-?[a-z_]+:/i.test(t))
+    .join(' ')
+    .replace(/^-/gm, '')
+    .trim();
+}
 import { createPortal } from 'react-dom';
 import { ThreadView } from '../components/ThreadView';
 import { DataTable } from '../components/DataTable';
@@ -348,6 +360,10 @@ export default function MailPage() {
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
                 : <Empty title={q ? 'No results' : tabbed && cat !== 'primary' ? `Nothing in ${CATEGORY_TABS.find((t) => t.key === cat)?.label ?? cat}` : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : tabbed && cat !== 'primary' ? 'Mail of this kind lands here as it arrives. Everything else is in Primary.' : 'Enjoy the quiet.'}</Empty>
             )}
+            {/* Meaning search, under the exact answer rather than instead of
+                it. When the words matched nothing this is often the only
+                thing on the page, which is exactly when it earns its place. */}
+            {q && !isLoading && <SemanticResults query={searchWords(q)} />}
             <div className="thread-rows" role="listbox" aria-multiselectable="true"
               aria-label={q ? `Search results for ${q}` : `Conversations in ${mailboxName}`} onKeyDown={onListKeys}>
             {stacks.map(({ sep, rows, indices }) => {

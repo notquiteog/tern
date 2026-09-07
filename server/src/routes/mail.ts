@@ -7,6 +7,8 @@ import { clientFor, getUserAccount, listAccounts, type AccountRow } from '../ser
 import * as actions from '../jmap/actions.js';
 import { syncManager } from '../workers/syncManager.js';
 import { markDirty, removeDraft } from '../services/draftSync.js';
+import { cleanHtmlLinks, cleanTextLinks } from '../services/links.js';
+import { allowed } from '../services/capabilities.js';
 import { openDraft, openDraftWith, openEmailWith, openEmails, sealDraft } from '../services/mailVault.js';
 import { dataKey, open, seal } from '../services/vault.js';
 
@@ -253,6 +255,21 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   );
   if (!sealedMessages.length) throw notFound('Thread not found');
   const messages = await openEmails(req.user!.id, 'owner', sealedMessages);
+  // Link hygiene (F11), on the way out to the browser rather than in it: one
+  // implementation, applied before the markup exists in a page. Tracking
+  // parameters come off and redirect wrappers are unwrapped by reading the
+  // destination they carry — never by following them, which would be a
+  // request to a stranger's server on behalf of somebody who has not clicked.
+  if (await allowed(req.user!.id, 'links')) {
+    for (const m of messages as any[]) {
+      if (m.body_html) {
+        const r = cleanHtmlLinks(m.body_html);
+        m.body_html = r.html;
+        m.links_cleaned = r.removed + r.unwrapped;
+      }
+      if (m.body_text) m.body_text = cleanTextLinks(m.body_text);
+    }
+  }
   // Profile pictures: a contact's photo for their address, the user's own for the account's address.
   const senders = [...new Set(messages.map((m: any) => m.from_email).filter(Boolean))];
   const photos = await query<{ email: string; id: number; v: number }>(`SELECT lower(email) AS email, id, (extract(epoch FROM avatar_updated_at) * 1000)::bigint AS v FROM contacts WHERE user_id=$1 AND avatar_updated_at IS NOT NULL AND lower(email) = ANY($2)`, [req.user!.id, senders]);

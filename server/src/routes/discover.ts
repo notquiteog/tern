@@ -18,6 +18,7 @@ import { explain, featuresOf, loadModel, retrain } from '../services/triage.js';
 import { describe as describeGuard, guardFor } from '../services/guard.js';
 import { enrichmentStatus } from '../workers/enrichment.js';
 import { textFor } from '../services/attachments.js';
+import { openEmails } from '../services/mailVault.js';
 
 export const discoverRouter = Router();
 discoverRouter.use(requireAuth);
@@ -48,13 +49,40 @@ discoverRouter.post(
     const accounts = (await listAccounts(req.user!.id)).filter((a) => a.enabled);
     const ids = b.accountId ? accounts.filter((a) => a.id === b.accountId).map((a) => a.id) : accounts.map((a) => a.id);
     const hits = await semanticSearch(req.user!.id, ids, b.q, { limit: b.limit });
-    res.json({ hits, remaining: await indexPending(req.user!.id) });
+    res.json({ hits: await describeHits(req.user!.id, hits), remaining: await indexPending(req.user!.id) });
   },
 );
 
 discoverRouter.get('/similar/:id', requireCapability('semantic'), async (req, res) => {
-  res.json({ hits: await similarTo(req.user!.id, idParam(req.params.id)) });
+  res.json({ hits: await describeHits(req.user!.id, await similarTo(req.user!.id, idParam(req.params.id))) });
 });
+
+// A hit is an id and a score, which is not something anybody can read. This
+// turns it into a row: who it is from, what it is about, and when. The
+// reader is 'owner' because this is the person looking at their own mail —
+// the capability that had to be granted was the one that built the index.
+async function describeHits(userId: number, hits: { emailId: number; accountId: number; threadId: string; score: number }[]) {
+  if (!hits.length) return [];
+  const rows = await query<any>(
+    `SELECT e.id, e.subject, e.preview, e.from_addr, e.received_at, e.has_attachment
+       FROM emails e JOIN accounts a ON a.id = e.account_id
+      WHERE e.id = ANY($1) AND a.user_id = $2`,
+    [hits.map((h) => h.emailId), userId],
+  );
+  const opened = await openEmails(userId, 'owner', rows);
+  const byId = new Map(opened.map((m: any) => [m.id, m]));
+  return hits.map((h) => {
+    const m: any = byId.get(h.emailId);
+    return {
+      ...h,
+      subject: m?.subject ?? '',
+      preview: (m?.preview ?? '').slice(0, 160),
+      from: m?.from_addr?.[0] ? { name: m.from_addr[0].name ?? null, email: m.from_addr[0].email } : null,
+      receivedAt: m?.received_at ? new Date(m.received_at).toISOString() : null,
+      hasAttachment: Boolean(m?.has_attachment),
+    };
+  }).filter((h) => h.subject || h.preview);
+}
 
 // ---------- F2 ----------
 

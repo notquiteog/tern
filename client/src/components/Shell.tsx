@@ -3,6 +3,7 @@ import { BrandLogo, useAppName } from './Brand';
 import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useFeatures } from '../state/features';
+import { NaturalSearchButton, SearchDictate } from './SearchExtras';
 import { useQueryClient } from '@tanstack/react-query';
 import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask, Newspaper, ClipboardCheck } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -170,6 +171,10 @@ export function Shell({ children }: { children: ReactNode }) {
             onKeyDown={(e) => { if (e.key === 'Backspace' && !text && chips.length) { e.preventDefault(); dropChip(chips[chips.length - 1]); } }}
             placeholder={chips.length ? 'Search these' : 'Search mail'}
             title="Operators: from: to: subject: is:unread is:starred has:attachment label: newer_than:7d older_than:30d before:2026-01-01" />
+          {/* Dictate a search, and turn a sentence into operators. Both render
+              nothing unless the person has turned the capability on. */}
+          <SearchDictate onText={(t) => setText(t)} />
+          <NaturalSearchButton text={text} onQuery={(query) => { setText(''); runSearch(query); }} />
           {q || text ? <IconButton label="Clear" size={14} onClick={() => { setQ(''); setText(''); nav(loc.pathname); }}><X size={14} /></IconButton> : <span className="kbd-hint desktop-only"><Kbd>/</Kbd></span>}
           <IconButton label="Search options" size={14} className={cls('btn-sm', advanced && 'active')} onClick={(e) => { e.preventDefault(); setAdvanced((a) => !a); }}><SlidersHorizontal size={14} /></IconButton>
           {advanced && <AdvancedSearch initial={q} onClose={() => setAdvanced(false)} onSearch={(query) => { setAdvanced(false); setQ(query); nav(query ? `/mail/all?q=${encodeURIComponent(query)}` : '/mail/inbox'); }} />}

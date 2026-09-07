@@ -789,7 +789,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .kv-tight { grid-template-columns: 1fr; }
   .editor-layout { grid-template-columns: 1fr; }
   .editor-layout aside { order: 2; }
-  .settings-tabs { position: sticky; top: 0; z-index: 2; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); margin: -14px -14px 14px; padding: 0 10px; }
+  /* `top: 0` pins to the scrollport, which starts below the page's own 14px of
+     padding — leaving a band that content scrolled past showing above the bar.
+     The offset matches the negative margin that bleeds it to the edges. */
+  .settings-tabs { position: sticky; top: -14px; z-index: 2; background: var(--glass-strong); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); margin: -14px -14px 14px; padding: 0 10px; }
   .settings-tabs a { height: 42px; }
 }
 @media (max-width: 640px) {
@@ -1204,4 +1207,35 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .share-print, .share-print * { visibility: visible; }
   .share-print { position: absolute; inset: 0; padding: 24px; }
   .share-item { break-inside: avoid; border-color: #000; }
+}
+
+/* An invitation found in a message. It sits above the body because it is a
+   statement about the message rather than part of it, and it is bordered
+   rather than filled so it never competes with the guard's banner when both
+   are present. */
+.invite-card { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-elev); display: flex; flex-direction: column; gap: 6px; }
+.invite-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.invite-head svg { flex: none; color: var(--accent-text); opacity: .8; }
+.invite-when { font-size: 14px; font-weight: 500; }
+.invite-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.invite-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.invite-clash { color: var(--warning); }
+.invite-actions { display: flex; gap: 6px; margin-top: 4px; }
+
+/* Meaning search, shown under the exact results rather than instead of them.
+   An exact match is a fact; a related one is a suggestion, and the layout
+   says which is which. */
+.semantic-results { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.semantic-head { display: flex; align-items: center; gap: 8px; padding: 4px 16px 8px; font-size: 12px; color: var(--text-2); }
+.semantic-head svg { flex: none; opacity: .7; }
+.semantic-hit { display: grid; grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) auto; align-items: baseline; gap: 4px 12px; width: 100%; padding: 7px 16px; border: 0; background: none; text-align: left; cursor: pointer; font: inherit; color: inherit; border-radius: 0; }
+.semantic-hit:hover { background: var(--bg-hover); }
+.semantic-hit:focus-visible { outline: none; box-shadow: inset var(--focus); }
+.semantic-from { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.semantic-subject { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.semantic-preview { grid-column: 2; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.semantic-when { font-size: 11.5px; white-space: nowrap; }
+@media (max-width: 640px) {
+  .semantic-hit { grid-template-columns: 1fr auto; }
+  .semantic-preview { grid-column: 1 / -1; }
 }

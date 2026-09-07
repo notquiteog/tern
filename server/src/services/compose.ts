@@ -10,6 +10,8 @@ import { syncManager } from '../workers/syncManager.js';
 import { publish } from '../events.js';
 import { config } from '../config.js';
 import { signPayload } from '../crypto.js';
+import { cleanHtmlLinks, cleanTextLinks } from './links.js';
+import { allowed } from './capabilities.js';
 import { escapeHtml } from './merge.js';
 import { badRequest } from '../errors.js';
 import { scrubMedia } from './scrub.js';
@@ -128,6 +130,14 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
   }
 
   let html = input.html || '<p></p>';
+  // A message forwarded or replied to through Tern carries the quoted
+  // original, and with it whatever tracking the sender put in their links.
+  // Passing that on would make this app a link in somebody else's
+  // surveillance chain, so it is cleaned on the way out too.
+  if (await allowed(acc.user_id, 'links')) {
+    html = cleanHtmlLinks(html).html;
+    if (input.text) input = { ...input, text: cleanTextLinks(input.text) };
+  }
   const attachments: OutgoingAttachment[] = [];
   const inlineIds = inlineUploadIds(html);
   if (inlineIds.length) {
