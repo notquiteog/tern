@@ -124,6 +124,30 @@ export function adoptServerAppearance(serverPrefs: Record<string, unknown> | und
   if (!local) setAppearance(server, false);
 }
 
+// Whether this setting is this person's own choice rather than inherited —
+// which is exactly when offering to reset it means anything.
+export function isMyChoice(key: keyof Appearance): boolean {
+  return Object.prototype.hasOwnProperty.call(myAppearanceChoices(), key);
+}
+
+// Drops just these keys, so those settings go back to following the install's
+// default while everything else this person picked stays as it is.
+export function resetAppearanceKeys(keys: (keyof Appearance)[], sync = true): Appearance {
+  const choices: Record<string, unknown> = { ...myAppearanceChoices() };
+  for (const k of keys) delete choices[k];
+  try {
+    localStorage.setItem(KEY, JSON.stringify(choices));
+    // The legacy single-key theme would otherwise go on overriding the default.
+    if (keys.includes('theme')) localStorage.removeItem('tern.theme');
+  } catch { /* ignore */ }
+  const next = getAppearance();
+  applyAppearance(next);
+  if (sync) {
+    fetch('/api/auth/prefs', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tern' }, credentials: 'same-origin', body: JSON.stringify({ appearance: choices }) }).catch(() => {});
+  }
+  return next;
+}
+
 // Drops this person's overrides and goes back to the install's default.
 export function resetAppearance(sync = true): Appearance {
   try { localStorage.removeItem(KEY); localStorage.removeItem('tern.theme'); } catch { /* ignore */ }

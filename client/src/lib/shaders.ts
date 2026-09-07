@@ -233,4 +233,109 @@ void main(){
   col += u_c[3] * band * (u_dark > .5 ? .1 : .06);
   o = vec4(col, 1.);
 }`,
+  // ---- added: three calm, three lively ----
+  caustics: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; vec2 p = uv * vec2(u_res.x / u_res.y, 1.) * 3.; float t = u_time * .09;
+  p += (u_mouse - .5) * .2;
+  vec2 q = p;
+  float acc = 0.;
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i);
+    q = p + vec2(sin(q.y * 1.7 + t + fi + u_seed), cos(q.x * 1.6 - t * .8 + fi * 1.4)) * .55;
+    acc += 1. / (abs(sin(q.x + q.y) * 1.4) + .18);
+  }
+  acc /= 5.;
+  float k = pow(clamp(acc * .38, 0., 1.), 2.2);
+  vec3 col = mix(tone(u_c[2]), tone(u_c[0]), clamp(acc * .35, 0., 1.));
+  col = mix(base(), col, u_dark > .5 ? .42 : .3);
+  col += tone(u_c[3]) * k * (u_dark > .5 ? .3 : .18);
+  o = vec4(col, 1.);
+}`,
+  strata: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; float ar = u_res.x / u_res.y; float t = u_time * .025;
+  vec2 p = vec2(uv.x * ar, uv.y);
+  float warp = fbm(vec2(p.x * 1.1 + t, p.y * .5 + u_seed)) * .28;
+  float y = p.y + warp + (u_mouse.y - .5) * .03;
+  float band = fract(y * 5.);
+  float idx = floor(y * 5.);
+  float edge = smoothstep(0., .06, band) * smoothstep(1., .94, band);
+  vec3 a = mix(u_c[0], u_c[1], fract(sin(idx * 12.9898 + u_seed) * 43758.5453));
+  vec3 b = mix(u_c[2], u_c[3], fract(sin(idx * 78.233) * 43758.5453));
+  vec3 col = tone(mix(a, b, band));
+  col = mix(base(), col, (u_dark > .5 ? .3 : .2) + .12 * edge);
+  o = vec4(col, 1.);
+}`,
+  bloom: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; float ar = u_res.x / u_res.y; vec2 p = vec2(uv.x * ar, uv.y); float t = u_time * .05;
+  vec3 col = mix(base(), tone(u_c[0]), .22);
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i);
+    vec2 c = vec2(fract(sin(fi * 45.23 + u_seed) * 43758.5) * ar, fract(sin(fi * 91.7 + u_seed) * 43758.5));
+    c += vec2(sin(t * (.6 + fi * .15) + fi), cos(t * (.5 + fi * .2) + fi * 2.)) * .12;
+    c += (u_mouse - .5) * (.02 + fi * .012);
+    float d = length(p - c);
+    float r = .22 + .1 * sin(t * .8 + fi * 1.7);
+    float glow = exp(-pow(d / max(r, .05), 2.) * 2.2);
+    col += tone(u_c[i - (i / 4) * 4]) * glow * (u_dark > .5 ? .34 : .2);
+  }
+  o = vec4(col, 1.);
+}`,
+  vortex: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; vec2 p = (uv - .5) * vec2(u_res.x / u_res.y, 1.); float t = u_time * .09;
+  p -= (u_mouse - .5) * .1;
+  float r = length(p);
+  float a = atan(p.y, p.x) + t + 2.2 / (r + .3);
+  float arms = .5 + .5 * sin(a * 3. + r * 6. - t * 2. + u_seed);
+  float arms2 = .5 + .5 * sin(a * 5. - r * 4. + t * 1.4);
+  vec3 col = tone(mix(mix(u_c[0], u_c[1], arms), mix(u_c[2], u_c[3], arms2), .5));
+  col = mix(base(), col, (u_dark > .5 ? .4 : .26) * smoothstep(1.05, .1, r));
+  col += tone(u_c[3]) * exp(-r * r * 4.) * (u_dark > .5 ? .28 : .16);
+  o = vec4(col, 1.);
+}`,
+  lattice: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; float ar = u_res.x / u_res.y; float t = u_time * .12;
+  vec2 p = vec2(uv.x * ar, uv.y) * 7.;
+  p.y += t * .35; p.x += (u_mouse.x - .5) * .8;
+  vec2 h = vec2(1., 1.7320508);
+  vec2 a = mod(p, h) - h * .5;
+  vec2 b = mod(p - h * .5, h) - h * .5;
+  vec2 g = dot(a, a) < dot(b, b) ? a : b;
+  float d = max(abs(g.x) * .866 + abs(g.y) * .5, abs(g.y));
+  float cell = smoothstep(.42, .5, d);
+  vec2 id = floor(p - g);
+  float n = fract(sin(dot(id, vec2(27.1, 61.7)) + u_seed) * 43758.5453);
+  float pulse = .5 + .5 * sin(t * 1.6 + n * 6.2831);
+  vec3 col = mix(base(), tone(u_c[0]), .28);
+  col += cell * mix(tone(u_c[1]), tone(u_c[2]), pulse) * (u_dark > .5 ? .5 : .26);
+  col += tone(u_c[3]) * (1. - cell) * n * pulse * (u_dark > .5 ? .12 : .07);
+  o = vec4(col, 1.);
+}`,
+  shatter: HEAD + `
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res; float ar = u_res.x / u_res.y; float t = u_time * .06;
+  vec2 p = vec2(uv.x * ar, uv.y) * 5.;
+  p += (u_mouse - .5) * .5;
+  vec2 ip = floor(p), fp = fract(p);
+  float d1 = 8., d2 = 8.; vec2 best = vec2(0.);
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 g = vec2(float(x), float(y));
+      vec2 jitter = vec2(hash(ip + g + u_seed), hash(ip + g + 31.7 + u_seed));
+      jitter = .5 + .45 * sin(t * 1.3 + 6.2831 * jitter);
+      float d = length(g + jitter - fp);
+      if (d < d1) { d2 = d1; d1 = d; best = ip + g; } else if (d < d2) { d2 = d; }
+    }
+  }
+  float edge = smoothstep(0., .14, d2 - d1);
+  float n = hash(best * 1.7 + u_seed);
+  vec3 face = mix(mix(u_c[0], u_c[1], n), mix(u_c[2], u_c[3], fract(n * 3.7)), .5);
+  vec3 col = mix(base(), tone(face), (u_dark > .5 ? .34 : .22) * (.55 + .45 * n));
+  col += tone(u_c[3]) * (1. - edge) * (u_dark > .5 ? .35 : .2);
+  o = vec4(col, 1.);
+}`,
 };

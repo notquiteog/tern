@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BrandLogo, useAppName } from './Brand';
 import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useFeatures } from '../state/features';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask } from 'lucide-react';
+import { Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask, Newspaper, ClipboardCheck } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { adoptServerMailPrefs } from '../state/mailPrefs';
 import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, searchChips, withoutChip, type SearchFields } from '../lib/search';
@@ -25,6 +26,7 @@ import { cls } from '../lib/format';
 export function Shell({ children }: { children: ReactNode }) {
   const appName = useAppName();
   const { user, logout } = useAuth();
+  const { can } = useFeatures();
   const { lock: lockKey } = usePgp();
   const compose = useCompose();
   const nav = useNavigate();
@@ -243,6 +245,10 @@ export function Shell({ children }: { children: ReactNode }) {
             {navItem('/review', <Sparkles size={17} />, 'AI review', counts?.review, true)}
             {navItem('/responders', <Bot size={17} />, 'AI responders')}
             {navItem('/rules', <ListFilter size={17} />, 'Rules')}
+            {/* Only for people who have turned these on: a link to a page that
+                would tell you to go and enable something is worse than no link. */}
+            {can('brief') && navItem('/brief', <Newspaper size={17} />, 'Brief')}
+            {can('commitments') && navItem('/commitments', <ClipboardCheck size={17} />, 'Commitments')}
           </div>
           <div className="nav-section">
             <div className="nav-section-title">Workspace</div>

@@ -1,19 +1,20 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft, Monitor, Sun, Moon, Paintbrush } from 'lucide-react';
+import { Check, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Users, Settings as SettingsIcon, ExternalLink, Server, Copy, KeySquare, Upload, Feather, ScrollText, Bot, Palette, ArrowLeft, Monitor, Sun, Moon, Paintbrush, ToggleRight, Timer, ShieldCheck } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
 import { renderIcons } from '../lib/pwaIcons';
 import { useToast } from '../state/toast';
 import { useAiStatus } from '../lib/queries';
-import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Select, Spinner, Textarea, Toggle, Tabs, Avatar } from '../components/ui';
+import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, ResetButton, Select, Spinner, Textarea, Toggle, Tabs, Avatar } from '../components/ui';
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { AiPlayground, AiStatusLine } from './Settings';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { getAppearance, houseAppearance, applyHouseAppearance, type Appearance, type Theme } from '../state/theme';
+import { AdminFeatures, AdminRetention, AdminVault } from './AdminFeatures';
 
 // Everything that changes the workspace for everyone: users and sign-up,
 // the bundled mail server, the AI model, the app's name and logo, the
@@ -26,7 +27,16 @@ export default function AdminSettingsPage() {
     ['general', 'General', <SettingsIcon size={15} />], ['users', 'Users', <Users size={15} />],
   ];
   if (stalwartProvisioning) tabs.push(['mailserver', 'Mail server', <Server size={15} />]);
-  tabs.push(['ai', 'AI model', <Bot size={15} />], ['branding', 'Branding', <Palette size={15} />], ['appearance', 'Appearance', <Paintbrush size={15} />], ['audit', 'Audit log', <ScrollText size={15} />]);
+  tabs.push(
+    ['ai', 'AI model', <Bot size={15} />],
+    // What the install allows at all, how long it keeps things, and what it
+    // is actually running. Together they are the panel an operator reaches
+    // for when the box is under load or somebody asks what it does with mail.
+    ['features', 'Features', <ToggleRight size={15} />],
+    ['retention', 'Retention', <Timer size={15} />],
+    ['vault', 'Security', <ShieldCheck size={15} />],
+    ['branding', 'Branding', <Palette size={15} />], ['appearance', 'Appearance', <Paintbrush size={15} />], ['audit', 'Audit log', <ScrollText size={15} />],
+  );
   return (
     <div className="page">
       <div className="settings-head row wrap mb-8">
@@ -41,6 +51,9 @@ export default function AdminSettingsPage() {
         <Route path="users" element={<UsersSettings />} />
         <Route path="mailserver" element={<MailServerSettings />} />
         <Route path="ai" element={<AiAdminSettings />} />
+        <Route path="features" element={<AdminFeatures />} />
+        <Route path="retention" element={<AdminRetention />} />
+        <Route path="vault" element={<AdminVault />} />
         <Route path="branding" element={<BrandingSettings />} />
         <Route path="appearance" element={<AppearanceDefaults />} />
         <Route path="audit" element={<AuditSettings />} />
@@ -123,6 +136,15 @@ function AppearanceDefaults() {
 
   const mine = getAppearance();
   const differsFromMine = JSON.stringify(mine) !== JSON.stringify(houseAppearance());
+  // Each section can go back to what Tern ships with on its own, without
+  // discarding the rest of the form. It lands on Save like any other edit.
+  const resetFor = (...keys: (keyof Appearance)[]) => (
+    <ResetButton
+      show={keys.some((k) => f![k] !== data!.builtIn[k])}
+      onClick={() => setF({ ...f!, ...Object.fromEntries(keys.map((k) => [k, data!.builtIn[k]])) })}
+      title="Back to Tern's own default"
+    />
+  );
 
   return (
     <div style={{ maxWidth: 820 }}>
@@ -133,23 +155,24 @@ function AppearanceDefaults() {
       {differsFromMine && <div className="help-text mt-8">Your own appearance differs from this; what you see in the app is your choice, not the default below. Settings → Appearance has a link back.</div>}
 
       <div className="card mb-16 mt-16">
-        <h2 className="mb-8">Theme</h2>
+        <div className="card-title"><h2>Theme</h2>{resetFor('theme')}</div>
         <div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map((t) => <button key={t} className={f.theme === t ? 'active' : ''} onClick={() => set({ theme: t })}>{t === 'system' ? <Monitor size={14} /> : t === 'light' ? <Sun size={14} /> : <Moon size={14} />} {t === 'system' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}</button>)}</div>
         <div className="help-text mt-8">Auto follows each person's operating system.</div>
       </div>
 
       <div className="card mb-16">
-        <h2 className="mb-8">Colour palette</h2>
+        <div className="card-title"><h2>Colour palette</h2>{resetFor('palette')}</div>
         <div className="swatches">{PALETTES.map((p) => <button key={p.key} type="button" className={cls('swatch-card', f.palette === p.key && 'active')} onClick={() => set({ palette: p.key })}><div className="bar" style={{ background: `linear-gradient(120deg, ${p.gradient.join(', ')})` }} /><div className="name">{p.name}</div><div className="hint">{f.palette === p.key ? 'the default' : p.hint}</div></button>)}</div>
       </div>
 
       <div className="card mb-16">
-        <h2 className="mb-8">Background</h2>
+        <div className="card-title"><h2>Background</h2>{resetFor('background')}</div>
         <div className="swatches">{(['calm', 'lively', 'none'] as const).map((mood) => <Fragment key={mood}><div className="swatch-group">{mood === 'calm' ? 'Calm' : mood === 'lively' ? 'Lively' : 'Off'}</div>{BACKGROUNDS.filter((b) => b.mood === mood).map((b) => <button key={b.key} type="button" className={cls('swatch-card', f.background === b.key && 'active')} onClick={() => set({ background: b.key })}><div className={`bar bg-preview-${b.key}`} /><div className="name">{b.name}</div><div className="hint">{b.hint}</div></button>)}</Fragment>)}</div>
         <div className="help-text mt-8">Shaders run on the GPU. Choose Plain if the people here are on older machines.</div>
       </div>
 
       <div className="card mb-16">
+        <div className="card-title"><h2>Glass, motion and layout</h2>{resetFor('glass', 'motion', 'density', 'split')}</div>
         <div className="form-row">
           <Field label="Glass"><div className="segmented">{(['subtle', 'balanced', 'strong'] as const).map((g) => <button key={g} className={f.glass === g ? 'active' : ''} onClick={() => set({ glass: g })}>{g[0].toUpperCase() + g.slice(1)}</button>)}</div></Field>
           <Field label="Motion"><div className="segmented">{(['full', 'reduced'] as const).map((m) => <button key={m} className={f.motion === m ? 'active' : ''} onClick={() => set({ motion: m })}>{m === 'full' ? 'Full' : 'Reduced'}</button>)}</div></Field>

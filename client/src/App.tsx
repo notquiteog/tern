@@ -4,7 +4,10 @@ import { AuthProvider, useAuth } from './state/auth';
 import { ToastProvider } from './state/toast';
 import { ComposeProvider } from './state/compose';
 import { PgpProvider } from './state/pgp';
+import { FeaturesProvider } from './state/features';
 import { Shell } from './components/Shell';
+import BriefPage from './pages/Brief';
+import CommitmentsPage from './pages/Commitments';
 import { Spinner } from './components/ui';
 
 // Eager: the two screens that can be the first paint. Everything else is a
@@ -46,6 +49,8 @@ function Gate() {
         <Routes>
           <Route path="/" element={<Navigate to="/mail/inbox" replace />} />
           <Route path="/home" element={<HomePage />} />
+        <Route path="/brief" element={<BriefPage />} />
+        <Route path="/commitments" element={<CommitmentsPage />} />
           <Route path="/mail/:box" element={<MailPage />} />
           <Route path="/mail/:box/t/:threadKey" element={<MailPage />} />
           <Route path="/contacts" element={<ContactsPage />} />
@@ -69,11 +74,13 @@ export default function App() {
   return (
     <ToastProvider>
       <AuthProvider>
-        <PgpProvider>
-          <ComposeProvider>
-            <Gate />
-          </ComposeProvider>
-        </PgpProvider>
+        <FeaturesProvider>
+          <PgpProvider>
+            <ComposeProvider>
+              <Gate />
+            </ComposeProvider>
+          </PgpProvider>
+        </FeaturesProvider>
       </AuthProvider>
     </ToastProvider>
   );

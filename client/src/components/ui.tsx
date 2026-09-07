@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, X, Inbox, AlertTriangle, Info, CheckCircle2 } from 'lucide-react';
+import { Loader2, X, Inbox, AlertTriangle, Info, CheckCircle2, RotateCcw } from 'lucide-react';
 import { cls, colorFor, initials } from '../lib/format';
 
 type BtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'primary' | 'danger' | 'ghost' | 'soft' | 'ai'; size?: 'sm' | 'md' | 'lg'; icon?: ReactNode; loading?: boolean; iconOnly?: boolean };
@@ -156,4 +156,16 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (c: 
 
 export function PageHeader({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
   return <div className="page-header"><div><h1>{title}</h1>{sub && <div className="sub">{sub}</div>}</div>{actions && <div className="row wrap">{actions}</div>}</div>;
+}
+
+// A quiet "put this back" next to a setting. Rendering nothing when there is
+// nothing to undo keeps the page from advertising a control that would do
+// nothing, and keeps the row from shifting when there is.
+export function ResetButton({ show, onClick, label = 'Reset', title = 'Back to the default' }: { show: boolean; onClick: () => void; label?: string; title?: string }) {
+  if (!show) return null;
+  return (
+    <button type="button" className="reset-btn" onClick={onClick} title={title}>
+      <RotateCcw size={12} />{label}
+    </button>
+  );
 }

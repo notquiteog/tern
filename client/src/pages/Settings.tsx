@@ -2,16 +2,16 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
-import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint } from 'lucide-react';
+import { Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight } from 'lucide-react';
 import { api, apiStream } from '../api';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
-import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
+import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, ResetButton, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
-import { getAppearance, setAppearance, onAppearance, myAppearanceChoices, resetAppearance, type Theme, type Appearance } from '../state/theme';
+import { getAppearance, setAppearance, onAppearance, myAppearanceChoices, resetAppearance, resetAppearanceKeys, isMyChoice, type Theme, type Appearance } from '../state/theme';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { Avatar } from '../components/ui';
 import { useMailPrefs } from '../state/mailPrefs';
@@ -25,10 +25,15 @@ import EncryptionSettings from './Encryption';
 // behaves for you. Workspace-wide things (users, the mail server, the AI
 // model, branding) live under Admin, in pages/AdminSettings.tsx, and the
 // server refuses their endpoints to non-admins regardless of the UI.
+import FeaturesPage from './Features';
+
 export default function SettingsPage() {
   const { user } = useAuth();
   const admin = user!.role === 'admin';
   const tabs: [string, string, ReactNode][] = [
+    // Features comes first because every other page's behaviour depends on
+    // what is switched on here.
+    ['features', 'Features', <ToggleRight size={15} />],
     ['profile', 'Profile', <UserCircle size={15} />], ['accounts', 'Accounts', <Mail size={15} />], ['mailapps', 'Mail apps', <Smartphone size={15} />],
     ['mail', 'Mail', <Inbox size={15} />], ['ai', 'AI assistant', <Sparkles size={15} />], ['appearance', 'Appearance', <Palette size={15} />], ['security', 'Security', <Shield size={15} />], ['encryption', 'Encryption', <Lock size={15} />],
   ];
@@ -42,6 +47,7 @@ export default function SettingsPage() {
         {tabs.map(([k, l, i]) => <NavLink key={k} to={`/settings/${k}`} className={({ isActive }) => cls(isActive && 'active')}>{i}{l}</NavLink>)}
       </div>
       <Routes>
+        <Route path="features" element={<FeaturesPage />} />
         <Route path="profile" element={<ProfileSettings />} />
         <Route path="accounts" element={<AccountsSettings />} />
         <Route path="mailapps" element={<MailAppsSettings />} />
@@ -603,33 +609,37 @@ function AppearanceSettings() {
   const set = (patch: Partial<Appearance>) => setA(setAppearance(patch));
   // Only worth offering when there is something to clear.
   const usingOwnStyle = Object.keys(myAppearanceChoices()).length > 0;
+  // Each setting can go back on its own, so trying a palette does not mean
+  // giving up the theme you picked months ago to undo it.
+  const reset = (...keys: (keyof Appearance)[]) => { setA(resetAppearanceKeys(keys)); toast.success('Back to the default'); };
+  const resetFor = (key: keyof Appearance) => <ResetButton show={isMyChoice(key)} onClick={() => reset(key)} />;
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="Appearance" sub="Theme, colour palette and the living background. Saved to this browser and to your profile, so it follows you." />
       <div className="card mb-16">
-        <h2 className="mb-8">Theme</h2>
+        <div className="card-title"><h2>Theme</h2>{resetFor('theme')}</div>
         <div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map((t) => <button key={t} className={a.theme === t ? 'active' : ''} onClick={() => set({ theme: t })}>{t === 'system' ? <Monitor size={14} /> : t === 'light' ? <Sun size={14} /> : <Moon size={14} />} {t === 'system' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}</button>)}</div>
       </div>
       <div className="card mb-16">
-        <h2 className="mb-8">Colour palette</h2>
+        <div className="card-title"><h2>Colour palette</h2>{resetFor('palette')}</div>
         <div className="swatches">{PALETTES.map((p) => <button key={p.key} type="button" className={cls('swatch-card', a.palette === p.key && 'active')} onClick={() => set({ palette: p.key })}><div className="bar" style={{ background: `linear-gradient(120deg, ${p.gradient.join(', ')})` }} /><div className="name">{p.name}</div><div className="hint">{a.palette === p.key ? 'in use' : p.hint}</div></button>)}</div>
       </div>
       <div className="card mb-16">
-        <h2 className="mb-8">Background</h2>
-        <p className="muted small">Fifteen WebGL2 shaders drawn at a low resolution on the GPU, capped at 30 frames per second, paused when the tab is hidden. Calm ones stay out of the way all day; lively ones are for showing off. Choose Plain for a flat colour.</p>
+        <div className="card-title"><h2>Background</h2>{resetFor('background')}</div>
+        <p className="muted small">Twenty-one WebGL2 shaders drawn at a low resolution on the GPU, capped at 30 frames per second, paused when the tab is hidden. Calm ones stay out of the way all day; lively ones are for showing off. Choose Plain for a flat colour.</p>
         <div className="swatches">{(['calm', 'lively', 'none'] as const).map((mood) => <Fragment key={mood}><div className="swatch-group">{mood === 'calm' ? 'Calm' : mood === 'lively' ? 'Lively' : 'Off'}</div>{BACKGROUNDS.filter((b) => b.mood === mood).map((b) => <button key={b.key} type="button" className={cls('swatch-card', a.background === b.key && 'active')} onClick={() => set({ background: b.key })}><div className={`bar bg-preview-${b.key}`} /><div className="name">{b.name}</div><div className="hint">{b.hint}</div></button>)}</Fragment>)}</div>
       </div>
       <div className="card mb-16">
-        <h2 className="mb-8">Glass</h2>
+        <div className="card-title"><h2>Glass</h2>{resetFor('glass')}</div>
         <p className="muted small">How translucent the panels are. Strong looks best over a lively background; Subtle keeps text crisp on slower machines.</p>
         <div className="segmented"><button className={a.glass === 'subtle' ? 'active' : ''} onClick={() => set({ glass: 'subtle' })}>Subtle</button><button className={a.glass === 'balanced' ? 'active' : ''} onClick={() => set({ glass: 'balanced' })}>Balanced</button><button className={a.glass === 'strong' ? 'active' : ''} onClick={() => set({ glass: 'strong' })}>Strong</button></div>
       </div>
       <div className="card mb-16">
-        <h2 className="mb-8">Motion</h2>
+        <div className="card-title"><h2>Motion</h2>{resetFor('motion')}</div>
         <div className="segmented"><button className={a.motion === 'full' ? 'active' : ''} onClick={() => set({ motion: 'full' })}>Full</button><button className={a.motion === 'reduced' ? 'active' : ''} onClick={() => set({ motion: 'reduced' })}>Reduced</button></div>
         <div className="help-text mt-8">Reduced freezes the background and shortens every transition. The system "reduce motion" preference is always honoured.</div>
       </div>
-      <div className="card mb-16"><h2 className="mb-8">Density</h2><div className="segmented"><button className={a.density === 'comfortable' ? 'active' : ''} onClick={() => set({ density: 'comfortable' })}>Comfortable</button><button className={a.density === 'compact' ? 'active' : ''} onClick={() => set({ density: 'compact' })}>Compact</button></div></div>
+      <div className="card mb-16"><div className="card-title"><h2>Density</h2>{resetFor('density')}</div><div className="segmented"><button className={a.density === 'comfortable' ? 'active' : ''} onClick={() => set({ density: 'comfortable' })}>Comfortable</button><button className={a.density === 'compact' ? 'active' : ''} onClick={() => set({ density: 'compact' })}>Compact</button></div></div>
       <div className="card"><h2 className="mb-8">Reading pane</h2><ReadingPaneToggle /></div>
       {usingOwnStyle && (
         <div className="card mt-16">
