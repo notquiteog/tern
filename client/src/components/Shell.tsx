@@ -182,7 +182,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </>}
             </Menu>
           )}
-          <IconButton label="Check for new mail" onClick={refreshAll}><RefreshCw size={17} /></IconButton>
+          <IconButton label="Check for new mail" className="desktop-only" onClick={refreshAll}><RefreshCw size={17} /></IconButton>
           <Menu align="right" width={300} trigger={(open) => <IconButton label="Appearance" onClick={open}>{theme === 'dark' ? <Moon size={17} /> : theme === 'light' ? <Sun size={17} /> : <Monitor size={17} />}</IconButton>}>
             {(close) => <div style={{ padding: 8 }}>
               <div className="menu-label">Theme</div>

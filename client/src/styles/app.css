@@ -319,7 +319,9 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .brand-logo { width: 28px; height: 28px; border-radius: 9px; background: linear-gradient(135deg, var(--g1), var(--g2)); display: inline-flex; align-items: center; justify-content: center; color: #fff; box-shadow: var(--glow-soft); }
 .brand-logo.custom { background: none; box-shadow: none; }
 .brand-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; display: block; }
-.search { flex: 1; max-width: 720px; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 14px; border-radius: 12px; background: var(--glass-strong); border: 1px solid var(--glass-border); transition: background .15s, border-color .15s, box-shadow .15s; }
+.search { flex: 1 1 0; min-width: 0; max-width: 720px; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 14px; border-radius: 12px; background: var(--glass-strong); border: 1px solid var(--glass-border); transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+.search input { min-width: 0; }
+.search:focus-within { border-color: rgba(var(--accent-rgb), .5); box-shadow: 0 0 0 3px var(--focus-glow); background: var(--glass-solid); }
 .search:focus-within { background: var(--glass-solid); border-color: rgba(var(--accent-rgb), .5); box-shadow: var(--glow-soft); }
 .search input { flex: 1; border: 0; background: transparent; outline: none; height: 100%; font-size: 14px; }
 .search .kbd-hint { color: var(--text-3); }
@@ -351,6 +353,8 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 /* ---------- mail ---------- */
 .mail { flex: 1; min-height: 0; display: grid; grid-template-rows: auto 1fr; }
 .mail-toolbar { display: flex; align-items: center; gap: 4px; height: 48px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--glass-border); background: transparent; }
+.mail-title { margin-left: 4px; font-size: 14px; font-weight: 600; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-rows { display: flow-root; }
 .mail-toolbar .sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
 .mail-toolbar .pager { margin-left: auto; display: flex; align-items: center; gap: 2px; color: var(--text-2); font-size: 12.5px; }
 .mail-body { min-height: 0; display: grid; grid-template-columns: 1fr; }
@@ -649,6 +653,27 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .main { border-radius: 0; }
 }
 @media (max-width: 640px) {
+  /* The logo is a link home, and on a phone the menu and the bottom bar both
+     go there. Dropping it is what buys the search box a usable width. */
+  .topbar .brand { display: none; }
+  /* Three lines, the way a phone mail client is read: who and when, then the
+     subject, then the snippet on a line of its own. Sharing one line left the
+     snippet about four characters wide, which is worse than not showing it. */
+  .thread-row .t-main { flex-wrap: wrap; row-gap: 0; }
+  /* A zero basis, not `auto`: flex wraps a line before it shrinks one, so a
+     long subject measured at its full width would push the trust marks onto a
+     line of their own. From zero it grows into whatever the marks leave. */
+  .thread-row .t-subject { flex: 1 1 0; min-width: 0; max-width: 100%; }
+  /* A full-width basis is what puts the snippet on its own line while the
+     subject and its trust marks stay together on the one above. */
+  .thread-row .t-snippet { flex: 1 0 100%; margin-top: 1px; }
+  .thread-row .t-avatar { align-self: start; margin-top: 3px; }
+  .thread-rows { padding-bottom: 76px; }
+  /* The AI pair keeps its icons and loses its labels here; both keep their
+     names for a screen reader. */
+  .thread-toolbar .ai-btn .btn-label { display: none; }
+  .thread-toolbar .ai-btn { width: 30px; padding: 0; gap: 0; }
+  .search { height: 38px; padding: 0 8px 0 11px; gap: 6px; }
   .modal-backdrop { padding: 0; align-items: stretch; }
   .modal { max-width: none; width: 100%; height: 100dvh; max-height: none; border-radius: 0; border: 0; }
   .modal.wide, .modal.xl { max-width: none; }
@@ -745,8 +770,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .toast-stack { bottom: calc(var(--bottomnav-h) + 12px); }
   .compose-win { height: calc(100dvh - var(--topbar-h)); }
   .compose-dock { z-index: 66; }
-  .thread-toolbar { flex-wrap: wrap; }
-  .thread-toolbar .ml-auto { margin-left: 0; width: 100%; justify-content: flex-end; }
+  .thread-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .thread-toolbar::-webkit-scrollbar { display: none; }
+  .thread-toolbar > *, .thread-toolbar .btn { flex: none; }
+  .thread-toolbar .ml-auto { margin-left: auto; width: auto; padding-left: 8px; }
   .server-grid { grid-template-columns: 1fr; }
   .kv-tight { grid-template-columns: 1fr; }
   .editor-layout { grid-template-columns: 1fr; }
@@ -992,6 +1019,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 /* On a narrow screen the filter row scrolls sideways rather than wrapping
    into two lines under the count. */
 @media (max-width: 720px) {
+  /* Attachment chips are the widest thing a row can carry and the least
+     useful at this size — the paperclip in the meta column already says a
+     conversation has files. Off, so the row cannot outgrow the list. */
+  .thread-row .t-atts { display: none; }
   .list-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .list-filters::-webkit-scrollbar { display: none; }
   .list-filters .segmented { flex: none; }

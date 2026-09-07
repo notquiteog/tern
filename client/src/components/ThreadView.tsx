@@ -6,7 +6,7 @@ import { api, apiStream } from '../api';
 import { AiThinking, useAiThinking } from './AiThinking';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment } from '../state/compose';
 import { useToast } from '../state/toast';
-import { useHotkeys } from '../lib/hooks';
+import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { useMailboxes } from '../lib/queries';
 import { useMailPrefs } from '../state/mailPrefs';
 import { Avatar, Badge, Button, IconButton, Menu, MenuItem, Modal, Spinner, Field, Input } from './ui';
@@ -42,6 +42,9 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   const quickThinking = useAiThinking();
   const [summarizing, setSummarizing] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
+  // On a phone the action row holds back, archive, delete, labels, more and the
+  // AI pair; the rest moves into More rather than scrolling off the edge.
+  const phone = useMediaQuery('(max-width: 640px)');
   const [snoozeAt, setSnoozeAt] = useState('');
   const [inline, setInline] = useState<InlineState | null>(null);
   const [quick, setQuick] = useState<{ items: string[]; loading: boolean } | null>(null);
@@ -182,10 +185,10 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
         <IconButton label="Back to list (u)" onClick={onBack}><ArrowLeft size={18} /></IconButton>
         {inInbox ? <IconButton label="Archive (e)" onClick={() => act('archive', {}, { back: true, msg: 'Archived' })}><Archive size={17} /></IconButton> : <IconButton label="Move to inbox" onClick={() => act('inbox', {}, { msg: 'Moved to inbox' })}><Inbox size={17} /></IconButton>}
         <IconButton label="Delete (#)" onClick={() => act('trash', {}, { back: true, msg: 'Moved to trash' })}><Trash2 size={17} /></IconButton>
-        <IconButton label="Mark as junk (!)" onClick={() => act('spam', {}, { back: true, msg: 'Marked as junk' })}><ShieldAlert size={17} /></IconButton>
+        {!phone && <IconButton label="Mark as junk (!)" onClick={() => act('spam', {}, { back: true, msg: 'Marked as junk' })}><ShieldAlert size={17} /></IconButton>}
         <span className="sep" />
-        <IconButton label="Mark unread (Shift+U)" onClick={() => act('unread', {}, { back: true })}><MailOpen size={17} /></IconButton>
-        <IconButton label="Snooze (b)" onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeOpen(true); }}><AlarmClock size={17} /></IconButton>
+        {!phone && <IconButton label="Mark unread (Shift+U)" onClick={() => act('unread', {}, { back: true })}><MailOpen size={17} /></IconButton>}
+        {!phone && <IconButton label="Snooze (b)" onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeOpen(true); }}><AlarmClock size={17} /></IconButton>}
         <Menu width={240} trigger={(open) => <IconButton label="Label / move (l)" onClick={open}><Tag size={17} /></IconButton>}>
           {(c) => <>
             <div className="menu-label">Labels</div>
@@ -195,9 +198,16 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
             {mailboxes.filter((m) => m.account_id === accountId && m.role && !['sent', 'drafts'].includes(m.role)).map((m) => <MenuItem key={m.jmap_id} onClick={() => { void act('move', { mailboxId: m.jmap_id }, { back: true, msg: `Moved to ${m.name}` }); c(); }}>{m.name}</MenuItem>)}
           </>}
         </Menu>
-        <IconButton label={starred ? 'Unstar (s)' : 'Star (s)'} onClick={() => act(starred ? 'unstar' : 'star')} className={starred ? 'active' : ''}><Star size={17} fill={starred ? 'currentColor' : 'none'} /></IconButton>
+        {!phone && <IconButton label={starred ? 'Unstar (s)' : 'Star (s)'} onClick={() => act(starred ? 'unstar' : 'star')} className={starred ? 'active' : ''}><Star size={17} fill={starred ? 'currentColor' : 'none'} /></IconButton>}
         <Menu align="right" width={250} trigger={(open) => <IconButton label="More" onClick={open}><MoreHorizontal size={17} /></IconButton>}>
           {(c) => <>
+            {phone && <>
+              <MenuItem icon={<Star size={15} fill={starred ? 'currentColor' : 'none'} />} shortcut="s" onClick={() => { void act(starred ? 'unstar' : 'star'); c(); }}>{starred ? 'Unstar' : 'Star'}</MenuItem>
+              <MenuItem icon={<MailOpen size={15} />} onClick={() => { void act('unread', {}, { back: true }); c(); }}>Mark unread</MenuItem>
+              <MenuItem icon={<AlarmClock size={15} />} shortcut="b" onClick={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeOpen(true); c(); }}>Snooze…</MenuItem>
+              <MenuItem icon={<ShieldAlert size={15} />} onClick={() => { void act('spam', {}, { back: true, msg: 'Marked as junk' }); c(); }}>Mark as junk</MenuItem>
+              <div className="menu-sep" />
+            </>}
             <MenuItem icon={allOpen ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />} onClick={() => { setExpanded(allOpen ? new Set([last.jmap_id]) : new Set(messages.map((m) => m.jmap_id))); c(); }}>{allOpen ? 'Collapse all' : 'Expand all'}</MenuItem>
             <MenuItem icon={data?.muted ? <Bell size={15} /> : <BellOff size={15} />} shortcut="m" onClick={() => { void act(data?.muted ? 'unmute' : 'mute', {}, { back: !data?.muted, msg: data?.muted ? 'Unmuted' : 'Muted: new replies skip the inbox' }); c(); }}>{data?.muted ? 'Unmute' : 'Mute'}</MenuItem>
             <MenuItem icon={<Printer size={15} />} onClick={() => { window.print(); c(); }}>Print</MenuItem>
@@ -211,9 +221,9 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
           </>}
         </Menu>
         <div className="ml-auto row gap-4">
-          {(onPrev || onNext) && <span className="row" style={{ gap: 0 }}><IconButton label="Newer conversation ([)" disabled={!hasPrev} onClick={onPrev}><ChevronLeft size={17} /></IconButton><IconButton label="Older conversation (])" disabled={!hasNext} onClick={onNext}><ChevronRight size={17} /></IconButton></span>}
-          <Button size="sm" variant="ai" icon={<Bot size={14} />} onClick={aiReply}>AI reply</Button>
-          <Button size="sm" variant="ai" icon={<Sparkles size={14} />} onClick={summarize} loading={summarizing}>Summarize</Button>
+          {!phone && (onPrev || onNext) && <span className="row" style={{ gap: 0 }}><IconButton label="Newer conversation ([)" disabled={!hasPrev} onClick={onPrev}><ChevronLeft size={17} /></IconButton><IconButton label="Older conversation (])" disabled={!hasNext} onClick={onNext}><ChevronRight size={17} /></IconButton></span>}
+          <Button size="sm" variant="ai" icon={<Bot size={14} />} onClick={aiReply} aria-label="AI reply"><span className="btn-label">AI reply</span></Button>
+          <Button size="sm" variant="ai" icon={<Sparkles size={14} />} onClick={summarize} loading={summarizing} aria-label="Summarize"><span className="btn-label">Summarize</span></Button>
         </div>
       </div>
       <div className="thread-head">

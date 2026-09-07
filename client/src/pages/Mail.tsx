@@ -244,7 +244,10 @@ export default function MailPage() {
 
   return (
     <div className="mail">
-      <div className="mail-toolbar">
+      {/* With a conversation open on a phone the toolbar held nothing but the
+          mailbox name, 48px of it, above a view whose own bar already goes
+          back. It only earns its row when the list is on screen. */}
+      {(showList || !showThread) && <div className="mail-toolbar">
         {showList && <>
           <span className="select-all">
             <label><input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(threads.map((t) => t.key)) : new Set())} aria-label="Select all" /></label>
@@ -310,8 +313,7 @@ export default function MailPage() {
             </Menu>
           </div>
         </>}
-        {!showList && showThread && <span className="small muted">{mailboxName}</span>}
-      </div>
+      </div>}
       <div className={cls('mail-body', split && 'split', layout === 'bottom' && 'split-bottom')}>
         {showList && (
           <div className="thread-list" ref={listRef}>
@@ -440,7 +442,7 @@ function rowLabel(t: ThreadRow, people: string, summary: string | undefined, att
     t.unread ? 'Unread' : null,
     people,
     t.latest?.subject || '(no subject)',
-    preview ? preview.slice(0, 120) : null,
+    preview ? preview.replace(/\s+/g, ' ').trim().slice(0, 120) : null,
     t.starred ? 'Starred' : null,
     atts.length ? `${atts.length} attachment${atts.length === 1 ? '' : 's'}` : t.has_attachment ? 'Has an attachment' : null,
     when,

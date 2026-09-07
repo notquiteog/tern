@@ -91,6 +91,13 @@ export const config = {
   // say how many parallel slots the box can actually pay for; 0 means unset,
   // and then no such claim is made.
   ollamaMemLimitBytes: bytes('OLLAMA_MEM_LIMIT', 0),
+  // Optional transcription container for dictation (F9). Empty means the
+  // feature is unavailable and says so rather than failing at the microphone.
+  // Anything speaking the OpenAI /v1/audio/transcriptions shape works;
+  // compose.voice.yml runs whisper.cpp behind its own small server.
+  whisperUrl: env('WHISPER_URL', '').replace(/\/+$/, ''),
+  // Where an upload being imported is staged before it is read and deleted.
+  uploadDir: env('UPLOAD_DIR', '/tmp/tern-uploads'),
   // Bundled Stalwart (optional). When set, the "Stalwart (this server)" preset
   // in the add-account form fills the session URL in automatically.
   stalwartUrl: env('STALWART_URL', '').replace(/\/+$/, ''),
