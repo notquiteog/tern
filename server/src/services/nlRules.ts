@@ -145,13 +145,24 @@ const KNOWN = /^(from|to|subject|label|has|is|newer_than|older_than|larger):/i;
 
 export function cleanQuery(raw: string): string {
   const line = String(raw ?? '').split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? '';
-  const tokens = line.replace(/^["'`]|["'`]$/g, '').match(/(?:-?[a-z_]+:(?:"[^"]*"|\S+))|-?"[^"]*"|\S+/gi) ?? [];
+  const tokens = unwrap(line).match(/(?:-?[a-z_]+:(?:"[^"]*"|\S+))|-?"[^"]*"|\S+/gi) ?? [];
   const kept = tokens.filter((t) => {
     const bare = t.startsWith('-') ? t.slice(1) : t;
     if (!bare.includes(':')) return true;
     return KNOWN.test(bare);
   });
   return kept.join(' ').slice(0, 300);
+}
+
+// A model asked for a query sometimes wraps the whole thing in quotes. Both
+// ends have to be quotes, and the same one, and there must be no other quote
+// between them — otherwise the trailing quote belongs to a phrase search
+// (`invoice "exact phrase"`) and taking it off would break the phrase.
+function unwrap(line: string): string {
+  const first = line[0];
+  if (line.length < 2 || !['"', "'", '`'].includes(first) || line[line.length - 1] !== first) return line;
+  const inner = line.slice(1, -1);
+  return inner.includes(first) ? line : inner;
 }
 
 export async function draftSearch(userId: number, sentence: string): Promise<string> {

@@ -79,9 +79,15 @@ export async function scanForInvitations(userId: number, acc: AccountRow, limit 
       let text: string;
       try {
         const res = await clientFor(acc).download(part.blobId, part.name ?? 'invite.ics', 'text/calendar');
-        if (!res.ok) continue;
+        if (!res.ok) { log.warn('could not fetch an invitation', { account: acc.id, status: res.status }); continue; }
         text = await res.text();
-      } catch { continue; }
+      } catch (e) {
+        // Swallowing this silently makes a mailbox that can never download —
+        // a stale credential, a moved server — look like a mailbox with no
+        // invitations in it, for ever, with nothing anywhere to say why.
+        log.warn('could not fetch an invitation', { account: acc.id, err: (e as Error).message });
+        continue;
+      }
       const doc = parseIcalendar(text);
       for (const ev of doc.events.slice(0, 5)) {
         await store(userId, acc, rows[i].id, doc.method, ev, dek);
@@ -101,6 +107,12 @@ export async function scanForInvitations(userId: number, acc: AccountRow, limit 
 function uidBlind(dek: Buffer, uid: string | null): Buffer | null {
   if (!uid) return null;
   return addressTermsWith(addressKey(dek), [`ical:${uid}`])[0] ?? null;
+}
+
+// Exported so the plaintext sweep can write one without a mail server in the
+// way; the scan path above is its only other caller.
+export async function storeInvitation(userId: number, accountId: number, emailId: number, ev: IcalEvent, method = 'REQUEST'): Promise<void> {
+  await store(userId, { id: accountId } as AccountRow, emailId, method, ev, await dataKey(userId));
 }
 
 async function store(userId: number, acc: AccountRow, emailId: number, method: string, ev: IcalEvent, dek: Buffer): Promise<void> {

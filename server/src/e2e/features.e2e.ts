@@ -22,6 +22,14 @@ import { indexBatch, indexPending, semanticSearch } from '../services/semantic.j
 import { guardBatch } from '../services/guard.js';
 import { retrain, scorePending } from '../services/triage.js';
 import { getAiSettings, saveAiSettings } from '../ai/llm.js';
+import { encrypt } from '../crypto.js';
+import { dataKey as dataKeyFor, sealWith } from '../services/vault.js';
+import { addCommitment } from '../services/commitments.js';
+import { startImport } from '../services/mailImport.js';
+import { buildReply, invitationsFor, scanForInvitations, storeInvitation } from '../services/calendarMail.js';
+import { extractPending } from '../services/attachments.js';
+import { runImport, progress } from '../services/mailImport.js';
+import { generateBrief, getBrief } from '../services/brief.js';
 
 const ONLY = new Set((process.env.ONLY ?? '').split(',').filter(Boolean));
 const results: { group: string; name: string; ok: boolean; detail?: string }[] = [];
@@ -65,8 +73,13 @@ async function makeMailbox(): Promise<Fixture> {
   );
   created.push(u!.id);
   const a = await one<{ id: number }>(
+    // A real encrypted credential, not a placeholder: clientFor decrypts it
+    // to build the auth header, so a fixture with rubbish here makes every
+    // download fail with "Malformed ciphertext" and looks like a bug in the
+    // feature under test.
     `INSERT INTO accounts (user_id, name, email, provider, session_url, auth_type, auth_secret_enc)
-     VALUES ($1,'e2e',$2,'jmap','http://x','bearer','x') RETURNING id`, [u!.id, `${tag}@probe.test`],
+     VALUES ($1,'e2e',$2,'jmap','http://x','bearer',$3) RETURNING id`,
+    [u!.id, `${tag}@probe.test`, encrypt('e2e-token')],
   );
   await query(
     `INSERT INTO mailboxes (account_id, jmap_id, name, role) VALUES ($1,'in','Inbox','inbox'),($1,'ar','Archive','archive'),($1,'sn','Sent','sent'),($1,'tr','Trash','trash')`,
@@ -78,27 +91,32 @@ async function makeMailbox(): Promise<Fixture> {
 let seq = 0;
 async function put(f: Fixture, m: {
   subject: string; body: string; from: { name: string; email: string };
-  box?: string; keywords?: string[]; thread?: string; hoursAgo?: number;
+  box?: string; keywords?: string[]; thread?: string; hoursAgo?: number; authResults?: string;
+  attachments?: { blobId: string; name: string; type: string; size: number }[]; listId?: string;
 }): Promise<number> {
   const sealed = await sealEmail(f.userId, {
     subject: m.subject, preview: m.body.slice(0, 120), body_text: m.body, body_html: null,
-    from_addr: [m.from], to_addr: [{ email: f.email }], cc_addr: [], bcc_addr: [], reply_to: [], attachments: [],
+    from_addr: [m.from], to_addr: [{ email: f.email }], cc_addr: [], bcc_addr: [], reply_to: [], attachments: m.attachments ?? [],
+    auth_results: m.authResults ?? null,
   });
   const id = `e2e-${seq++}`;
   const row = await one<{ id: number }>(
     `INSERT INTO emails (account_id, jmap_id, thread_id, mailbox_ids, keywords, size, received_at,
         from_addr, to_addr, cc_addr, bcc_addr, reply_to, subject, preview, body_text, body_html, attachments,
-        search_terms, address_terms, from_terms, from_blind, recipient_count, sealed)
+        search_terms, address_terms, from_terms, from_blind, recipient_count, auth_results, has_attachment, list_id, sealed)
       VALUES ($1,$2,$3,$4,$5,200, now() - ($6 || ' hours')::interval,
-        $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,true)
+        $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,true)
       RETURNING id`,
     [f.accountId, id, m.thread ?? id, [m.box ?? 'in'], m.keywords ?? ['$seen'], String(m.hoursAgo ?? seq),
      sealed.from_addr, sealed.to_addr, sealed.cc_addr, sealed.bcc_addr, sealed.reply_to,
      sealed.subject, sealed.preview, sealed.body_text, sealed.body_html, sealed.attachments,
-     sealed.search_terms, sealed.address_terms, sealed.from_terms, sealed.from_blind, sealed.recipient_count],
+     sealed.search_terms, sealed.address_terms, sealed.from_terms, sealed.from_blind, sealed.recipient_count, sealed.auth_results,
+     Boolean(m.attachments?.length), m.listId ?? null],
   );
   return row!.id;
 }
+
+const putWithAttachment = put;
 
 // ======================================================================
 
@@ -277,6 +295,274 @@ const retentionGroup = group('retention', async () => {
 });
 
 
+// A stand-in for the mail server's blob endpoint, so the download-and-parse
+// paths run for real rather than being taken on trust. It serves whatever the
+// test hands it, at the URL shape JMAP uses.
+async function blobServer(blobs: Record<string, { type: string; body: Buffer }>): Promise<{ url: string; close: () => Promise<void> }> {
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    const id = decodeURIComponent((req.url ?? '').split('/').filter(Boolean)[1] ?? '');
+    const blob = blobs[id];
+    if (!blob) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'Content-Type': blob.type, 'Content-Length': String(blob.body.length) });
+    res.end(blob.body);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: `http://127.0.0.1:${port}/blob/{blobId}/{name}`,
+    close: () => new Promise<void>((r) => { server.close(() => r()); }),
+  };
+}
+
+// Points an account's session at the configured internal origin so the
+// network guard allows a loopback address, and its download URL at the stub.
+async function pointAtStub(accountId: number, downloadUrl: string): Promise<void> {
+  await query(
+    `UPDATE accounts SET session_url=$2, api_url=$3, upload_url=$3, download_url=$4, jmap_account_id='stub' WHERE id=$1`,
+    [accountId, process.env.STALWART_URL ?? 'http://127.0.0.1:18080', `${new URL(downloadUrl).origin}/api`, downloadUrl],
+  );
+}
+
+const attachmentsGroup = group('attachments', async () => {
+  const f = await makeMailbox();
+  await grant(f.userId, 'attachments');
+
+  // A real Word document, built the way extract.test.ts builds one, so the
+  // whole path runs: download, parse, seal, fold into the blind index.
+  const { deflateRawSync } = await import('node:zlib');
+  const docXml = '<w:document><w:body><w:p><w:r><w:t>Statement of work: 4,200 per month, invoiced monthly.</w:t></w:r></w:p></w:body></w:document>';
+  const raw = Buffer.from(docXml, 'utf8');
+  const deflated = deflateRawSync(raw);
+  const nameBuf = Buffer.from('word/document.xml', 'utf8');
+  const local = Buffer.alloc(30 + nameBuf.length);
+  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(8, 8);
+  local.writeUInt32LE(deflated.length, 18); local.writeUInt32LE(raw.length, 22);
+  local.writeUInt16LE(nameBuf.length, 26); nameBuf.copy(local, 30);
+  const cd = Buffer.alloc(46 + nameBuf.length);
+  cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(8, 10);
+  cd.writeUInt32LE(deflated.length, 20); cd.writeUInt32LE(raw.length, 24);
+  cd.writeUInt16LE(nameBuf.length, 28); cd.writeUInt32LE(0, 42); nameBuf.copy(cd, 46);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(local.length + deflated.length, 16);
+  const docx = Buffer.concat([local, deflated, cd, eocd]);
+
+  const stub = await blobServer({ 'blob-sow': { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', body: docx } });
+  await pointAtStub(f.accountId, stub.url);
+  const acc = (await query<any>('SELECT * FROM accounts WHERE id=$1', [f.accountId]))[0];
+
+  const emailId = await putWithAttachment(f, {
+    subject: 'Paperwork', body: 'Attached.', from: SENDERS.ana,
+    attachments: [{ blobId: 'blob-sow', name: 'Statement of work.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: docx.length }],
+  });
+
+  try {
+    await test('an attachment is downloaded, read and sealed', async () => {
+      const n = await extractPending(f.userId, acc);
+      eq(n, 1, 'nothing was processed');
+      const r = await one<any>('SELECT name, text, chars, error FROM attachment_text WHERE email_id=$1', [emailId]);
+      ok(r, 'no row was written');
+      eq(r.error, null, `it failed: ${r.error}`);
+      ok(String(r.name ?? '').startsWith('k1.'), 'the file name was stored in the clear');
+      ok(String(r.text ?? '').startsWith('k1.'), 'the extracted text was stored in the clear');
+      ok(r.chars > 20, `only ${r.chars} characters came out`);
+    });
+
+    await test('the words inside it become searchable', async () => {
+      // "invoiced" is in the document and in no subject or body, so a match
+      // proves the extracted text reached the blind index.
+      const { parseSearch, buildSearchSql } = await import('../services/search.js');
+      const params: unknown[] = [f.accountId];
+      const p = (v: unknown) => `$${params.push(v)}`;
+      const where = await buildSearchSql(parseSearch('invoiced'), [f.accountId], p, f.userId);
+      const rows = await query<any>(
+        `SELECT e.id FROM emails e WHERE e.account_id=$1${where.length ? ` AND ${where.join(' AND ')}` : ''}`,
+        params,
+      );
+      ok(rows.some((r: any) => Number(r.id) === emailId), 'the attachment’s words are not searchable');
+    });
+
+    await test('the same message is not read twice', async () => {
+      eq(await extractPending(f.userId, acc), 0, 'it went round again');
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+const calendarGroup = group('calendar', async () => {
+  const f = await makeMailbox();
+  await grant(f.userId, 'calendar');
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'METHOD:REQUEST', 'BEGIN:VEVENT',
+    'UID:9f1c-quarterly@corp.example', 'DTSTAMP:20260901T090000Z',
+    'DTSTART:20260915T140000Z', 'DTEND:20260915T150000Z',
+    'SUMMARY:Quarterly review', 'LOCATION:Room 3\\, second floor',
+    'ORGANIZER;CN=Ana Duarte:mailto:ana@corpexample.com',
+    'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@mine.example',
+    'END:VEVENT', 'END:VCALENDAR', '',
+  ].join('\r\n');
+  const stub = await blobServer({ 'blob-ics': { type: 'text/calendar', body: Buffer.from(ics) } });
+  await pointAtStub(f.accountId, stub.url);
+  const acc = (await query<any>('SELECT * FROM accounts WHERE id=$1', [f.accountId]))[0];
+  const emailId = await putWithAttachment(f, {
+    subject: 'Invitation: Quarterly review', body: 'When: 15 September', from: SENDERS.ana,
+    attachments: [{ blobId: 'blob-ics', name: 'invite.ics', type: 'text/calendar', size: ics.length }],
+  });
+
+  try {
+    await test('an invitation is found and read', async () => {
+      eq(await scanForInvitations(f.userId, acc), 1, 'no invitation was found');
+      const list = await invitationsFor(f.userId, emailId);
+      eq(list.length, 1);
+      eq(list[0].summary, 'Quarterly review');
+      eq(list[0].location, 'Room 3, second floor', 'the escape was not undone');
+      eq(list[0].organizer?.email, 'ana@corpexample.com');
+      eq(list[0].startsAt, '2026-09-15T14:00:00.000Z');
+    });
+
+    await test('everything a person would read is sealed', async () => {
+      const r = await one<any>('SELECT uid, summary, location, organizer, uid_blind, starts_at FROM calendar_events WHERE email_id=$1', [emailId]);
+      for (const col of ['uid', 'summary', 'location', 'organizer']) {
+        ok(String(r[col] ?? '').startsWith('k1.'), `${col} was stored in the clear`);
+      }
+      ok(Buffer.isBuffer(r.uid_blind), 'no blind companion for the unique index');
+      ok(r.starts_at, 'the time is plain on purpose, and is missing');
+    });
+
+    await test('a reply echoes the UID it is answering', async () => {
+      const inv = (await invitationsFor(f.userId, emailId))[0];
+      const body = buildReply(inv, { email: 'me@mine.example', name: 'Me' }, 'ACCEPTED');
+      ok(body.includes('METHOD:REPLY'), 'not a reply');
+      ok(body.includes('UID:9f1c-quarterly@corp.example'), 'the UID did not survive the round trip');
+      ok(body.includes('PARTSTAT=ACCEPTED'), 'no answer in it');
+    });
+
+    await test('scanning again does not duplicate it', async () => {
+      await scanForInvitations(f.userId, acc);
+      const n = await one<{ n: number }>('SELECT count(*)::int AS n FROM calendar_events WHERE email_id=$1', [emailId]);
+      eq(n?.n, 1, 'the invitation was stored twice');
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+const importGroup = group('import', async () => {
+  const f = await makeMailbox();
+  await grant(f.userId, 'import');
+  const mbox = [
+    'From ana@corpexample.com Mon Sep  1 09:00:00 2026',
+    'Message-ID: <imported-1@corpexample.com>',
+    'From: =?utf-8?Q?Ana_Duarte?= <ana@corpexample.com>',
+    'To: me@mine.example',
+    'Subject: =?utf-8?B?UmVjaG51bmc=?=',
+    'Date: Mon, 1 Sep 2026 09:00:00 +0000',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Die Rechnung für August liegt bei.',
+    '>From now on please use the new address.',
+    '',
+    'From sam@gmail.com Tue Sep  2 10:00:00 2026',
+    'Message-ID: <imported-2@gmail.com>',
+    'From: Sam <sam@gmail.com>',
+    'To: me@mine.example',
+    'Subject: Hillwalk',
+    'Date: Tue, 2 Sep 2026 10:00:00 +0000',
+    '',
+    'Saturday still good?',
+    '',
+  ].join('\n');
+
+  await test('an mbox becomes real, sealed mail', async () => {
+    const acc = (await query<any>('SELECT * FROM accounts WHERE id=$1', [f.accountId]))[0];
+    const id = await startImport(f.userId, f.accountId, 'Takeout.mbox');
+    const p = await runImport(f.userId, acc, id, Buffer.from(mbox, 'utf8'));
+    eq(p?.status, 'done', `import ended ${p?.status}: ${p?.error}`);
+    eq(p?.done, 2, `imported ${p?.done}`);
+
+    const rows = await query<any>('SELECT * FROM emails WHERE account_id=$1 ORDER BY received_at', [f.accountId]);
+    eq(rows.length, 2);
+    for (const r of rows) ok(String(r.subject).startsWith('k1.'), 'an imported subject was stored in the clear');
+
+    const opened = await openEmails(f.userId, 'owner', rows);
+    eq(opened[0].subject, 'Rechnung', 'the encoded subject was not decoded');
+    eq(opened[0].from_addr?.[0]?.name, 'Ana Duarte');
+    ok(/Die Rechnung/.test(opened[0].body_text ?? ''), 'the body did not survive');
+    ok(/^From now on/m.test(opened[0].body_text ?? ''), 'mbox escaping was not undone');
+  });
+
+  await test('importing the same file again adds nothing', async () => {
+    const acc = (await query<any>('SELECT * FROM accounts WHERE id=$1', [f.accountId]))[0];
+    const id = await startImport(f.userId, f.accountId, 'Takeout.mbox');
+    const p = await runImport(f.userId, acc, id, Buffer.from(mbox, 'utf8'));
+    eq(p?.done, 0, 'it imported duplicates');
+    eq(p?.skipped, 2, 'the duplicates were not recognised');
+    const n = await one<{ n: number }>('SELECT count(*)::int AS n FROM emails WHERE account_id=$1', [f.accountId]);
+    eq(n?.n, 2, 'the mailbox doubled');
+  });
+
+  await test('imported mail lands in Imported, never the inbox', async () => {
+    const rows = await query<any>('SELECT mailbox_ids FROM emails WHERE account_id=$1', [f.accountId]);
+    for (const r of rows) ok(!r.mailbox_ids.includes('in'), 'an imported message went to the inbox');
+  });
+
+  await test('the file name is sealed, and the archive is not kept', async () => {
+    const r = await one<any>(`SELECT filename FROM mail_imports WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, [f.userId]);
+    ok(String(r?.filename ?? '').startsWith('k1.'), 'the file name was stored in the clear');
+    const p = await progress(f.userId, (await one<{ id: number }>('SELECT id FROM mail_imports WHERE user_id=$1 ORDER BY id DESC LIMIT 1', [f.userId]))!.id);
+    eq(p?.filename, 'Takeout.mbox', 'it does not read back');
+  });
+});
+
+const briefGroup = group('brief', async () => {
+  const f = await makeMailbox();
+  for (const c of ['brief', 'guard', 'triage', 'commitments'] as const) await grant(f.userId, c);
+
+  // Real mail, so the four section queries run against rows rather than
+  // against nothing — which is all the earlier check proved.
+  await put(f, { subject: 'Can you confirm Thursday?', body: 'Does 2pm work for the review?', from: SENDERS.ana, keywords: [], hoursAgo: 3 });
+  await put(f, { subject: 'Contract question', body: 'One more thing about the payment terms.', from: SENDERS.facilities, keywords: [], hoursAgo: 5 });
+  for (let i = 0; i < 4; i++) {
+    await put(f, { subject: `Weekly offers ${i}`, body: 'Sale ends soon.', from: SENDERS.shop, keywords: [], hoursAgo: 10 + i, listId: 'offers.shop.example' });
+  }
+  await addCommitment(f.userId, { accountId: f.accountId, kind: 'owed', text: 'Send the revised quote', counterparty: 'Ana Duarte', dueAt: new Date(Date.now() - 86_400_000).toISOString() });
+
+  await test('a brief over real mail fills its sections', async () => {
+    const b = await generateBrief(f.userId);
+    const titles = b.sections.map((s) => s.title);
+    ok(titles.includes('Waiting for you'), `sections were ${JSON.stringify(titles)}`);
+    const waiting = b.sections.find((s) => s.title === 'Waiting for you')!;
+    ok(waiting.items.length >= 2, `only ${waiting.items.length} items are waiting`);
+    ok(waiting.items.every((i) => i.threadId && i.accountId), 'an item cannot be opened');
+    ok(titles.includes('Owed and awaiting'), 'the commitment did not reach the brief');
+    const owed = b.sections.find((s) => s.title === 'Owed and awaiting')!;
+    ok(/overdue/i.test(owed.items[0].text), `the overdue item reads "${owed.items[0].text}"`);
+  });
+
+  await test('bulk mail is offered as one action rather than four rows', async () => {
+    const b = await getBrief(f.userId);
+    const bulk = b?.sections.find((s) => s.title === 'Can go in one action');
+    ok(bulk && bulk.items.length >= 1, 'four unread from one sender were not grouped');
+    ok(/4 unread/.test(bulk?.items[0].text ?? ''), `it reads "${bulk?.items[0].text}"`);
+  });
+
+  await test('the stored brief is sealed and reads back', async () => {
+    const r = await one<{ content: string }>('SELECT content FROM briefs WHERE user_id=$1', [f.userId]);
+    ok(String(r?.content ?? '').startsWith('k1.'), 'the brief was stored in the clear');
+    const b = await getBrief(f.userId);
+    ok(b && b.sections.length > 0, 'it does not read back');
+    eq(b!.stale, false, 'a fresh brief should not be stale');
+  });
+
+  await test('new mail makes it stale rather than silently rewriting it', async () => {
+    await put(f, { subject: 'Something new', body: 'Just arrived.', from: SENDERS.sam, keywords: [], hoursAgo: 0 });
+    const b = await getBrief(f.userId);
+    eq(b?.stale, true, 'the brief does not know the mailbox moved');
+  });
+});
+
 // ======================================================================
 // The plaintext sweep.
 //
@@ -443,7 +729,7 @@ async function main() {
   await saveAiSettings({ enabled: true, embedModel: process.env.E2E_EMBED_MODEL ?? 'all-minilm' });
 
   const t0 = Date.now();
-  for (const g of [gateGroup, semanticGroup, guardGroup, triageGroup, retentionGroup, plaintextGroup]) {
+  for (const g of [gateGroup, semanticGroup, guardGroup, triageGroup, attachmentsGroup, calendarGroup, importGroup, briefGroup, retentionGroup, plaintextGroup]) {
     try { await g(); } catch (e) { console.log(`  GROUP FAILED: ${(e as Error).message}`); results.push({ group: current, name: '(group)', ok: false, detail: (e as Error).message }); }
   }
 
