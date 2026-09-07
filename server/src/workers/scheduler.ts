@@ -10,7 +10,8 @@ import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '
 import { jitterMs, reserveSendSlot, sendingBlocked } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
-import { describeHits, findTemplateArtifacts } from '../ai/guard.js';
+import { describeHits, findTemplateArtifacts, type GuardInput } from '../ai/guard.js';
+import { candidatesFromContact, resolveRecipient, type ResolvedName } from '../ai/names.js';
 import { escapeHtml } from '../services/merge.js';
 import * as actions from '../jmap/actions.js';
 import { unsubscribeUrl } from '../services/compose.js';
@@ -347,6 +348,21 @@ export function nextRunAfterSend(next: StepRow | undefined, acc: Pick<AccountRow
   return new Date(Date.now() + Math.max(jitterMs(acc), 60_000));
 }
 
+// Everything that means "do not write to this person", asked at the moment of
+// sending rather than at the moment of deciding to send. Returns why, or null.
+//
+// The same three facts are checked when a step is picked up; this is the
+// version that runs after the model has finished, because that is where the
+// gap was.
+async function suppressedNow(userId: number, contactId: number, email: string): Promise<'unsubscribed' | 'bounced' | 'suppressed' | null> {
+  const c = await one<{ status: string }>('SELECT status FROM contacts WHERE id=$1', [contactId]);
+  if (!c) return 'unsubscribed';
+  if (['unsubscribed', 'do_not_contact'].includes(c.status)) return 'unsubscribed';
+  if (c.status === 'bounced') return 'bounced';
+  const s = await one('SELECT 1 FROM suppressions WHERE user_id=$1 AND lower(email)=lower($2)', [userId, email]);
+  return s ? 'suppressed' : null;
+}
+
 async function runEnrollment(enr: any): Promise<void> {
   const seq = await one<any>('SELECT * FROM sequences WHERE id=$1', [enr.sequence_id]);
   if (!seq || seq.status !== 'active') { await query(`UPDATE enrollments SET next_run_at = now() + interval '1 hour' WHERE id=$1`, [enr.id]); return; }
@@ -387,12 +403,22 @@ async function runEnrollment(enr: any): Promise<void> {
     }
   }
   let subject: string, html: string;
+  // What the guard is allowed to assert about this message. Only a generated
+  // one gets a greeting expectation and a fact set: a template the person
+  // wrote is theirs, and its figures are theirs to have chosen.
+  let expectation: Pick<GuardInput, 'greeting' | 'specifics'> = {};
   const rendered = await renderStep(acc, seq, step, contact, enr);
   if (approved) {
     subject = approved.subject ?? ''; html = approved.body_html ?? '';
   } else if (step.ai_personalize && seq.ai_mode !== 'off') {
     const gen = await personalize(acc, step, contact, rendered);
     subject = gen.subject; html = gen.html;
+    expectation = {
+      greeting: { first: gen.greetingFirst, forbidden: [acc.name] },
+      // A campaign email carries no attachment, so "as attached" in one is
+      // always a promise it cannot keep.
+      specifics: { facts: gen.facts, hasAttachment: false },
+    };
     if (seq.ai_mode === 'review') {
       await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
       const sealedReview = await sealReview(seq.user_id, { subject, body_html: html });
@@ -413,7 +439,7 @@ async function runEnrollment(enr: any): Promise<void> {
   // Nothing with a leftover placeholder, an unrendered merge field or echoed
   // prompt text goes out on its own: it waits for a person in the review queue.
   if (!approved) {
-    const hits = findTemplateArtifacts({ subject, html });
+    const hits = findTemplateArtifacts({ subject, html, ...expectation });
     if (hits.length) {
       const reason = `Held for review: ${describeHits(hits)}`;
       await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
@@ -438,9 +464,43 @@ async function runEnrollment(enr: any): Promise<void> {
     return;
   }
 
+  // ---------- the last gate before anything leaves ----------
+  //
+  // Everything above this line can take a long time: writing a personalised
+  // email is ten to forty seconds of a model's time, and the checks that
+  // decided this contact was still a legitimate recipient ran before it. In
+  // that window a reply can land, a bounce can be processed, or somebody can
+  // unsubscribe — and the most damaging bug in this whole category is a
+  // person who has just replied receiving the next step of a sequence.
+  //
+  // So the decision is made again here, against the database as it is now,
+  // and the send is *claimed* rather than merely permitted: advancing the step
+  // is a conditional update on the enrollment still being active and still
+  // being on this step. If a reply landed while the model was writing, the
+  // claim matches no row and nothing is sent. Two ticks racing each other
+  // cannot both win it either.
+  const gone = await suppressedNow(seq.user_id, contact.id, contact.email);
+  if (gone) {
+    log.info(`enrollment ${enr.id} stopped at the gate: ${gone}`, { contact: contact.id });
+    await finish(enr, gone === 'bounced' ? 'bounced' : 'unsubscribed');
+    return;
+  }
+  const nextIndex = enr.current_step + 1;
+  const claimedSend = await query<{ id: number }>(
+    `UPDATE enrollments SET current_step=$2, updated_at=now() WHERE id=$1 AND status='active' AND current_step=$3 RETURNING id`,
+    [enr.id, nextIndex, enr.current_step],
+  );
+  if (!claimedSend.length) {
+    // Not an error: somebody replied, paused it, or another tick got here
+    // first. The enrollment is already in whatever state that put it in.
+    const now = await one<{ status: string }>('SELECT status FROM enrollments WHERE id=$1', [enr.id]);
+    log.info(`enrollment ${enr.id} not sent: it is "${now?.status ?? 'gone'}" now, not active`, { step: step.id });
+    return;
+  }
+
   const threaded = step.reply_in_thread && enr.last_message_id;
   const finalSubject = threaded ? (/^re:/i.test(subject) ? subject : `Re: ${enr.last_subject || subject}`) : subject;
-  const { outcome } = await composeAndSend(acc, {
+  const send = async () => composeAndSend(acc, {
     to: [{ name: [contact.first_name, contact.last_name].filter(Boolean).join(' ') || null, email: contact.email }],
     subject: finalSubject,
     html,
@@ -457,8 +517,17 @@ async function runEnrollment(enr: any): Promise<void> {
     encrypt: seq.encrypt_pgp ? 'if_possible' : null,
     reviewed: Boolean(approved),
   });
+  let outcome;
+  try {
+    ({ outcome } = await send());
+  } catch (e) {
+    // The step was claimed before the send so that a reply could not sneak
+    // past it. A send that then failed has to give the step back, or a
+    // transient transport error would silently skip a contact's email.
+    await query(`UPDATE enrollments SET current_step=$2, updated_at=now() WHERE id=$1 AND current_step=$3`, [enr.id, enr.current_step, nextIndex]);
+    throw e;
+  }
 
-  const nextIndex = enr.current_step + 1;
   const next = steps[nextIndex];
   const nextRun = nextRunAfterSend(next, acc);
   if (!next) {
@@ -487,20 +556,36 @@ export async function renderStep(acc: AccountRow, seq: any, step: StepRow, conta
   return { subject: renderText(subjectTpl ?? '', ctx, seed), html: renderHtml(bodyTpl ?? '', ctx, seed), brief: renderText(brief, ctx, seed), includeSignature, templateId };
 }
 
-async function personalize(acc: AccountRow, step: StepRow, contact: any, rendered: { subject: string; html: string; brief: string }): Promise<{ subject: string; html: string; model: string }> {
+// Who a campaign email is to, decided from the contact row rather than left
+// to the model. A blank or malformed name column, a placeholder an import
+// never filled in, the company in the name field, a role address: all of them
+// resolve to no name, which the prompt turns into "Hi there," and the guard
+// then checks was actually used.
+export function campaignRecipient(acc: AccountRow, contact: any): ResolvedName {
+  return resolveRecipient(candidatesFromContact(contact), {
+    email: contact.email,
+    senderName: acc.name,
+    senderEmail: acc.email,
+    company: contact.company,
+  });
+}
+
+async function personalize(acc: AccountRow, step: StepRow, contact: any, rendered: { subject: string; html: string; brief: string }): Promise<{ subject: string; html: string; model: string; facts: string; greetingFirst: string }> {
   const settings = await getAiSettings();
+  const name = campaignRecipient(acc, contact);
+  const brief = rendered.brief || htmlToText(rendered.html);
   const messages = buildMessages({
     mode: 'personalize',
     instruction: step.ai_instructions || undefined,
     senderName: acc.name,
     systemPrompt: settings.systemPrompt,
     voice: acc.voice,
-    recipient: { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields },
-    template: rendered.brief || htmlToText(rendered.html),
+    recipient: { name: name.full || undefined, email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields },
+    template: brief,
     subject: rendered.subject,
     length: 'medium',
   });
-  const recipient = { name: [contact.first_name, contact.last_name].filter(Boolean).join(' '), email: contact.email };
+  const recipient = { name: name.full || undefined, email: contact.email };
   // Sequence and responder mail is written minutes or hours before it is
   // sent, so it queues behind whoever is drafting in a browser right now.
   const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens), stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
@@ -509,7 +594,12 @@ async function personalize(acc: AccountRow, step: StepRow, contact: any, rendere
     const st = modeTuning('subject');
     subject = cleanOutput(await chat({ messages: buildMessages({ mode: 'subject', draft: body }), maxTokens: st.maxTokens, temperature: st.temperature, stop: st.stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'subject');
   }
-  return { subject, html: textToHtml(body), model: settings.model };
+  // Everything this email was allowed to know. The guard holds it back if a
+  // figure, a date or a term turns up in the body that is not in here: a
+  // price the brief never named is worse than a leftover [price], because the
+  // placeholder gets reviewed and the price gets sent.
+  const facts = [brief, step.ai_instructions, contact.company, contact.title, contact.notes, ...Object.values(contact.fields ?? {}).map((v) => (v === null || v === undefined ? '' : String(v)))].filter(Boolean).join('\n');
+  return { subject, html: textToHtml(body), model: settings.model, facts, greetingFirst: name.first };
 }
 
 

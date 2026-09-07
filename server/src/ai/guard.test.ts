@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertSendable, findTemplateArtifacts, TemplateGuardError } from './guard.js';
+import { assertSendable, findTemplateArtifacts, TemplateGuardError, findGreetingProblems, findInventedSpecifics, extractSpecifics } from './guard.js';
 
 const kinds = (r: ReturnType<typeof findTemplateArtifacts>) => [...new Set(r.map((h) => h.kind))];
 
@@ -63,4 +63,63 @@ test('a short but real email is sendable', () => {
 test('the quoted original does not count as a body of our own', () => {
   const html = '<p>Hi Dana,</p><div class="tern-quote">On Monday, dana@acme.example wrote: a long message with plenty of words in it that would otherwise look like a body.</div>';
   assert.equal(findTemplateArtifacts({ html }).map((h) => h.kind).includes('no_body'), true);
+});
+
+// ---------- Who it is addressed to ----------
+
+test('the guard asserts the salutation names the recipient and nobody else', () => {
+  const forbidden = ['Tomasz Nowak', 'Priya Raman', 'Alex Rivera'];
+  // The trap a long thread sets: a name mentioned throughout, never the recipient.
+  assert.equal(findGreetingProblems('Hi Tomasz,\n\nThanks for approving.', { first: 'Dana', forbidden }).length > 0, true);
+  // The sender's own name.
+  assert.equal(findGreetingProblems('Hi Alex,\n\nThanks.', { first: 'Dana', forbidden }).length > 0, true);
+  // A name where none was known is an invention, not a lookup.
+  assert.equal(findGreetingProblems('Hi Sarah,\n\nThanks.', { first: '' })[0]?.kind, 'wrong_name');
+  // The neutral greeting is the right answer when nothing resolved.
+  assert.deepEqual(findGreetingProblems('Hi there,\n\nThanks.', { first: '' }), []);
+  assert.deepEqual(findGreetingProblems('Hello everyone,\n\nThanks.', { first: '' }), []);
+  // Right person, right greeting.
+  assert.deepEqual(findGreetingProblems('Hi Dana,\n\nAs Tomasz mentioned, it is approved.', { first: 'Dana', forbidden }), []);
+  // A second salutation halfway down: the model started writing to somebody else.
+  assert.equal(findGreetingProblems('Hi Dana,\n\nThanks.\n\nHi Priya, one more thing.', { first: 'Dana', forbidden }).length > 0, true);
+  // The full name after the first is still the right person.
+  assert.deepEqual(findGreetingProblems('Dear Dana Osei,\n\nThanks.', { first: 'Dana', forbidden }), []);
+});
+
+// ---------- Facts it was never given ----------
+
+test('specifics normalise so the same fact written two ways compares equal', () => {
+  const tok = (s: string) => extractSpecifics(s).map((x) => x.token);
+  assert.deepEqual(tok('four thousand eight hundred pounds'), ['money:4800']);
+  assert.deepEqual(tok('£4,800'), ['money:4800']);
+  assert.deepEqual(tok('$150'), ['money:150']);
+  assert.deepEqual(tok('10am'), ['time:10:00']);
+  assert.deepEqual(tok('10:00'), ['time:10:00']);
+  assert.deepEqual(tok('2.30pm'), ['time:14:30']);
+  assert.deepEqual(tok('30 September'), ['day:sep-30']);
+  assert.deepEqual(tok('Sept 30th'), ['day:sep-30']);
+  assert.deepEqual(tok('2026-09-30'), ['day:sep-30']);
+  assert.deepEqual(tok('three-month term'), ['term:3-month']);
+  assert.deepEqual(tok('3 months'), ['term:3-month']);
+  assert.deepEqual(tok('15%'), ['pct:15']);
+  assert.deepEqual(tok('15 per cent'), ['pct:15']);
+  // Not money, and not a term: a count of things.
+  assert.deepEqual(tok('1,900 rows across three warehouses'), []);
+});
+
+test('a figure, date or term the message was never given is held back', () => {
+  const facts = 'The clean-up is a fixed £4,800. Monthly close is £950 a month on a rolling three month term. About 1,900 VAT rows.';
+  const kinds = (body: string) => findInventedSpecifics(body, { facts }).map((h) => h.kind);
+  // A correct paraphrase, including the figure spelled out, is clean.
+  assert.deepEqual(kinds('The clean-up is four thousand eight hundred pounds and the close is £950 a month on a rolling three month term.'), []);
+  // "three-year" where the conversation said three months.
+  assert.deepEqual(kinds('£950 a month on a rolling three-year term.'), ['invented_term']);
+  // A price nobody gave it.
+  assert.deepEqual(kinds('It costs $150 per month.'), ['invented_figure']);
+  // A time nobody proposed.
+  assert.deepEqual(kinds('Would Tuesday at 10am suit you?'), ['invented_date']);
+  // A document that does not exist.
+  assert.deepEqual(findInventedSpecifics('Please find the plan attached.', { facts }).map((h) => h.kind), ['false_attachment']);
+  // ...unless it does.
+  assert.deepEqual(findInventedSpecifics('Please find the plan attached.', { facts, hasAttachment: true }), []);
 });

@@ -2,6 +2,7 @@
 // concrete instructions best, so every prompt states the format once and
 // gives the model the facts it is allowed to use instead of letting it guess.
 import type { ChatMessage } from './llm.js';
+import { cleanRecipientName, firstNameOf } from './names.js';
 
 export type DraftMode = 'compose' | 'reply' | 'rewrite' | 'shorten' | 'expand' | 'summarize' | 'subject' | 'personalize' | 'polish' | 'quick_replies' | 'gist' | 'reschedule' | 'nudge';
 
@@ -182,40 +183,11 @@ function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = TH
 // The From name on a message is whatever the other person's client put
 // there, and a responder answers real mail: it arrives as "Osei, Dana", as
 // "DANA OSEI", as "Dana Osei | Northwind Supply", as "Dr Dana Osei, ACA",
-// and often as the address itself. Taking the first word of that verbatim
-// produces "Hi Osei,", "Hi DANA,", "Hi dana@northwind.example," — the kind
-// of greeting that tells the reader at a glance that a robot wrote it.
-const HONORIFIC_RE = /^(?:mr|mrs|ms|miss|mx|dr|prof|professor|sir|rev|fr|capt|sgt)\.?\s+/i;
-const CREDENTIALS_RE = /[,(]\s*(?:ph\.?d|m\.?d|mba|cpa|aca|acca|cfa|esq|jr|sr|ii|iii|iv|bsc|msc|ma|ba)\b[^,]*$/i;
-
-export function cleanRecipientName(raw?: string | null): string {
-  let n = String(raw ?? '').trim().replace(/^["'\u201c\u2018]+|["'\u201d\u2019]+$/g, '').trim();
-  if (!n) return '';
-  // A display name that is just the address tells us nothing a greeting can use.
-  if (/@/.test(n)) return '';
-  // "Dana Osei | Northwind Supply", "Dana Osei - Finance", "Dana Osei (Northwind)"
-  n = n.split(/\s+[|\u2013\u2014]\s+|\s+-\s+/)[0].replace(/\s*\([^)]*\)\s*$/, '').trim();
-  n = n.replace(CREDENTIALS_RE, '').trim();
-  n = n.replace(HONORIFIC_RE, '').trim();
-  // "Osei, Dana": the surname-first form every directory export uses.
-  const comma = n.match(/^([^,]+),\s*([^,]+)$/);
-  if (comma) n = `${comma[2].trim()} ${comma[1].trim()}`;
-  n = n.replace(/[,;:]+$/, '').trim();
-  // A name with no letters in it is not a name.
-  if (!/\p{L}/u.test(n)) return '';
-  // SHOUTING or all lower case: written the way a person would write it.
-  if (n === n.toUpperCase() || n === n.toLowerCase()) {
-    n = n.toLowerCase().replace(/(^|[\s'\u2019-])(\p{L})/gu, (_m, sep, c) => sep + c.toUpperCase());
-  }
-  return n;
-}
-
-// The word to greet them by. Empty when there is nothing usable, which the
-// callers turn into "Hi there," rather than a guess.
-export function firstNameOf(raw?: string | null): string {
-  const first = cleanRecipientName(raw).split(/\s+/)[0] ?? '';
-  return /\p{L}/u.test(first) ? first : '';
-}
+// with an emoji in it, and often as the address itself. Deciding which of
+// those is a name a greeting may use is not a writing problem, so it does not
+// live in a prompt: see ai/names.ts, which is also what guard.ts checks the
+// finished email against.
+export { cleanRecipientName, firstNameOf } from './names.js';
 
 // Who the email is to, stated once and plainly. Small models otherwise pick a
 // name out of the thread, or invent one, and greet the wrong person.
