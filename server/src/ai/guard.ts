@@ -309,12 +309,24 @@ export interface SpecificsExpectation {
   hasAttachment?: boolean;
 }
 
+// Weekdays named anywhere in the facts, in any form. Used only to judge a
+// proposed "Thursday morning": when the conversation says "could we do
+// Thursday?" and "mornings work best", answering "Thursday morning" is
+// combining two things it was told, not inventing a third. Requiring the
+// exact adjacent phrase called that an invention, which it plainly is not.
+const WEEKDAY_RE = /\b(mon|tues?|wednes|thurs?|fri|satur|sun)day/gi;
+function weekdaysIn(text: string): Set<string> {
+  return new Set([...text.matchAll(WEEKDAY_RE)].map((m) => m[1].toLowerCase().slice(0, 3)));
+}
+
 export function findInventedSpecifics(body: string, expect: SpecificsExpectation): GuardHit[] {
   const hits: GuardHit[] = [];
   const known = new Set(extractSpecifics(expect.facts).map((s) => s.token));
+  const knownDays = weekdaysIn(expect.facts);
   const seen = new Set<string>();
   const kindOf: Record<SpecificKind, GuardHit['kind']> = { figure: 'invented_figure', date: 'invented_date', term: 'invented_term' };
   for (const s of extractSpecifics(body)) {
+    if (s.token.startsWith('when:') && knownDays.has(s.token.slice(5).split('-')[0])) continue;
     if (known.has(s.token) || seen.has(s.token)) continue;
     seen.add(s.token);
     hits.push({ kind: kindOf[s.kind], sample: s.sample.slice(0, 60) });

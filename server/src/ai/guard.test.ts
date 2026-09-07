@@ -157,6 +157,12 @@ test('a weekday proposed with a time of day counts as a specific', () => {
   assert.deepEqual(kinds('Would Tuesday afternoon work for the walkthrough?'), ['invented_date']);
   // A weekday on its own is a pleasantry, not a proposal.
   assert.deepEqual(kinds('Hope you have a good Monday.'), []);
+  // Combining a day the conversation named with a time of day it also named
+  // is using what it was told, not inventing a third thing.
+  const proposed = 'Could we do a 20 minute call on Thursday? Morning works best for me.';
+  assert.deepEqual(findInventedSpecifics('Thursday morning works for me.', { facts: proposed, hasAttachment: true }), []);
+  // A different day is still an invention.
+  assert.deepEqual(findInventedSpecifics('Wednesday afternoon works for me.', { facts: proposed, hasAttachment: true }).map((h) => h.kind), ['invented_date']);
 });
 
 test('a figure said the way people say it out loud is not an invention', () => {
