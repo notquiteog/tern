@@ -129,6 +129,56 @@ a value) and the blind index are as written. Differences worth knowing:
 search rewrite, and tests. It touches every query that reads bodies, so it
 is a single focused change rather than something to do piecemeal.
 
+## Layer 1b: the meaning index — built
+
+Meaning search needs a vector per message, and a vector is not a hash. Given
+an embedding and the model that produced it, a good deal of the original text
+can be reconstructed; this is a published attack rather than a theoretical
+one. A column of plain embeddings beside a column of sealed bodies would
+therefore undo layer 1 completely — the bodies would be ciphertext and the
+meanings would be sitting next to them in the clear.
+
+So every vector goes through a keyed transform before it is stored
+(`services/embeddings.ts`):
+
+```
+pad to a power of two  →  (keyed sign flip, Walsh–Hadamard) ×3  →  keep D of P
+```
+
+Three rounds of "flip the signs by a keyed pattern, then transform" is the
+standard fast Johnson–Lindenstrauss construction. Each round is exactly
+orthogonal, so inner products — and therefore the cosine similarity the
+ranking is built on — survive untouched. Keeping D of the P coordinates
+afterwards is then a Johnson–Lindenstrauss projection: distances are
+preserved to within a few percent, far inside the noise of what "related"
+means for an email.
+
+What that buys, precisely:
+
+- The sign patterns and the choice of which coordinates survive both come
+  from the person's own data key, so two accounts on the same server produce
+  unrelated geometry for the same sentence and nothing can be compared across
+  accounts.
+- The projection throws information away on purpose. A rotation alone is
+  reversible to somebody who recovers the key; a rotation followed by keeping
+  a quarter of the coordinates is not reversible even then.
+- Without the key the stored rows are an unlabelled point cloud. No public
+  inversion model has an axis to hold on to.
+
+What it does not buy, in the same words as the rest of this document: this is
+the same class of protection as the vault. Somebody holding the database
+**and** the server master key can re-derive the rotation and compare, which
+is what the app does. They still cannot read the text back out.
+
+Cost: 256 signed bytes per message — twelve megabytes for a fifty-thousand
+message archive, small enough to scan in a tight loop, which is why there is
+no approximate index, no extension and no second container to keep in sync
+with deletes.
+
+`services/embeddings.test.ts` checks both halves: that cosine survives within
+0.08 and the ranking survives exactly, and that the same text under two keys
+does not correlate.
+
 ## Layer 2: OpenPGP — built
 
 Users upload a **public key**. From that point:

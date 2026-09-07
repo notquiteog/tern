@@ -146,6 +146,60 @@ Nothing leaves your server except the mail itself.
   their mailboxes with step-by-step instructions for Thunderbird, Apple Mail,
   iPhone, Outlook, Android and Windows Mail.
 
+**Everything below is off until you ask for it**
+
+Every feature that reads a mailbox for a purpose other than showing it to you,
+and every feature that reaches the model, is off for a new account. **Settings
+→ Features** is one page with one switch each, a sentence saying what is read
+and what is kept, and a mark for *reads your mail* and *uses the model*.
+Turning one off erases what it made — the index, the scores, the flags, the
+extracted text — rather than pausing it. **Admin → Features** is the same list
+for the whole install, which is the switch to reach for when the box is
+struggling; it takes effect within about twenty seconds and leaves everybody's
+own choice alone.
+
+The gate is enforced by the compiler, not by convention: the functions that
+decrypt a message and the ones that reach the model all take a required
+argument naming who is asking and why, so a path that forgets to ask does not
+build. A test then walks the source for the one hole types cannot close.
+
+- **Meaning search.** "Find the thread where we settled the price", answered
+  from an index that holds no words. Each message is embedded once and the
+  vector is passed through a keyed rotation derived from your own data key
+  and then cut from 1024 coordinates to 256 — cosine survives, the axes an
+  inversion attack needs do not. Results appear *under* the exact ones, never
+  instead of them.
+- **Priority ordering.** Learns from what you archive, star, reply to and
+  junk, using only the hashed terms already in your encrypted search index —
+  no message text is read and no model is involved. It adds one more way to
+  sort the list and hides nothing.
+- **Impersonation guard.** A display name you know on an address you do not, a
+  domain one confusable character from one you correspond with, `Reply-To`
+  leaving the domain, and a conversation whose sender changes partway through.
+  One calm line naming the specific reason, never a row of badges.
+- **Search inside attachments.** PDF, Word, Excel and PowerPoint text, read on
+  arrival, sealed beside the message and folded into the same blind index.
+- **Commitments.** What you said you would do and what you are waiting on,
+  pulled out of your own conversations and closed automatically when the mail
+  settles them.
+- **The brief.** A page, not a daily notification: it shows what is stored,
+  says when it was written and whether the mailbox has moved since, and
+  regenerates only when you press the button.
+- **Rules and searches in plain English.** A sentence becomes a draft of a
+  rule in the ordinary editor. Once you save it, it runs deterministically
+  and the model is never involved again.
+- **Invitations.** The `text/calendar` part of a message read properly —
+  folded lines, escapes, time zones — shown in your own time, with a warning
+  when it clashes, and Yes/Maybe/No that sends a real `METHOD:REPLY`.
+- **Dictation** (optional container). Speak into any text box. The recording
+  never touches disk on either side and the transcript is never stored.
+- **Link cleaning.** Tracking parameters stripped from links you are shown and
+  links you send, and redirect wrappers unwrapped by reading the destination
+  they carry — never by following them.
+- **Import an archive.** An mbox — a Takeout export, a Thunderbird folder —
+  read into your encrypted cache. Worth doing first: everything above is far
+  better on years of mail than on days of it.
+
 **Privacy**
 - Photos and videos attached to a message lose their metadata before they
   are stored or sent: EXIF (camera, GPS, time), XMP, IPTC, ICC profiles,
@@ -153,8 +207,22 @@ Nothing leaves your server except the mail itself.
   and MOV files. Forwarded attachments are scrubbed too.
 - Every user can export everything the server holds about them as one JSON
   file, and delete their account with all of it, from Settings → Security.
-- The security design (sign-in, sessions, hostile mail, the network guard)
-  is written up in [docs/SECURITY.md](docs/SECURITY.md).
+- The security design (sign-in, sessions, hostile mail, the network guard,
+  the consent gate) is written up in [docs/SECURITY.md](docs/SECURITY.md).
+- Generation, embedding, transcription and importing are priced in **proof of
+  work** rather than refused by a counter. The first requests in a window
+  cost a few hundred hashes and are invisible; the price doubles per request
+  after that and again with how busy the model is. A person notices nothing;
+  a loop pays for its own enthusiasm.
+- **Recovery shares** (Admin → Security) split the master key so that any *k*
+  of *n* rebuild it and any fewer reveal nothing at all. They are printed
+  once and never stored; `./bin/tern recover-key` puts them back together
+  when `.env` is gone. Without them, a lost `ENCRYPTION_KEY` is still a
+  destroyed archive.
+- **What is running** (Admin → Security) lists the image each container
+  actually started from and flags anything that has changed since it was
+  pinned. Every privacy claim here is a claim about code; you should be able
+  to check which.
 - No IP addresses are stored anywhere. Staged attachments, finished AI jobs,
   decided reviews, sent outbox copies and expired sessions are purged on a
   schedule. The full inventory is in [docs/PRIVACY.md](docs/PRIVACY.md);

@@ -199,9 +199,88 @@ messages to the browser; they go to the log.
   from when the message was received, which is what other mail services mean
   by it: **on the first run after upgrading, mail that has sat in Trash or
   Junk for over a month is destroyed.**
-- Everything else keeps the retention it always had: staged attachments a
-  day, sent outbox copies a week, decided reviews and finished AI jobs a
-  month, audit entries a year.
+- Everything else is a setting under **Admin → Retention**, and every default
+  is the shortest the feature still works with rather than a round number:
+  staged attachments a day, sent outbox copies two days, decided reviews a
+  week, finished AI jobs twelve hours, briefs a week, closed commitments a
+  fortnight, past invitations two months, audit entries ninety days.
+- The two rows that hold mail content have their content emptied when they
+  stop being needed rather than when the row expires. An AI job's payload —
+  the copy of the message the model was asked about — is cleared the moment
+  the job leaves `running`, so there is no window in which a finished job is
+  holding somebody's mail.
+
+## Consent, and the work guard
+
+Nothing that reads a mailbox for a purpose other than showing it to its owner,
+and nothing that reaches the model, runs without two switches being open: the
+person's own consent (Settings → Features, off for a new account) and the
+install's (Admin → Features, which an administrator can close at any time).
+See PRIVACY.md for what each one holds and what turning it off erases.
+
+The enforcement is worth stating precisely, because "we audited the call
+sites" is a claim that stops being true the day after the audit:
+
+- `openEmail`/`openEmails` take a required `reader` — `'owner'` or a named
+  capability. `chat`/`chatStream`/`embed` take a required `consent`. A path
+  that forgets to ask does not compile.
+- `services/capabilities.test.ts` walks the source afterwards for the hole
+  the type system cannot close: `dataKey` plus `openEmailWith` will open a
+  mailbox with no questions asked, because the list renderer and the backfill
+  legitimately need exactly that. Those files are allow-listed by name, so
+  adding one is a deliberate act with a reviewer attached.
+- `e2e/features.e2e.ts` drives it against a real database: does the gate
+  refuse before consent, does an admin switch overrule consent, does revoking
+  erase, can one account's search reach another's mail.
+
+### Expensive requests are priced, not counted
+
+Generation, embedding a mailbox, transcription and importing an archive all
+carry a **proof of work** as well as a capability, in addition to the sign-in
+proof of work that was already there. A counter says "you have had your forty
+this minute" and then refuses, which punishes the person working quickly
+through their inbox exactly as hard as the script hammering the box. Work is
+a dial instead: the first requests in a window cost a few hundred hashes —
+under a millisecond, invisible — and the price doubles per request after
+that, and again with how many generations are already in flight. A person
+notices nothing; a loop pays quadratically for its own enthusiasm.
+
+The challenge is signed, single use, short-lived, and bound to the session as
+well as the purpose, so it cannot be pre-computed, shared between people, or
+replayed. `services/workGuard.ts`.
+
+## Recovering the master key
+
+Everything in the mail cache is encrypted under `ENCRYPTION_KEY` from `.env`.
+Losing that file has always meant losing every cached message, every stored
+mailbox password and every index — "no password reset by design" turns one
+lost file into a destroyed archive.
+
+Admin → Security can now split that key with Shamir's scheme over GF(256):
+`n` shares, any `k` of which rebuild it, and any `k-1` of which reveal
+*nothing at all* — that is the theorem, not a difficulty argument. The shares
+are displayed once, meant to be printed, and never stored. What the database
+keeps is how many exist, when they were made, a fingerprint per share so a
+recovery tool can say "that is share 3 again", and a check value that
+recognises the right key without being it.
+
+Recovery is a CLI command rather than a page, because the situation it exists
+for is one where nothing decrypts and so nobody can sign in to ask:
+
+```
+./bin/tern recover-key
+```
+
+It reads shares from the terminal, prints the `ENCRYPTION_KEY` line for
+`.env`, and — if the database happens to be reachable — says whether it
+matches the key this install recorded.
+
+## What is running
+
+Admin → Security also lists the image each container actually started from
+and whether any has changed since an administrator last pinned the set. Every
+other claim on this page is a claim about code; an operator should be able to
+check which code without taking it on faith.
 
 ## Drafts
 
@@ -220,6 +299,18 @@ here. Per mailbox, and switchable off.
   account, which is why it is a choice rather than the default.
 - **Encryption at rest for contacts, templates, the audit log and the send
   log.** The mail cache is covered; these are not.
+- **Meaning search is sealed, not end-to-end.** The keyed projection means
+  somebody with the database alone has an unlabelled point cloud with no axis
+  to hold on to. Somebody with the database *and* the server master key can
+  re-derive the rotation and do what the app does — compare. They still
+  cannot read text back out of the index, because a quarter of the
+  coordinates were thrown away on purpose, but the honest claim is "the index
+  is sealed the way the mail is", not anything stronger.
+- **Reading inside attachments means parsing hostile files.** The parsers are
+  written here rather than pulled in, bounded on input size, output size,
+  entry count, nesting depth and expansion ratio, and a parser that throws
+  produces "no text" rather than an incident. That is a smaller surface than
+  a dependency, not no surface.
 - **Two-way draft sync.** Drafts written in another client are shown but not
   editable in Tern.
 

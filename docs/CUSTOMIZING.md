@@ -527,3 +527,91 @@ Messages with a `List-Unsubscribe` header show an Unsubscribe link in the
 message header. A `mailto:` target sends the unsubscribe request as an
 email from the account that received the message; an `https:` target opens
 the list's page. AI responders never answer list mail.
+
+## Features, and turning them off
+
+Everything that reads a mailbox for a purpose other than showing it to its
+owner, and everything that reaches the model, lives behind two switches.
+
+**Settings → Features** is the person's own list. Nothing is on for a new
+account. Each row says what is read and what is kept, and turning one off
+erases what it produced rather than pausing it.
+
+**Admin → Features** is the same list for the install. This is the one to
+reach for when the box is struggling: it takes effect on the next request and
+the next scheduler tick — nothing caches a flag for more than five seconds —
+and it leaves everybody's consent alone, so switching it back on restores
+what people had already chosen rather than making them choose again.
+
+The heavy ones, in the order they cost you:
+
+| Feature | What it costs |
+|---|---|
+| Meaning search | One embedding model call per message, once. `all-minilm` is 46 MB and enough; `nomic-embed-text` is 274 MB and noticeably better. 256 bytes of storage per message |
+| Dictation | A separate container, 400 MB to 1 GB while transcribing |
+| The brief | One generation, only when somebody presses the button |
+| Commitments | One generation per changed conversation, in the background |
+| Search inside attachments | One download and one parse per file, in the background |
+| Conversation summaries | One generation per conversation shown |
+| Priority ordering | Nothing. No model, and the training data is already in the search index |
+| Impersonation guard, link cleaning, invitations | Nothing. All deterministic |
+
+The background passes take turns — one per twenty-second tick, rotating
+between the six kinds of work and between people — so a box with one model
+resident never tries to embed a mailbox, read attachments and answer somebody
+at the same time. `workers/enrichment.ts`.
+
+### The embedding model
+
+`AI_EMBED_MODEL` in `.env`, or Admin → AI model. The installer picks
+`nomic-embed-text` when the box has 6 GB or more and `all-minilm` below that.
+Changing it does not re-index automatically: turn meaning search off and on
+again for the accounts that should be rebuilt, which erases the old vectors
+first.
+
+### Dictation
+
+Add the container by re-running `./install.sh` and answering yes, or by hand:
+
+```bash
+echo 'COMPOSE_FILE=compose.yml:compose.voice.yml' >> .env   # append to the existing value
+./bin/tern up
+./bin/tern compose exec whisper ./models/download-ggml-model.sh base /models
+```
+
+`WHISPER_MODEL` chooses the speech model (`base` is 150 MB and fits a 4.5 GB
+box beside a chat model; `small` is 500 MB and better on accents and names).
+Without the container the Dictation switch says so rather than failing at the
+microphone.
+
+### Importing an archive
+
+**Settings → Import.** The file is held in memory for the length of the run
+and never written to the server's disk, which is what makes "nothing is left
+behind" a fact rather than a promise about cleanup code — and is also why
+there is a 256 MB ceiling. A Google Takeout larger than that exports one
+mbox per label, so import them one at a time.
+
+Imported mail lands in a mailbox called **Imported**, never the inbox, and
+stays in Tern's cache: it is not uploaded to your mail provider. Attachment
+contents do not come with it, because those bytes are not in the mbox in a
+form the mail server can serve back; names, types and sizes are listed.
+
+### Retention
+
+**Admin → Retention** sets how long each by-product is kept. Every default is
+the shortest the feature still works with. The two rows that hold mail
+content — a queued AI job's prompt and a decided review's copy of the message
+— are emptied when they stop being needed rather than when the row expires.
+
+### Recovery shares
+
+**Admin → Security.** Split `ENCRYPTION_KEY` into `n` printed shares, any `k`
+of which rebuild it. They are shown once and never stored. To use them:
+
+```bash
+./bin/tern recover-key
+```
+
+Make a new set if you rotate `ENCRYPTION_KEY`; the page says when the shares
+on file are for a different key than the one running.

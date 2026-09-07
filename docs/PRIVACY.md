@@ -4,6 +4,33 @@ Tern is a client for a mailbox that lives somewhere else. Everything below is
 about Tern's own database; the mail server (Fastmail, Stalwart or another
 JMAP host) keeps the mail itself under its own rules.
 
+## Nothing here reads your mail until you say so
+
+Every feature that reads a mailbox for a purpose other than showing it to its
+owner, and every feature that reaches the language model, is off for a new
+account and stays off until that person turns it on in **Settings →
+Features**. There is no "recommended" preset and nothing is opted in by an
+upgrade.
+
+Two switches have to be open for any of it to run:
+
+- **The person's own consent**, per feature, recorded with the moment it was
+  given. Turning one off *erases what it produced* — the meaning index, the
+  priority scores, the guard's flags, the extracted attachment text, the
+  commitments, the brief — in the same request. It is not a pause.
+- **The install's own switch**, which an administrator can close at any time
+  from Admin → Features. Closing it stops the background work within about
+  twenty seconds and makes the routes refuse, and it leaves everybody's
+  consent alone, so re-opening restores what people had already chosen.
+
+This is enforced by the type system rather than by convention. The two
+functions that can decrypt a message take a `reader` argument that is either
+`'owner'` or a named capability, and the three that can reach the model take
+a `consent`; both are required, so a code path that forgets to ask does not
+compile. `services/capabilities.test.ts` then walks the source for the one
+hole types cannot close — the raw data key — and holds it to an allow-list.
+`e2e/features.e2e.ts` checks the whole thing against a real database.
+
 ## Never stored
 
 - **IP addresses.** No access log in the app, no address column anywhere.
@@ -34,7 +61,16 @@ JMAP host) keeps the mail itself under its own rules.
 | `drafts`, `outbox` | Unsent mail. Both are encrypted at rest like the cache | Drafts until discarded; sent or cancelled outbox rows purged after 7 days |
 | Passkeys (`webauthn_credentials`): public key, credential id, a name, when it was last used | Signing in | Until you remove the passkey, or the account is deleted |
 | `uploads` | Attachments staged for a message being written | Deleted on send; orphans purged after 24 hours |
-| `review_queue`, `ai_jobs` | AI review and responder runs | Decided or finished rows purged after 30 days |
+| `review_queue`, `ai_jobs` | AI review and responder runs | The payload of an AI job — the copy of the message it was asked about — is emptied the moment the job stops running, not at the next sweep. Rows: decided reviews 7 days, finished jobs 12 hours. Both are settings under Admin → Retention |
+| `email_vectors` | Meaning search. Each row is a keyed projection of one message's embedding, never the embedding: rotated with a pattern derived from your own data key and then cut from 1024 coordinates to 256, so distances survive and the axes an inversion attack needs do not. 256 bytes per message | Until you turn meaning search off, which deletes all of it |
+| `triage_models` | Priority ordering. A weight vector over the hashed terms already in your search index — no message text is read to build it. Sealed with your key like anything else learned from your mail | Until you turn priority ordering off |
+| `emails.guard_flags`, `guard_detail` | The impersonation guard. The flags are a fixed vocabulary and are stored as they are; anything naming a domain or a person is sealed | Until you turn the guard off |
+| `attachment_text` | Searching inside attachments. The extracted words, sealed, and folded into the same blind index as the body. File names are sealed too | Until you turn it off, or the message is deleted |
+| `commitments`, `commitment_scans` | What you promised and what you are waiting on. Text and counterparty sealed; dates and state are not, because the list is ordered and counted by them | Closed items purged after 14 days; all of it on turning the feature off |
+| `briefs` | One per person, sealed, replaced in place. A cache of a page rather than a record of anything | 7 days, or on regeneration |
+| `calendar_events` | Invitations found in mail. Everything a person would read is sealed; the times are not, because the list is ordered by them and clashes are found with them | 60 days after the meeting |
+| `mail_imports` | Progress of an archive import. Counts only — the archive itself is held in memory for the length of the run and never written to disk | 7 days after it finishes |
+| `user_capabilities` | Which features each person has turned on, and when | Until revoked or the account is deleted |
 | `audit_log`: who did which admin or security action, when; successful and failed sign-ins with the method and the client name (never an address) | Accountability; spotting someone guessing at an account | 365 days; a deleted user's rows keep the action but lose details |
 | `invites` | Registration links | Purged 30 days after use or expiry |
 | Brand logos | BIMI | Until removed by an admin |
@@ -42,7 +78,34 @@ JMAP host) keeps the mail itself under its own rules.
 | OpenPGP keys: your public key, your private key passphrase-protected and wrapped with the server key, other people's public keys | Encrypting mail, sign-in with the key | Until you remove them |
 
 Retention runs from the scheduler once an hour (`workers/scheduler.ts`,
-`housekeeping`).
+`housekeeping`). Every window above is a setting under **Admin → Retention**,
+with defaults chosen as the shortest each feature still works with rather
+than as a round number. The two that hold mail content — a queued AI job's
+prompt and a decided review's copy of the message — have their content
+emptied when they stop being needed, so the window applies to the row rather
+than to the text.
+
+## Dictation, if it is installed
+
+A recording never touches disk on either side. It exists as one buffer in the
+browser, goes up as the request body, and the server zeroes that buffer in a
+`finally` before replying. The transcript is returned and forgotten: it is
+not stored, not logged, and not attached to anything. The only trace a
+dictation leaves is a log line with a byte count and a duration.
+
+## What the model is holding
+
+A generation is a session, and it ends when the last token arrives. The
+prompt is dropped there — the message array is emptied and each message's
+content replaced — so nothing downstream is still holding the text of an
+email. Prompts and completions are never logged, never written to a job row,
+and never attached to an error.
+
+Ollama also keeps the prompt in its own KV cache for as long as the model
+stays resident, which by default is ten minutes after the last request. With
+**wipe after use** on (the default), an idle timer unloads the model once
+nothing is generating, so that copy goes too. The grace period exists so that
+somebody working through their inbox is not paying a model load per message.
 
 ## What each person can do
 
