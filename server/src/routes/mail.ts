@@ -9,6 +9,7 @@ import { syncManager } from '../workers/syncManager.js';
 import { markDirty, removeDraft } from '../services/draftSync.js';
 import { cleanHtmlLinks, cleanTextLinks } from '../services/links.js';
 import { allowed } from '../services/capabilities.js';
+import { commitmentsForThread } from '../services/commitments.js';
 import { openDraft, openDraftWith, openEmailWith, openEmails, sealDraft } from '../services/mailVault.js';
 import { dataKey, open, seal } from '../services/vault.js';
 
@@ -311,7 +312,14 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   const muted = await one('SELECT 1 FROM muted_threads WHERE account_id=$1 AND thread_id=$2', [acc.id, threadId]);
   const drafts = await withDraftContent(req.user!.id, await query<any>(`SELECT d.*, r.name AS responder_name, ${DRAFT_ATTACHMENTS} FROM drafts d LEFT JOIN responders r ON r.id=d.responder_id WHERE d.user_id=$1 AND d.account_id=$2 AND d.thread_id=$3 ORDER BY d.updated_at DESC`, [req.user!.id, acc.id, threadId]));
   const pendingJobs = await one<{ n: number }>(`SELECT count(*)::int AS n FROM ai_jobs WHERE user_id=$1 AND kind='responder' AND status IN ('pending','running') AND payload->>'threadId'=$2 AND (payload->>'accountId')::bigint=$3`, [req.user!.id, threadId, acc.id]);
-  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color, signature_html: acc.signature_html }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, muted: Boolean(muted), drafts, aiPending: pendingJobs?.n ?? 0 });
+  // F6 has a page of its own, but the place a commitment is settled is the
+  // conversation it came out of. It travels with the thread rather than in a
+  // second request so the rail is drawn in the same paint as the contact
+  // card — an obligation that appears a second late has already been missed.
+  const commitments = await allowed(req.user!.id, 'commitments')
+    ? await commitmentsForThread(req.user!.id, acc.id, threadId)
+    : [];
+  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color, signature_html: acc.signature_html }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, muted: Boolean(muted), drafts, aiPending: pendingJobs?.n ?? 0, commitments });
 });
 
 

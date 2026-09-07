@@ -230,6 +230,26 @@ export async function listCommitments(userId: number, status: 'open' | 'all' = '
       ORDER BY (c.due_at IS NULL), c.due_at ASC, c.created_at DESC LIMIT 300`,
     [userId, status],
   );
+  return openRows(userId, rows);
+}
+
+// The open items belonging to one conversation.
+//
+// The thread view asks for this every time a conversation is opened, which
+// is why it is a scoped query rather than a filter over listCommitments:
+// that one decrypts up to three hundred rows to answer a question about two.
+export async function commitmentsForThread(userId: number, accountId: number, threadId: string): Promise<Commitment[]> {
+  if (!threadId) return [];
+  const rows = await query<any>(
+    `SELECT c.* FROM commitments c
+      WHERE c.user_id=$1 AND c.account_id=$2 AND c.thread_id=$3 AND c.status='open'
+      ORDER BY (c.due_at IS NULL), c.due_at ASC, c.created_at DESC LIMIT 20`,
+    [userId, accountId, threadId],
+  );
+  return openRows(userId, rows);
+}
+
+async function openRows(userId: number, rows: any[]): Promise<Commitment[]> {
   if (!rows.length) return [];
   const dek = await dataKey(userId);
   return rows.map((r) => ({

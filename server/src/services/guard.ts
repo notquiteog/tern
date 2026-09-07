@@ -285,16 +285,23 @@ export function checkMessage(input: GuardInput, known: GuardKnowledge, thread: {
 // the sealed sender list, which is opened with the owner's own key. This is
 // the only place the guard needs plaintext, and it needs it about senders
 // rather than about bodies.
-export async function knowledgeFor(userId: number, accountId: number): Promise<GuardKnowledge> {
+// `exclude` is the batch about to be checked. Without it the mailbox
+// "knows" the very message under test — it is in the table by the time the
+// check runs — so a first message from a stranger would count as a sender
+// this account already knows, and every check that asks "have we seen this
+// before?" would answer yes about the thing it was asked to be suspicious
+// of. Excluding the batch is what makes those questions mean anything.
+export async function knowledgeFor(userId: number, accountId: number, exclude: number[] = []): Promise<GuardKnowledge> {
   const dek = await dataKey(userId);
   const rows = await query<{ from_addr: string; n: number }>(
     `SELECT from_addr, count(*)::int AS n
        FROM emails
       WHERE account_id=$1 AND received_at > now() - interval '400 days'
+        AND ($2::bigint[] IS NULL OR NOT (id = ANY($2::bigint[])))
       GROUP BY from_addr
       ORDER BY n DESC
       LIMIT 4000`,
-    [accountId],
+    [accountId, exclude.length ? exclude : null],
   );
   const domains = new Map<string, { count: number; example: string }>();
   const names = new Map<string, { email: string; count: number }>();
@@ -333,7 +340,7 @@ export async function guardBatch(userId: number, accountId: number, limit = 200)
   if (!rows.length) return 0;
 
   const dek = await dataKey(userId);
-  const known = await knowledgeFor(userId, accountId);
+  const known = await knowledgeFor(userId, accountId, rows.map((r) => r.id));
   const acc = await one<{ email: string }>('SELECT email FROM accounts WHERE id=$1', [accountId]);
   const mine = new Set([String(acc?.email ?? '').toLowerCase()].filter(Boolean));
 
