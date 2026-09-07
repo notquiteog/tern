@@ -97,7 +97,7 @@ function AccountCard({ a, onEdit }: { a: Account; onEdit: () => void }) {
             <span>{a.has_submission ? 'sends via JMAP' : a.has_smtp ? 'sends via SMTP' : 'no send path'}</span>
             {!a.initial_sync_done && <span>initial sync in progress</span>}
           </div>
-          {a.sync_error && a.sync_status !== 'idle' && <div className="small mt-8" style={{ color: 'var(--danger)' }}>{a.sync_error}</div>}
+          {a.sync_error && a.sync_status !== 'idle' && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}>{a.sync_error}</div>}
           {stats && (
             <div className="mt-16" style={{ maxWidth: 520 }}>
               <div className="row small mb-8"><span className="strong">Today</span><span className="muted">{stats.sentToday} of {stats.dailyCap} sends</span><span className="ml-auto muted">{stats.windowOpen ? 'window open' : `window opens ${fmtRelative(stats.nextWindowOpen)}`}</span></div>

@@ -173,14 +173,31 @@ export default function MailPage() {
   const selectedRows = threads.filter((t) => selected.has(t.key));
   const focused = threads[focus];
   const targets = selectedRows.length ? selectedRows : focused ? [focused] : [];
+  // The keyboard cursor and DOM focus are the same thing. Moving it through
+  // this puts real focus on the row, so a screen reader follows the cursor and
+  // the focus ring lands where the highlight is. Marked as keyboard-driven so
+  // that merely arriving on the page does not steal focus into the list.
+  const focusFromKeys = useRef(false);
+  const moveFocus = (fn: (f: number) => number) => { focusFromKeys.current = true; setFocus(fn); };
+  const toggleSelect = (t: ThreadRow) => setSelected((sel) => { const n = new Set(sel); if (n.has(t.key)) n.delete(t.key); else n.add(t.key); return n; });
+  // The listbox keyboard contract, alongside the j/k that Gmail taught people.
+  function onListKeys(e: React.KeyboardEvent) {
+    const last = threads.length - 1;
+    if (last < 0) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveFocus((f) => Math.min(last, f + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveFocus((f) => Math.max(0, f - 1)); }
+    else if (e.key === 'Home') { e.preventDefault(); moveFocus(() => 0); }
+    else if (e.key === 'End') { e.preventDefault(); moveFocus(() => last); }
+    else if (e.key === ' ' && focused) { e.preventDefault(); toggleSelect(focused); }
+  }
   const currentIndex = threadKey ? threads.findIndex((t) => t.key === threadKey) : -1;
   const goPrev = () => { if (currentIndex > 0) openThread(threads[currentIndex - 1]); };
   const goNext = () => { if (currentIndex >= 0 && currentIndex < threads.length - 1) openThread(threads[currentIndex + 1]); };
 
   useHotkeys({
-    j: () => { if (threadKey) goNext(); else setFocus((f) => Math.min(threads.length - 1, f + 1)); }, k: () => { if (threadKey) goPrev(); else setFocus((f) => Math.max(0, f - 1)); },
+    j: () => { if (threadKey) goNext(); else moveFocus((f) => Math.min(threads.length - 1, f + 1)); }, k: () => { if (threadKey) goPrev(); else moveFocus((f) => Math.max(0, f - 1)); },
     o: () => focused && openThread(focused), Enter: () => focused && openThread(focused),
-    x: () => focused && setSelected((s) => { const n = new Set(s); if (n.has(focused.key)) n.delete(focused.key); else n.add(focused.key); return n; }),
+    x: () => { if (focused) toggleSelect(focused); },
     e: () => !threadKey && void act('archive', targets, {}, 'archived'), '#': () => !threadKey && void act('trash', targets, {}, 'moved to trash'), '!': () => !threadKey && void act('spam', targets, {}, 'marked as junk'),
     s: () => !threadKey && void act(targets.every((t) => t.starred) ? 'unstar' : 'star', targets),
     'I': () => !threadKey && void act('read', targets), 'U': () => !threadKey && void act('unread', targets),
@@ -189,7 +206,12 @@ export default function MailPage() {
     'Escape': () => { if (!threadKey && selected.size) setSelected(new Set()); },
   }, [threads, focus, selected, threadKey, box, currentIndex]);
 
-  useEffect(() => { listRef.current?.querySelector<HTMLElement>('.thread-row.focused')?.scrollIntoView({ block: 'nearest' }); }, [focus]);
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>('.thread-row.focused, .thread-card.focused');
+    if (!el) return;
+    if (focusFromKeys.current) { focusFromKeys.current = false; el.focus({ preventScroll: true }); }
+    el.scrollIntoView({ block: 'nearest' });
+  }, [focus]);
 
   if (box === 'scheduled') return <ScheduledPage />;
   if (box === 'drafts') return <DraftsPage box={box} listQuery={{ threads, total, isLoading }} />;
@@ -225,7 +247,7 @@ export default function MailPage() {
       <div className="mail-toolbar">
         {showList && <>
           <span className="select-all">
-            <input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(threads.map((t) => t.key)) : new Set())} aria-label="Select all" />
+            <label><input type="checkbox" className="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(threads.map((t) => t.key)) : new Set())} aria-label="Select all" /></label>
             <Menu width={160} trigger={(open) => <button type="button" className="select-caret" aria-label="Select…" onClick={open}><ChevronDown size={13} /></button>}>
               {(c) => <>
                 {([['All', () => threads], ['None', () => []], ['Read', () => threads.filter((t) => !t.unread)], ['Unread', () => threads.filter((t) => t.unread)], ['Starred', () => threads.filter((t) => t.starred)], ['Unstarred', () => threads.filter((t) => !t.starred)]] as [string, () => ThreadRow[]][]).map(([l, f]) => <MenuItem key={l} onClick={() => { setSelected(new Set(f().map((t) => t.key))); c(); }}>{l}</MenuItem>)}
@@ -252,7 +274,7 @@ export default function MailPage() {
           ) : (
             <>
               <IconButton label="Refresh" onClick={() => { refetch(); accounts.forEach((a) => api.post(`/api/accounts/${a.id}/resync`).catch(() => {})); }}><RefreshCw size={16} className={isFetching ? 'spin' : ''} /></IconButton>
-              <span className="strong" style={{ marginLeft: 4 }}>{q ? `Search: ${q}` : mailboxName}</span>
+              <h1 className="mail-title">{q ? `Search: ${q}` : mailboxName}</h1>
               {q && <IconButton label="Clear search" onClick={() => setParams({})}><X size={14} /></IconButton>}
               {canEmpty && <Button size="sm" variant="ghost" icon={<Eraser size={14} />} onClick={() => setEmptyOpen(true)} className="desktop-only">Empty {box} now</Button>}
             </>
@@ -324,6 +346,8 @@ export default function MailPage() {
                 ? <Empty title="Connect a mailbox to get started" action={<Button variant="primary" onClick={() => nav('/settings/accounts')}>Add account</Button>}>Tern works with Fastmail, Stalwart or any JMAP server. Add one in Settings and mail starts syncing right away.</Empty>
                 : <Empty title={q ? 'No results' : tabbed && cat !== 'primary' ? `Nothing in ${CATEGORY_TABS.find((t) => t.key === cat)?.label ?? cat}` : box === 'inbox' ? 'Inbox zero' : 'Nothing here'}>{q ? 'Try fewer words, or operators like from:, subject:, is:unread, has:attachment, newer_than:7d.' : accounts.some((a) => !a.initial_sync_done) ? 'Your mailbox is still syncing for the first time. Messages appear as they arrive.' : tabbed && cat !== 'primary' ? 'Mail of this kind lands here as it arrives. Everything else is in Primary.' : 'Enjoy the quiet.'}</Empty>
             )}
+            <div className="thread-rows" role="listbox" aria-multiselectable="true"
+              aria-label={q ? `Search results for ${q}` : `Conversations in ${mailboxName}`} onKeyDown={onListKeys}>
             {stacks.map(({ sep, rows, indices }) => {
               const headKey = rows[0].key;
               const stacked = rows.length > 1;
@@ -331,8 +355,10 @@ export default function MailPage() {
               const shown = stacked && !open ? rows.slice(0, 1) : rows;
               const View = prefs.view === 'card' ? ThreadCardView : ThreadRowView;
               return (
-                <div key={headKey} className={cls(stacked && 'digest', stacked && open && 'digest-open')}>
-                  {sep && <div className="date-sep">{sep}</div>}
+                <div key={headKey} role="presentation" className={cls(stacked && 'digest', stacked && open && 'digest-open')}>
+                  {/* The date is on every row already, so the separator is a
+                      visual grouping only and stays out of the listbox. */}
+                  {sep && <div className="date-sep" role="presentation">{sep}</div>}
                   {shown.map((t, n) => {
                     const i = indices[n];
                     return (
@@ -340,7 +366,7 @@ export default function MailPage() {
                         onContext={(x, y) => setCtx({ x, y, row: t })}
                         labels={(t.mailbox_ids ?? []).map((id) => roleOf.get(`${t.account_id}:${id}`)).filter((m) => m && !m.role && box !== `mailbox:${t.account_id}:${m.jmap_id}`).map((m) => ({ name: m!.name, color: m!.color }))}
                         dragRows={() => (selected.has(t.key) ? selectedRows : [t])}
-                        onOpen={() => openThread(t)} onSelect={() => setSelected((s) => { const n2 = new Set(s); if (n2.has(t.key)) n2.delete(t.key); else n2.add(t.key); return n2; })}
+                        onOpen={() => openThread(t)} onSelect={() => toggleSelect(t)} onFocus={() => setFocus(i)}
                         onStar={() => act(t.starred ? 'unstar' : 'star', [t])} onArchive={() => act('archive', [t], {}, 'archived')} onTrash={() => act('trash', [t], {}, 'moved to trash')} onRead={() => act(t.unread ? 'read' : 'unread', [t])} onSnooze={() => { setSnoozeAt(localDateTimeValue(new Date(Date.now() + 3 * 3600_000))); setSnoozeFor([t]); }} box={box}
                         onSwipeArchive={() => act('archive', [t], {}, 'archived')} onSwipeTrash={() => act('trash', [t], {}, 'moved to trash')} summary={summaries[t.key]} />
                     );
@@ -355,6 +381,7 @@ export default function MailPage() {
                 </div>
               );
             })}
+            </div>
           </div>
         )}
         {showThread && <div className="thread-pane"><ThreadView key={threadKey} accountId={Number(accIdStr)} threadId={threadId} box={box} onBack={back} onPrev={goPrev} onNext={goNext} hasPrev={currentIndex > 0} hasNext={currentIndex >= 0 && currentIndex < threads.length - 1} /></div>}
@@ -397,10 +424,27 @@ interface RowViewProps {
   onOpen: () => void; onSelect: () => void; onStar: () => void; onArchive: () => void;
   onTrash: () => void; onRead: () => void; onSnooze: () => void;
   onContext: (x: number, y: number) => void; box: string;
+  onFocus: () => void;
   onSwipeArchive: () => void; onSwipeTrash: () => void;
   // The AI's one-line summary, when it has been written and the reader asked
   // for summaries at all.
   summary?: string;
+}
+
+// What a screen reader should hear instead of the row's dozen loose fragments:
+// the state first, then who and what, then when. The snippet is trimmed — it is
+// context, not the message.
+function rowLabel(t: ThreadRow, people: string, summary: string | undefined, atts: string[], when: string): string {
+  const preview = summary ?? (isEncrypted(t) ? 'Encrypted message' : t.latest?.preview ?? '');
+  return [
+    t.unread ? 'Unread' : null,
+    people,
+    t.latest?.subject || '(no subject)',
+    preview ? preview.slice(0, 120) : null,
+    t.starred ? 'Starred' : null,
+    atts.length ? `${atts.length} attachment${atts.length === 1 ? '' : 's'}` : t.has_attachment ? 'Has an attachment' : null,
+    when,
+  ].filter(Boolean).join('. ');
 }
 
 // A conversation is encrypted when the newest message is a PGP envelope: the
@@ -468,7 +512,7 @@ function useSwipe(onRight: () => void, onLeft: () => void) {
   };
 }
 
-function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+function ThreadRowView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
   const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
   const people = (t.participants ?? []).filter((p) => p && p.email);
   const names = people.length ? people.map((p) => (p.email.toLowerCase() === myEmail.toLowerCase() ? 'me' : addrName(p))) : t.latest?.to?.length ? ['To: ' + t.latest.to.map(addrName).join(', ')] : ['(unknown)'];
@@ -476,17 +520,21 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
   const label = uniq.length > 3 ? `${uniq[0]}, ${uniq[1]} … ${uniq[uniq.length - 1]}` : uniq.join(', ');
   const from = t.latest?.from?.[0];
   const atts = (t.attachments ?? []).filter(Boolean);
+  const when = t.snoozed_until && box === 'snoozed' ? fmtDate(t.snoozed_until) : fmtDate(t.last_at);
   return (
     <div className={cls('swipe-wrap', swipe.dx > 0 && 'to-archive', swipe.dx < 0 && 'to-trash')} {...swipe.handlers}>
-      <div className="swipe-behind">
+      <div className="swipe-behind" aria-hidden="true">
         <span className="swipe-hint left"><Archive size={17} /> Archive</span>
         <span className="swipe-hint right"><Trash2 size={17} /> Delete</span>
       </div>
     <div className={cls('thread-row', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')} style={{ '--i': index, '--swipe-x': `${swipe.dx}px` } as any} onClick={(e) => { if (!swipe.swallowClick(e)) onOpen(); }} onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
+      role="option" aria-selected={selected} aria-current={active ? 'true' : undefined}
+      aria-label={rowLabel(t, label, summary, atts, when)}
+      tabIndex={focused ? 0 : -1} onFocus={onFocus}
       draggable onDragStart={(e) => { const rows = dragRows(); e.dataTransfer.setData('application/x-tern-threads', JSON.stringify(rows.map((r) => ({ key: r.key, account_id: r.account_id, thread_id: r.thread_id })))); e.dataTransfer.effectAllowed = 'move'; }}>
       {showAccount && <span className="acct-stripe" style={{ background: accountColor }} />}
-      <div className="t-check" onClick={(e) => { e.stopPropagation(); onSelect(); }}><input type="checkbox" className="checkbox" checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" /></div>
-      <div className={cls('t-star', t.starred && 'on')} onClick={(e) => { e.stopPropagation(); onStar(); }} title={t.starred ? 'Unstar' : 'Star'}><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
+      <div className="t-check" onClick={(e) => { e.stopPropagation(); onSelect(); }} aria-hidden="true"><input type="checkbox" className="checkbox" tabIndex={-1} checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" /></div>
+      <div className={cls('t-star', t.starred && 'on')} onClick={(e) => { e.stopPropagation(); onStar(); }} title={t.starred ? 'Unstar' : 'Star'} aria-hidden="true"><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
       <div className={cls('t-avatar', t.verified && 'is-verified')}>
         <Avatar name={from?.name} email={from?.email} src={t.avatar_url} />
         {t.verified && <span className="verified-tick" title="Verified brand — this domain publishes a BIMI logo and passes DMARC"><BadgeCheck size={12} /></span>}
@@ -494,7 +542,7 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
       <div className="t-names" title={label}>{label}{t.n > 1 && <span className="t-count">{t.n}</span>}</div>
       <div className="t-main">
         {labels.length > 0 && <span className="t-labels">{labels.slice(0, 2).map((l) => <span key={l.name} className="t-label" style={l.color ? { background: l.color + '22', color: l.color } : {}}>{l.name}</span>)}</span>}
-        {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
+        {t.has_draft && <span className="t-label" style={{ color: 'var(--danger-text)' }}>Draft</span>}
         <span className="t-subject">{t.latest?.subject || '(no subject)'}</span>
         <span className="t-marks"><TrustMarks t={t} /></span>
         {summary
@@ -502,7 +550,7 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
           : <span className="t-snippet">— {isEncrypted(t) || (!t.latest?.preview && t.has_attachment) ? <span className="row gap-4" style={{ display: 'inline-flex' }}><Lock size={11} /> Encrypted message</span> : t.latest?.preview}</span>}
         {atts.length > 0 && <span className="t-atts">{atts.slice(0, 2).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}{atts.length > 2 && <span className="t-att">+{atts.length - 2}</span>}</span>}
       </div>
-      <div className="t-meta">
+      <div className="t-meta" aria-hidden="true">
         {t.muted && <BellOff size={13} className="faint" />}
         {t.has_attachment && atts.length === 0 && <Paperclip size={14} />}
         {t.snoozed_until && box === 'snoozed' ? <span title={fmtDateTime(t.snoozed_until)}><AlarmClock size={13} /> {fmtDate(t.snoozed_until)}</span> : <span title={fmtDateTime(t.last_at)}>{fmtDate(t.last_at)}</span>}
@@ -521,7 +569,7 @@ function ThreadRowView({ t, index, focused, selected, active, showAccount, accou
 // The card view: the same conversation with room to breathe. Where the list
 // is for scanning a hundred rows, this is for reading a dozen — the summary
 // line, the people, the labels and the attachments all get their own space.
-function ThreadCardView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
+function ThreadCardView({ t, index, focused, selected, active, showAccount, accountColor, myEmail, labels, dragRows, onOpen, onSelect, onStar, onArchive, onTrash, onRead, onSnooze, onContext, onFocus, box, onSwipeArchive, onSwipeTrash, summary }: RowViewProps) {
   const swipe = useSwipe(onSwipeArchive, onSwipeTrash);
   const label = threadPeople(t, myEmail);
   const from = t.latest?.from?.[0];
@@ -529,12 +577,15 @@ function ThreadCardView({ t, index, focused, selected, active, showAccount, acco
   const encrypted = isEncrypted(t);
   return (
     <div className={cls('swipe-wrap', swipe.dx > 0 && 'to-archive', swipe.dx < 0 && 'to-trash')} {...swipe.handlers}>
-      <div className="swipe-behind">
+      <div className="swipe-behind" aria-hidden="true">
         <span className="swipe-hint left"><Archive size={17} /> Archive</span>
         <span className="swipe-hint right"><Trash2 size={17} /> Delete</span>
       </div>
       <div className={cls('thread-card', t.unread && 'unread', focused && 'focused', selected && 'selected', active && 'active')}
         style={{ '--i': index, '--swipe-x': `${swipe.dx}px` } as any}
+        role="option" aria-selected={selected} aria-current={active ? 'true' : undefined}
+        aria-label={rowLabel(t, label, summary, atts, fmtDate(t.last_at))}
+        tabIndex={focused ? 0 : -1} onFocus={onFocus}
         onClick={(e) => { if (!swipe.swallowClick(e)) onOpen(); }}
         onContextMenu={(e) => { e.preventDefault(); onContext(e.clientX, e.clientY); }}
         draggable onDragStart={(e) => { const rows = dragRows(); e.dataTransfer.setData('application/x-tern-threads', JSON.stringify(rows.map((r) => ({ key: r.key, account_id: r.account_id, thread_id: r.thread_id })))); e.dataTransfer.effectAllowed = 'move'; }}>
@@ -548,9 +599,9 @@ function ThreadCardView({ t, index, focused, selected, active, showAccount, acco
             <div className="tc-names" title={label}>{label}{t.n > 1 && <span className="t-count">{t.n}</span>}</div>
             <div className="tc-when" title={fmtDateTime(t.last_at)}>{fmtDate(t.last_at)}</div>
           </div>
-          <div className="tc-actions" onClick={(e) => e.stopPropagation()}>
+          <div className="tc-actions" onClick={(e) => e.stopPropagation()} aria-hidden="true">
             <div className={cls('t-star', t.starred && 'on')} onClick={onStar} title={t.starred ? 'Unstar' : 'Star'}><Star size={16} fill={t.starred ? 'currentColor' : 'none'} /></div>
-            <input type="checkbox" className="checkbox" checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" />
+            <input type="checkbox" className="checkbox" tabIndex={-1} checked={selected} onChange={onSelect} onClick={(e) => e.stopPropagation()} aria-label="Select" />
           </div>
         </div>
         <div className="tc-subject">{t.latest?.subject || '(no subject)'}<span className="t-marks"><TrustMarks t={t} /></span></div>
@@ -562,7 +613,7 @@ function ThreadCardView({ t, index, focused, selected, active, showAccount, acco
         </div>
         {(labels.length > 0 || atts.length > 0 || t.has_draft || t.muted || t.snoozed_until) && (
           <div className="tc-foot">
-            {t.has_draft && <span className="t-label" style={{ color: 'var(--danger)' }}>Draft</span>}
+            {t.has_draft && <span className="t-label" style={{ color: 'var(--danger-text)' }}>Draft</span>}
             {labels.slice(0, 3).map((l) => <span key={l.name} className="t-label" style={l.color ? { background: l.color + '22', color: l.color } : {}}>{l.name}</span>)}
             {atts.slice(0, 3).map((n) => <span key={n} className="t-att" title={n}><Paperclip size={10} />{n}</span>)}
             {atts.length > 3 && <span className="t-att">+{atts.length - 3}</span>}

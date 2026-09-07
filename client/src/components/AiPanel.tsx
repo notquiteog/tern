@@ -74,7 +74,7 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
             </div>
           )}
           <AiThinking trace={thinking} busy={busy && !out} />
-          {(out || busy || error) && <div className="ai-preview">{error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : (final ?? out) || <span className="faint">{thinking.text ? 'Writing the draft…' : 'Thinking…'}</span>}</div>}
+          {(out || busy || error) && <div className="ai-preview">{error ? <span style={{ color: 'var(--danger-text)' }}>{error}</span> : (final ?? out) || <span className="faint">{thinking.text ? 'Writing the draft…' : 'Thinking…'}</span>}</div>}
           <div className="row">
             <Button size="sm" variant="ai" icon={busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} onClick={run} disabled={busy}>{out ? 'Regenerate' : 'Generate'}</Button>
             {busy && <Button size="sm" variant="ghost" onClick={() => abort.current?.abort()}>Stop</Button>}

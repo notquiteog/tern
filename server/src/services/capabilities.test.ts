@@ -82,7 +82,9 @@ test('every generation carries a consent', () => {
   for (const { file, text } of sources()) {
     if (file === 'ai/llm.ts') continue; // the definition itself
     // Each call to chat/chatStream/embed, from the opening paren to the
-    // matching one, must mention a consent.
+    // matching one, must carry a consent. chat and chatStream take theirs as
+    // a field of the options object; embed takes the texts first and the
+    // consent second, so both spellings count.
     for (const m of text.matchAll(/\b(chat|chatStream|embed)\(/g)) {
       const start = m.index! + m[0].length;
       let depth = 1, i = start;
@@ -93,7 +95,7 @@ test('every generation carries a consent', () => {
         i++;
       }
       const args = text.slice(start, i - 1);
-      if (!/consent\s*:/.test(args) && !/evalConsent\(/.test(args)) {
+      if (!/consent\s*:/.test(args) && !/capability\s*:/.test(args) && !/evalConsent\(/.test(args)) {
         offenders.push(`${file}: ${m[1]}(${args.slice(0, 70).replace(/\s+/g, ' ')}…)`);
       }
     }
@@ -115,6 +117,7 @@ test('the raw key is only reachable from files that are meant to have it', () =>
     'services/semantic.ts',
     'services/triage.ts',
     'services/attachments.ts',
+    'services/extract.ts',
     'services/commitments.ts',
     'services/brief.ts',
     'services/calendarMail.ts',

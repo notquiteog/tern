@@ -107,7 +107,7 @@ export default function SequenceEditorPage() {
             </Select>
           </Field>
           <div className="divider" />
-          <div className="row"><Button variant="ghost" icon={<Archive size={15} />} onClick={() => setStatus('archived')}>Archive sequence</Button><Button variant="ghost" icon={<Trash2 size={15} />} onClick={() => setDel(true)} style={{ color: 'var(--danger)' }}>Delete</Button></div>
+          <div className="row"><Button variant="ghost" icon={<Archive size={15} />} onClick={() => setStatus('archived')}>Archive sequence</Button><Button variant="ghost" icon={<Trash2 size={15} />} onClick={() => setDel(true)} style={{ color: 'var(--danger-text)' }}>Delete</Button></div>
         </div>
       )}
       <EnrollDialog open={enrollOpen} onClose={() => setEnrollOpen(false)} sid={sid} onDone={() => { qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['enrollments', sid] }); setTab('enrollments'); }} />
@@ -221,7 +221,7 @@ function Enrollments({ sid }: { sid: number }) {
         <DataTable rows={rows} rowKey={(e: any) => e.id} minWidth={760} columns={[
           { key: 'contact', header: 'Contact', primary: true, cell: (e: any) => [e.first_name, e.last_name].filter(Boolean).join(' ') || e.email },
           { key: 'email', secondary: true, className: 'small muted', cell: (e: any) => `${e.email}${e.company ? ` · ${e.company}` : ''}` },
-          { key: 'status', header: 'Status', cell: (e: any) => <><Badge kind={KIND[e.status]}>{e.status.replace('_', ' ')}</Badge>{e.error && <div className="small" style={{ color: 'var(--danger)' }}>{e.error}</div>}</> },
+          { key: 'status', header: 'Status', cell: (e: any) => <><Badge kind={KIND[e.status]}>{e.status.replace('_', ' ')}</Badge>{e.error && <div className="small" style={{ color: 'var(--danger-text)' }}>{e.error}</div>}</> },
           { key: 'step', header: 'Step', cell: (e: any) => e.current_step + 1 },
           { key: 'next', header: 'Next send', className: 'small muted', nowrap: true, cell: (e: any) => e.status === 'active' && e.next_run_at ? fmtDateTime(e.next_run_at) : '—' },
           { key: 'sent', header: 'Sent', cell: (e: any) => e.sent_count },

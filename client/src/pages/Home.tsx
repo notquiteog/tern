@@ -24,7 +24,7 @@ export default function HomePage() {
         <div className="card stat"><div className="stat-value">{fmtNumber(data.week.replied)} <span className="muted" style={{ fontSize: 14 }}>({replyRate}%)</span></div><div className="stat-label"><Reply size={12} /> replies</div></div>
         <div className="card stat"><div className="stat-value">{fmtNumber(data.enrollments?.active ?? 0)}</div><div className="stat-label"><Workflow size={12} /> contacts in sequences</div></div>
         <div className="card stat" style={data.reviewPending ? { borderColor: 'var(--accent)' } : {}}><div className="stat-value">{fmtNumber(data.reviewPending)}</div><div className="stat-label"><Sparkles size={12} /> drafts to review</div>{data.reviewPending > 0 && <Button size="sm" variant="soft" className="mt-8" onClick={() => nav('/review')}>Review now <ArrowRight size={13} /></Button>}</div>
-        {(data.week.bounced > 0 || data.week.failed > 0) && <div className="card stat"><div className="stat-value" style={{ color: 'var(--danger)' }}>{fmtNumber(data.week.bounced + data.week.failed)}</div><div className="stat-label"><AlertTriangle size={12} /> bounced or failed</div></div>}
+        {(data.week.bounced > 0 || data.week.failed > 0) && <div className="card stat"><div className="stat-value" style={{ color: 'var(--danger-text)' }}>{fmtNumber(data.week.bounced + data.week.failed)}</div><div className="stat-label"><AlertTriangle size={12} /> bounced or failed</div></div>}
       </div>
       <div className="grid-cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
         <div className="card">

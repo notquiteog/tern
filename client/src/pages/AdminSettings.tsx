@@ -723,7 +723,7 @@ function MailServerSettings() {
           {result.password && <div className="mt-8">Password: <code>{result.password}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(result.password); toast.success('Copied'); }}>Copy</Button><div className="small muted">Shown once. Tern keeps it encrypted for the connected account; give it to the person for their mail app.</div></div>}
           {result.user && <div className="mt-8">Tern login created: <b>@{result.user.username}</b></div>}
           {result.account && <div className="mt-8 small">Connected as a Tern account; the first sync is running.</div>}
-          {result.connectError && <div className="mt-8 small" style={{ color: 'var(--danger)' }}>Mailbox created but connecting it failed: {result.connectError}</div>}
+          {result.connectError && <div className="mt-8 small" style={{ color: 'var(--danger-text)' }}>Mailbox created but connecting it failed: {result.connectError}</div>}
           <Button size="sm" variant="ghost" className="mt-8" onClick={() => setResult(null)}>Dismiss</Button>
         </Callout>
       )}
@@ -826,7 +826,7 @@ function DnsSetup({ data }: { data: any }) {
         <Button variant="primary" icon={<RefreshCw size={15} className={checking ? 'spin' : ''} />} loading={checking} onClick={() => check(true)}>Check DNS</Button>
         <Button icon={<Copy size={15} />} onClick={() => copy(dns.zone)}>Copy all as zone file</Button>
         <Button icon={<RefreshCw size={15} />} variant="ghost" onClick={() => refetch()}>Reload from server</Button>
-        {summary && <span className={cls('small', summary.requiredOk ? 'strong' : 'muted')} style={{ color: summary.requiredOk ? 'var(--success)' : undefined }}>{summary.requiredOk ? 'All required records are in place.' : `${summary.ok} of ${summary.checked} records found.`}</span>}
+        {summary && <span className={cls('small', summary.requiredOk ? 'strong' : 'muted')} style={{ color: summary.requiredOk ? 'var(--success-text)' : undefined }}>{summary.requiredOk ? 'All required records are in place.' : `${summary.ok} of ${summary.checked} records found.`}</span>}
       </div>
       {outbound && <Callout kind={outbound.ok ? 'success' : 'warning'}>{outbound.note}{!outbound.ok && ' Ask the provider to open it, or configure a relay host in the Stalwart admin panel under Delivery → Routes.'}</Callout>}
       {groups.map((g) => (g !== 'clients' || showClients) && (
@@ -835,7 +835,7 @@ function DnsSetup({ data }: { data: any }) {
           <DataTable rows={dns.records.filter((r: any) => r.group === g)} rowKey={(r: any) => r.id} minWidth={720} columns={[
             { key: 'type', header: 'Type', width: 70, cell: (r: any) => <Badge>{r.type}</Badge> },
             { key: 'name', header: 'Name', primary: true, className: 'mono small', cell: (r: any) => <span style={{ display: 'block', maxWidth: 260, overflowWrap: 'anywhere' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)', fontWeight: 400 }}>{r.purpose}</div>}</span> },
-            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
+            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning-text)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
             { key: 'status', header: 'Status', width: 100, cell: (r: any) => { const c = checks[r.id]; return c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>; } },
             { key: 'act', actions: true, cell: (r: any) => <>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></> },
           ]} />
@@ -849,7 +849,7 @@ function DnsSetup({ data }: { data: any }) {
         </div>
       ))}
       <div className="row wrap"><Button variant="ghost" size="sm" onClick={() => setShowClients((v) => !v)}>{showClients ? 'Hide' : 'Show'} the mail-app autoconfig records ({clientRecords.length})</Button>
-        {clientsMissing > 0 && <span className="small" style={{ color: 'var(--warning)' }}>{clientsMissing} of them missing: Thunderbird, Apple Mail, Outlook and JMAP clients have no way to find this mailbox from the address alone.</span>}</div>
+        {clientsMissing > 0 && <span className="small" style={{ color: 'var(--warning-text)' }}>{clientsMissing} of them missing: Thunderbird, Apple Mail, Outlook and JMAP clients have no way to find this mailbox from the address alone.</span>}</div>
     </div>
   );
 }
@@ -947,7 +947,7 @@ function BrandLogo({ domain }: { domain: string }) {
               <div className="col" style={{ alignItems: 'center' }}><div className="small muted mb-8">Original</div><img src={trace.sourceUrl} alt="" style={{ width: 128, height: 128, objectFit: 'contain', borderRadius: 16, background: 'var(--bg-sunken)' }} /></div>
               <div className="col" style={{ alignItems: 'center' }}><div className="small muted mb-8">Traced vector</div><img src={previewUrl!} alt="" style={{ width: 128, height: 128, borderRadius: 16, background: 'var(--bg-sunken)' }} /></div>
               <div className="flex-1 col gap-4" style={{ minWidth: 240 }}>
-                <div className="small"><b>{Math.round(trace.bytes / 1024 * 10) / 10} KB</b> · {trace.colors} colours · {trace.paths} paths · traced at {trace.step.size}px{trace.bytes > maxBytes ? <span style={{ color: 'var(--danger)' }}> · still over the limit</span> : ''}</div>
+                <div className="small"><b>{Math.round(trace.bytes / 1024 * 10) / 10} KB</b> · {trace.colors} colours · {trace.paths} paths · traced at {trace.step.size}px{trace.bytes > maxBytes ? <span style={{ color: 'var(--danger-text)' }}> · still over the limit</span> : ''}</div>
                 <div className="form-grid-3">
                   <Field label={`Colours: ${traceOpts.colors}`}><input className="range" type="range" min={2} max={16} value={traceOpts.colors} onChange={(e) => setTraceOpts({ ...traceOpts, colors: Number(e.target.value) })} /></Field>
                   <Field label={`Detail: ${traceOpts.size}px`}><input className="range" type="range" min={32} max={160} step={8} value={traceOpts.size} onChange={(e) => setTraceOpts({ ...traceOpts, size: Number(e.target.value) })} /></Field>

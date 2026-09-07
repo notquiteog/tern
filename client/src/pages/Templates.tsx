@@ -59,7 +59,7 @@ export default function TemplatesPage() {
             {t.description && <div className="small muted mb-8">{t.description}</div>}
             <div className="strong small truncate mb-8">{t.subject || <span className="faint">(subject from the thread)</span>}</div>
             <div className="small muted" style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', minHeight: 54 }}>{String(t.body_html).replace(/<[^>]+>/g, ' ').trim() || 'Empty body'}</div>
-            {t.errors?.length > 0 && <div className="small mt-8" style={{ color: 'var(--danger)' }}><AlertTriangle size={12} /> {t.errors[0]}</div>}
+            {t.errors?.length > 0 && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}><AlertTriangle size={12} /> {t.errors[0]}</div>}
             <div className="row mt-16" style={{ justifyContent: 'space-between' }}>
               <span className="small faint">{t.fields?.length ? `${t.fields.length} field${t.fields.length === 1 ? '' : 's'}` : 'no fields'} · {t.sent_count ? `${t.sent_count} sent` : t.used_in_steps ? `in ${t.used_in_steps} step${t.used_in_steps === 1 ? '' : 's'}` : fmtDate(t.updated_at)}</span>
               <div className="row gap-4" onClick={(e) => e.stopPropagation()}>
@@ -192,13 +192,13 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
                   <div className="strong mb-8">{preview.subject || <span className="faint">(no subject)</span>}</div>
                   <SafeHtml className="msg-text" html={preview.html} />
                   {preview.errors?.length > 0 && <Callout kind="danger">{preview.errors.join(' · ')}</Callout>}
-                  {preview.missing?.length > 0 && <div className="small mt-8" style={{ color: 'var(--warning)' }}>Fields without a value for this contact (they render empty or use the fallback): {preview.missing.join(', ')}</div>}
+                  {preview.missing?.length > 0 && <div className="small mt-8" style={{ color: 'var(--warning-text)' }}>Fields without a value for this contact (they render empty or use the fallback): {preview.missing.join(', ')}</div>}
                 </div>
               )}
               <div className="row mt-8 wrap"><Select className="input-sm" style={{ width: 220 }} value={testAccount} onChange={(e) => setTestAccount(Number(e.target.value))}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.email}</option>)}</Select><Button size="sm" icon={<Send size={13} />} disabled={!testAccount} onClick={testSend}>Send a test to myself</Button></div>
             </div>
           )}
-          {errors.length > 0 && tab === 'write' && <div className="small mt-8" style={{ color: 'var(--danger)' }}>{errors.join(' · ')}</div>}
+          {errors.length > 0 && tab === 'write' && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}>{errors.join(' · ')}</div>}
           <div className="row mt-16 wrap gap-16">
             <div className="row"><Toggle checked={includeSignature} onChange={setIncludeSignature} /><span className="small">Append the account signature</span></div>
             <div className="row"><Toggle checked={starred} onChange={setStarred} /><span className="small">Star (shown first)</span></div>

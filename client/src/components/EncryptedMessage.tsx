@@ -115,7 +115,7 @@ export function EncryptedMessage({ m, accountId, kind }: { m: any; accountId: nu
     return (
       <div className="pgp-locked">
         <div className="row"><Lock size={18} /><div className="flex-1"><div className="strong">Encrypted message</div><div className="small muted">Only your key can open it. It is decrypted in this browser and never stored readable.</div></div><Button variant="primary" size="sm" icon={state === 'working' ? undefined : <LockOpen size={14} />} loading={state === 'working'} onClick={unlock}>Unlock</Button></div>
-        {error && <div className="small mt-8" style={{ color: 'var(--danger)' }}>{error}</div>}
+        {error && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}>{error}</div>}
       </div>
     );
   }
