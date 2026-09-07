@@ -324,6 +324,17 @@ export async function modelContextLimit(baseUrl: string, model: string): Promise
 
 export function forgetModelCapabilities(): void { described.clear(); }
 
+// One model's answers, dropped. Deleting a model and pulling it again gives a
+// different build under the same name, so the remembered capabilities have to
+// go with it — otherwise a model that has just been replaced is still
+// described by whatever the old one could do.
+export function forgetModel(baseUrl: string, model: string): void {
+  const prefix = `${normalizeBaseUrl(baseUrl)}|`;
+  for (const key of described.keys()) {
+    if (key === `${prefix}${model}` || key === `${prefix}${model.replace(/:latest$/, '')}` || key === `${prefix}${model}:latest`) described.delete(key);
+  }
+}
+
 // How the model picks its next token. Shared so the Ollama and the
 // OpenAI-compatible paths sample the same way. Min-p is only sent when it is
 // in use: a zero would be a no-op, and an endpoint that does not know the
@@ -702,7 +713,9 @@ export async function checkProvider(candidate: AiSettings): Promise<ProviderChec
   }
 }
 
-export async function listModels(): Promise<{ name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string; capabilities: string[] }[]> {
+export interface InstalledModel { name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string; capabilities: string[] }
+
+export async function listModels(): Promise<InstalledModel[]> {
   const s = await getAiSettings();
   const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
   if (!res.ok) throw new Error(httpHint(res.status, s));
@@ -723,6 +736,42 @@ export async function loadedModels(): Promise<{ name: string; size: number; size
   if (!res.ok) return [];
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
+}
+
+// Everything the Models tables are drawn from, asked of the model server
+// every time and never cached here.
+//
+// This is the whole point of the endpoint that calls it: what Ollama holds is
+// not Tern's to know. Somebody pulls a model from the perch console on the
+// GPU box, or `ollama rm` on the host, and the admin page has to show that
+// within seconds rather than after whatever cache happens to expire. A
+// failure is reported as a failure, too — an empty table and an unreachable
+// server used to look identical, which read as "you have no models" about a
+// box with forty gigabytes of them.
+export interface LiveModels {
+  ok: boolean;
+  provider: string;
+  baseUrl: string;
+  version?: string;
+  error?: string;
+  models: InstalledModel[];
+  loaded: { name: string; size: number; sizeVram: number; expiresAt: string }[];
+  at: string;
+}
+
+export async function liveModels(): Promise<LiveModels> {
+  const s = await getAiSettings();
+  const at = new Date().toISOString();
+  const base = { provider: s.provider, baseUrl: s.baseUrl, models: [], loaded: [], at };
+  if (s.provider !== 'ollama') return { ...base, ok: false, error: 'The provider is not Ollama, so it has no model list to manage' };
+  const health = await ollamaHealth(s);
+  if (!health.ok) return { ...base, ok: false, error: health.error };
+  try {
+    const [models, loaded] = await Promise.all([listModels(), loadedModels().catch(() => [])]);
+    return { ...base, ok: true, version: health.version, models, loaded };
+  } catch (e) {
+    return { ...base, ok: false, version: health.version, error: (e as Error).message };
+  }
 }
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {
@@ -747,19 +796,47 @@ export async function* pullModel(name: string, signal?: AbortSignal): AsyncGener
   log.info('model pulled', { name });
 }
 
-export async function deleteModel(name: string): Promise<void> {
+// A deletion is only done when the model server agrees it is done.
+//
+// A 200 from /api/delete was previously the whole story, and it is not: a
+// remote Ollama behind a proxy can answer 200 to a request it never applied,
+// perch refuses management with a 403 that used to arrive as an unexplained
+// failure, and a name that differs only by `:latest` deletes nothing while
+// reporting success. The page then showed a model that was still on disk as
+// gone until the next reload put it back. So the list is read again
+// afterwards and the answer is what that list says, not what the status code
+// claimed.
+export async function deleteModel(name: string): Promise<InstalledModel[]> {
   const s = await getAiSettings();
+  if (s.provider !== 'ollama') throw new Error('Only an Ollama model can be deleted from here');
   // Dropped from memory first. Ollama removes the files either way, but a
   // copy that is already resident stays in RAM holding exactly the memory
   // the deletion was meant to give back.
   await unloadModel(s.baseUrl, name).catch(() => {});
-  const res = await outboundFetch(`${s.baseUrl}/api/delete`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name }) }, trustOf(s));
+  const res = await outboundFetch(`${s.baseUrl}/api/delete`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+    // `model` is what current Ollama reads; `name` is what it read before
+    // 0.4 and what some compatible servers still expect. Sending both costs
+    // nothing and covers a delete that silently matched nothing.
+    body: JSON.stringify({ model: name, name }),
+    signal: AbortSignal.timeout(60_000),
+  }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
-    if (res.status === 404) throw new Error(`Ollama has no model called "${name}"`);
-    throw new Error(`Ollama refused to delete "${name}": HTTP ${res.status}${body ? ` ${body}` : ''}`);
+    if (res.status === 404) throw new Error(`That server has no model called "${name}"`);
+    if (res.status === 403) throw new Error(`That server refused to delete "${name}": ${body || 'model management is switched off on it'}`);
+    throw new Error(`That server refused to delete "${name}": ${httpHint(res.status, s)}${body ? ` ${body}` : ''}`);
+  }
+  forgetModel(s.baseUrl, name);
+  // The real state. If listing fails the deletion is still reported as done —
+  // the server accepted it — but nothing is invented about what remains.
+  const after = await listModels().catch(() => null);
+  if (after && after.some((m) => sameModel(m.name, name))) {
+    throw new Error(`"${name}" is still on that server after the delete was accepted. It may be a model the server will not remove, or a proxy answered for it.`);
   }
   log.info('model deleted', { name });
+  return after ?? [];
 }
 
 // ---------- Residency ----------

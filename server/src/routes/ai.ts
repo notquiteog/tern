@@ -3,7 +3,8 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
-import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
@@ -21,7 +22,7 @@ import { requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
 import { invalidateVectorsFrom } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
-import { getVoiceSettings, saveVoiceSettings, voiceDefaults, voiceHealth, type VoiceSettings } from '../services/voice.js';
+import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
 import { inspectCertificate, normalizeBaseUrl } from '../util/outbound.js';
 
@@ -289,24 +290,154 @@ aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
   res.json({ health: await voiceHealth(trial), local: await isLocalReach(trial.baseUrl) });
 });
 
-aiRouter.post('/models/pull', requireAdmin, async (req, res) => {
-  const { name } = parse(z.object({ name: z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/) }), req.body);
-  const send = sse(res);
-  const abort = new AbortController();
-  req.on('close', () => abort.abort());
-  try {
-    for await (const p of pullModel(name, abort.signal)) send('progress', p);
-    send('done', { ok: true });
-  } catch (e) {
-    send('error', { error: (e as Error).message });
-  }
-  res.end();
+// ---------- The transcriber's models ----------
+//
+// The same treatment as the writing model, and for the same reason: the model
+// a transcriber has is the transcriber's business, not something Tern should
+// be remembering. Asked live on every call, so a model downloaded from
+// somewhere else — or removed there — shows up here within a poll.
+//
+// What comes back also says what this particular server can do, because that
+// varies more than the transcription shape suggests: the bundled whisper.cpp
+// has one model and no model API, speaches has many and a full one. The page
+// draws the controls that answer justifies rather than offering buttons that
+// cannot work.
+aiRouter.get('/voice/models', requireAdmin, async (_req, res) => {
+  const view = await voiceModelView();
+  res.json({ ...view, pulls: listPulls('voice') });
 });
 
-aiRouter.delete('/models/:name', requireAdmin, async (req, res) => {
-  await deleteModel(String(req.params.name));
-  res.json({ ok: true });
+const voiceModelBody = z.object({ id: z.string().min(1).max(200).refine(validVoiceModelId, 'That is not a model name') });
+
+aiRouter.post('/voice/models/pull', requireAdmin, async (req, res) => {
+  const { id } = parse(voiceModelBody, req.body);
+  const caps = await voiceCapabilities();
+  if (!caps.manages) throw badRequest('That transcriber does not download models: it serves the ones it was started with');
+  startPull('voice', id, async (emit, signal) => {
+    // speaches downloads in one blocking call and says nothing until it is
+    // finished, so there are no byte counts to report and none are invented.
+    // The job still survives the page, still confirms the result against the
+    // model list, and still says how long it has been going.
+    emit({ status: 'downloading' });
+    await pullVoiceModel(id, signal);
+  });
+  await streamPull(res, 'voice', id);
 });
+
+aiRouter.get('/voice/models/pulls', requireAdmin, (_req, res) => {
+  res.json({ pulls: listPulls('voice') });
+});
+
+aiRouter.post('/voice/models/pull/cancel', requireAdmin, async (req, res) => {
+  const { id } = parse(voiceModelBody, req.body);
+  res.json({ cancelled: cancelPull('voice', id) });
+});
+
+// The id is a Hugging Face repository path and contains slashes, so it
+// travels in the query string rather than the path.
+aiRouter.delete('/voice/models', requireAdmin, async (req, res) => {
+  const { id } = parse(voiceModelBody, { id: String(req.query.id ?? '') });
+  const installed = await deleteVoiceModel(id);
+  // Deleting the model the install was set to use leaves the setting naming
+  // something that is not there, which would fail at the microphone. It is
+  // cleared, which means "whatever the server defaults to" — the same as a
+  // fresh install.
+  const current = await getVoiceSettings();
+  let settings = current;
+  if (current.model && current.model === id) settings = await saveVoiceSettings({ model: '' });
+  res.json({ ok: true, deleted: id, installed, modelCleared: settings !== current });
+});
+
+// The model tables, read from the model server on every call.
+//
+// Separate from /status on purpose. /status carries the catalogue, the
+// tuning, the presets and a database count, and is far too heavy to poll;
+// this is two HTTP calls to Ollama and is polled every few seconds while the
+// page is open, which is what makes the list live rather than a snapshot from
+// whenever the page was opened. It matters most for a model server that is
+// somebody else's — a perch on the GPU box, where models appear and vanish
+// without Tern being involved at all.
+aiRouter.get('/models', requireAdmin, async (_req, res) => {
+  const live = await liveModels();
+  res.json({ ...live, pulls: listPulls('model') });
+});
+
+const modelName = z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/);
+
+// Downloads run as jobs, so closing the page does not cancel one.
+//
+// The response is still an event stream — a bar that moves is the difference
+// between "working" and "stuck" — but the stream is a view of a job rather
+// than the job itself. Asking twice for the same model attaches to the
+// download already running; reloading the page reattaches; and the only thing
+// that stops one is /models/pull/cancel.
+aiRouter.post('/models/pull', requireAdmin, async (req, res) => {
+  const { name } = parse(z.object({ name: modelName }), req.body);
+  const s = await getAiSettings();
+  if (s.provider !== 'ollama') throw badRequest('Only an Ollama model can be downloaded from here');
+  startPull('model', name, async (emit, signal) => {
+    for await (const line of pullModel(name, signal)) emit(line);
+  });
+  await streamPull(res, 'model', name);
+});
+
+// What is downloading now, for a page that has just been opened or reloaded.
+aiRouter.get('/models/pulls', requireAdmin, (_req, res) => {
+  res.json({ pulls: listPulls('model') });
+});
+
+aiRouter.post('/models/pull/cancel', requireAdmin, async (req, res) => {
+  const { name } = parse(z.object({ name: modelName }), req.body);
+  res.json({ cancelled: cancelPull('model', name) });
+});
+
+// Shared by the model and the transcriber sides: replay where the job is now,
+// then follow it. Detaching does not touch the download.
+async function streamPull(res: any, kind: 'model' | 'voice', name: string): Promise<void> {
+  const send = sse(res);
+  await new Promise<void>((resolve) => {
+    let done = false;
+    let detach: (() => void) | null = null;
+    const stop = (view?: PullView) => {
+      if (done) return;
+      done = true;
+      detach?.();
+      if (view) send(view.state === 'done' ? 'done' : view.state === 'running' ? 'detached' : 'error', view);
+      resolve();
+    };
+    detach = watchPull(kind, name, (view) => {
+      send('progress', view);
+      if (view.state !== 'running') stop(view);
+    });
+    if (!detach) { send('error', { state: 'error', error: 'that download is no longer running' }); resolve(); return; }
+    // The client going away detaches the watcher and nothing else: the job
+    // carries on, and the next page to ask picks it up where it is.
+    res.on('close', () => stop());
+  });
+  res.end();
+}
+
+// A deletion, and then the truth about what is left.
+//
+// The name travels in the query string as well as the path because a model
+// tag legitimately contains a slash — `huihui_ai/qwen3.5-abliterated:9b` —
+// and a percent-encoded one does not survive every proxy in front of Tern.
+// The body of the answer is the live list, so the page redraws from what the
+// server actually has rather than from an assumption that the row it just
+// asked about is gone.
+async function handleDelete(req: any, res: any): Promise<void> {
+  const raw = String(req.query.name ?? req.params.name ?? '');
+  const { name } = parse(z.object({ name: modelName }), { name: raw });
+  const models = await deleteModel(name);
+  const loaded = await loadedModels().catch(() => []);
+  res.json({ ok: true, deleted: name, models, loaded });
+}
+
+// Two routes rather than one optional segment: Express 5 refuses `:name?`
+// outright — path-to-regexp v8 dropped the suffix and throws while the router
+// is being built, which takes the whole server down rather than one endpoint.
+aiRouter.delete('/models', requireAdmin, handleDelete);
+aiRouter.delete('/models/:name', requireAdmin, handleDelete);
 
 // Frees the memory a resident model is holding without deleting it from disk.
 // Ollama loads it again on the next request, so this costs a slow first

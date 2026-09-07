@@ -83,13 +83,232 @@ export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<
     [JSON.stringify(next)],
   );
   cache = null;
+  // A new address is a different server with different abilities, so what the
+  // old one could do is forgotten with it.
+  capCache = null;
   return next;
 }
 
 export function voiceDefaults(): VoiceSettings { return { ...VOICE_DEFAULTS }; }
 
+// ---------- What this particular transcriber can do ----------
+//
+// "A server speaking OpenAI's transcription shape" covers two very different
+// things, and the Dictation card was written as though it covered one.
+//
+// The bundled whisper.cpp is started with a single model file and has no
+// model API at all: /v1/models is a 404 there, and there is nothing to list,
+// download or delete. speaches (and faster-whisper-server before it) hosts
+// many, lists them at /v1/models, publishes a registry of everything it could
+// fetch at /v1/registry, and downloads and deletes through POST and DELETE on
+// /v1/models/{id}. A hosted API lists models and lets you manage none of them.
+//
+// So the card asks rather than assumes. What it can do is probed once and
+// remembered for a minute, and the page shows the controls the answer
+// justifies — which is why the model name is a free-text box against
+// whisper.cpp and a live table against speaches, instead of a free-text box
+// that quietly does not match anything against either.
+export interface VoiceCapabilities {
+  /** Reachable at all. */
+  ok: boolean;
+  error?: string;
+  /** Answers GET /v1/models with a list. */
+  lists: boolean;
+  /** Publishes GET /v1/registry, which is what makes downloading possible. */
+  registry: boolean;
+  /** POST and DELETE on /v1/models/{id} are worth offering. */
+  manages: boolean;
+  /** Told apart for the page's wording, not for behaviour. */
+  kind: 'speaches' | 'openai-shaped' | 'whisper.cpp' | 'unknown';
+}
+
+let capCache: { at: number; key: string; value: VoiceCapabilities } | null = null;
+
+export function forgetVoiceCapabilities(): void { capCache = null; }
+
+export async function voiceCapabilities(s?: VoiceSettings): Promise<VoiceCapabilities> {
+  const cfg = s ?? (await getVoiceSettings());
+  const key = `${cfg.baseUrl}|${cfg.apiKey ? 'k' : ''}`;
+  if (capCache && capCache.key === key && Date.now() - capCache.at < 60_000) return capCache.value;
+  const value = await probeVoice(cfg);
+  capCache = { at: Date.now(), key, value };
+  return value;
+}
+
+async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
+  const none: VoiceCapabilities = { ok: false, lists: false, registry: false, manages: false, kind: 'unknown' };
+  if (!cfg.baseUrl) return { ...none, error: 'No transcriber address is set' };
+  const headers = voiceAuthHeaders(cfg);
+  let lists = false;
+  try {
+    const res = await fetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) });
+    if (res.status === 401 || res.status === 403) return { ...none, error: `The transcriber refused the API key (HTTP ${res.status})` };
+    lists = res.ok;
+  } catch (e) {
+    return { ...none, error: (e as Error).message };
+  }
+  if (!lists) {
+    // No model list. whisper.cpp serves / and the inference path and nothing
+    // else, so a live root here is a working transcriber with exactly one
+    // model — which the card then says, rather than showing an empty table.
+    try {
+      const root = await fetch(`${cfg.baseUrl}/`, { headers, signal: AbortSignal.timeout(6000) });
+      if (root.status < 500) return { ...none, ok: true, kind: 'whisper.cpp' };
+      return { ...none, error: `HTTP ${root.status}` };
+    } catch (e) {
+      return { ...none, error: (e as Error).message };
+    }
+  }
+  // A registry is the thing that separates a transcriber that can fetch a
+  // model from one that only reports the models it was given.
+  let registry = false;
+  try {
+    const res = await fetch(`${cfg.baseUrl}/v1/registry?task=automatic-speech-recognition`, { headers, signal: AbortSignal.timeout(8000) });
+    registry = res.ok;
+  } catch { /* no registry: listed but not managed */ }
+  return { ok: true, lists: true, registry, manages: registry, kind: registry ? 'speaches' : 'openai-shaped' };
+}
+
+// ---------- The models, live ----------
+
+export interface VoiceModel {
+  id: string;
+  task?: string;
+  language?: string[] | string;
+  ownedBy?: string;
+  created?: number;
+  installed: boolean;
+}
+
+function readModelList(j: any, installed: boolean): VoiceModel[] {
+  const rows = Array.isArray(j?.data) ? j.data : Array.isArray(j?.models) ? j.models : [];
+  return rows
+    .map((m: any) => ({
+      id: String(m?.id ?? m?.model ?? ''),
+      task: typeof m?.task === 'string' ? m.task : undefined,
+      language: m?.language,
+      ownedBy: typeof m?.owned_by === 'string' ? m.owned_by : undefined,
+      created: typeof m?.created === 'number' ? m.created : undefined,
+      installed,
+    }))
+    .filter((m: VoiceModel) => Boolean(m.id));
+}
+
+async function voiceJson(cfg: VoiceSettings, path: string, init: RequestInit = {}, timeoutMs = 10_000): Promise<any> {
+  const res = await fetch(`${cfg.baseUrl}${path}`, {
+    ...init,
+    headers: { ...voiceAuthHeaders(cfg), ...(init.headers ?? {}) },
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).slice(0, 200);
+    throw badRequest(`The transcriber answered HTTP ${res.status}${body ? `: ${body}` : ''}`);
+  }
+  return res.json().catch(() => null);
+}
+
+/** What the transcriber has now. Asked every time; nothing about it is cached. */
+export async function listVoiceModels(s?: VoiceSettings): Promise<VoiceModel[]> {
+  const cfg = s ?? (await getVoiceSettings());
+  const j = await voiceJson(cfg, '/v1/models');
+  // A server that hosts several tasks lists them all; only the ones that turn
+  // speech into text belong on a dictation page.
+  return readModelList(j, true).filter((m) => !m.task || m.task === 'automatic-speech-recognition');
+}
+
+/** What it could fetch but has not. Empty for a transcriber with no registry. */
+export async function voiceRegistry(s?: VoiceSettings): Promise<VoiceModel[]> {
+  const cfg = s ?? (await getVoiceSettings());
+  const caps = await voiceCapabilities(cfg);
+  if (!caps.registry) return [];
+  const j = await voiceJson(cfg, '/v1/registry?task=automatic-speech-recognition', {}, 20_000).catch(() => null);
+  return readModelList(j, false);
+}
+
+/** Both lists in one call, plus what the page is allowed to offer for them. */
+export async function voiceModelView(s?: VoiceSettings): Promise<{
+  capabilities: VoiceCapabilities; installed: VoiceModel[]; available: VoiceModel[]; error?: string; at: string;
+}> {
+  const cfg = s ?? (await getVoiceSettings());
+  const capabilities = await voiceCapabilities(cfg);
+  const at = new Date().toISOString();
+  if (!capabilities.lists) return { capabilities, installed: [], available: [], error: capabilities.error, at };
+  try {
+    const installed = await listVoiceModels(cfg);
+    const have = new Set(installed.map((m) => m.id));
+    const available = (await voiceRegistry(cfg).catch(() => [])).filter((m) => !have.has(m.id));
+    return { capabilities, installed, available, at };
+  } catch (e) {
+    return { capabilities, installed: [], available: [], error: (e as Error).message, at };
+  }
+}
+
+// A model id is a Hugging Face repository path — `Systran/faster-whisper-small`
+// — or one of the server's own aliases. It goes into a URL path, so it is
+// checked before it gets there rather than trusted because an admin typed it.
+export function validVoiceModelId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}){0,2}$/.test(String(id ?? ''));
+}
+
+const encodeModelId = (id: string) => id.split('/').map(encodeURIComponent).join('/');
+
+/**
+ * Fetch a model onto the transcriber.
+ *
+ * speaches downloads in one blocking call and reports nothing while it works,
+ * so there is no byte count to show — the job that wraps this says
+ * "downloading" and how long it has been doing it, and the page says plainly
+ * that this server does not report progress. What it does not do is guess a
+ * percentage, and what it does do is confirm the result against the model
+ * list rather than against the status code.
+ */
+export async function pullVoiceModel(id: string, signal?: AbortSignal): Promise<void> {
+  const cfg = await getVoiceSettings();
+  const caps = await voiceCapabilities(cfg);
+  if (!caps.manages) throw badRequest('That transcriber does not download models: it serves the ones it was started with');
+  const res = await fetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+    method: 'POST',
+    headers: voiceAuthHeaders(cfg),
+    signal: signal ?? AbortSignal.timeout(60 * 60 * 1000),
+  });
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).slice(0, 200);
+    if (res.status === 404) throw badRequest(`The transcriber does not know a model called "${id}"`);
+    if (res.status === 401) throw badRequest(`"${id}" is a gated repository: the transcriber needs its own Hugging Face token to fetch it`);
+    throw badRequest(`The transcriber refused to download "${id}": HTTP ${res.status}${body ? ` ${body}` : ''}`);
+  }
+  await res.text().catch(() => '');
+  const after = await listVoiceModels(cfg).catch(() => null);
+  if (after && !after.some((m) => m.id === id)) {
+    throw new Error(`"${id}" was accepted but is still not in the transcriber's model list`);
+  }
+}
+
+/** Remove one, and believe the list rather than the status code. */
+export async function deleteVoiceModel(id: string): Promise<VoiceModel[]> {
+  const cfg = await getVoiceSettings();
+  const caps = await voiceCapabilities(cfg);
+  if (!caps.manages) throw badRequest('That transcriber does not manage models from here');
+  const res = await fetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+    method: 'DELETE',
+    headers: voiceAuthHeaders(cfg),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).slice(0, 200);
+    if (res.status === 404) throw badRequest(`The transcriber has no model called "${id}"`);
+    throw badRequest(`The transcriber refused to delete "${id}": HTTP ${res.status}${body ? ` ${body}` : ''}`);
+  }
+  await res.text().catch(() => '');
+  const after = await listVoiceModels(cfg).catch(() => null);
+  if (after && after.some((m) => m.id === id)) {
+    throw new Error(`"${id}" is still on the transcriber after the delete was accepted`);
+  }
+  return after ?? [];
+}
+
 // For tests, and for the settings route after it writes.
-export function forgetVoiceSettings(): void { cache = null; }
+export function forgetVoiceSettings(): void { cache = null; capCache = null; }
 
 // A minute of speech is a long sentence; anything beyond it is a recording
 // somebody meant to stop. Sixteen-bit mono at 16 kHz is about 2 MB a minute,

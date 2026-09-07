@@ -24,6 +24,39 @@ export const useTemplates = () => useQuery({ queryKey: ['templates'], queryFn: (
 export const useSequences = () => useQuery({ queryKey: ['sequences'], queryFn: () => api.get<{ sequences: any[] }>('/api/sequences').then((r) => r.sequences) });
 export const useAiStatus = () => useQuery({ queryKey: ['ai-status'], queryFn: () => api.get<any>('/api/ai/status'), staleTime: 30_000 });
 
+// What the model server has right now, asked of it every few seconds while
+// the page is open.
+//
+// The catalogue, the tuning and the recommendation come from /api/ai/status
+// and change when an admin changes them; this does not. Models appear and
+// disappear on the other machine — somebody pulls one in the perch console,
+// or runs `ollama rm` on the host — and a table drawn from a cache is a table
+// that is wrong without saying so. `staleTime: 0` and a poll are the whole
+// point: the list is the model server's answer, not Tern's memory of it.
+export const useAiModels = (enabled = true) => useQuery({
+  queryKey: ['ai-models'],
+  queryFn: () => api.get<any>('/api/ai/models'),
+  staleTime: 0,
+  refetchInterval: 5_000,
+  // A download in another tab, or on the box itself, should show up on
+  // returning to this one without waiting out a poll.
+  refetchOnWindowFocus: true,
+  enabled,
+});
+
+// The transcriber's models, on the same terms. It also reports what that
+// particular server can do, because "speaks OpenAI's transcription shape"
+// covers both a whisper.cpp with one fixed model and a speaches with a
+// registry it can download from.
+export const useVoiceModels = (enabled = true) => useQuery({
+  queryKey: ['voice-models'],
+  queryFn: () => api.get<any>('/api/ai/voice/models'),
+  staleTime: 0,
+  refetchInterval: 10_000,
+  refetchOnWindowFocus: true,
+  enabled,
+});
+
 // Which accounts the mail views show: 'all' or one account id.
 export function useAccountFilter(): [string, (v: string) => void] {
   return useLocalStorage<string>('tern.accountFilter', 'all');

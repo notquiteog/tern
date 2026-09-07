@@ -1,19 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanTranscript, voiceDefaults, voiceHealth, acceptableType, type VoiceSettings } from './voice.js';
+import { cleanTranscript, forgetVoiceCapabilities, listVoiceModels, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, acceptableType, type VoiceSettings } from './voice.js';
 
 const settings = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({ ...voiceDefaults(), enabled: true, baseUrl: 'http://whisper:8080', ...over });
 
 // Stands in for the transcriber. Returns whatever the table says for the
 // path being asked about, and records what it was sent.
 function stubFetch(routes: Record<string, { status: number; body?: unknown }>) {
-  const seen: { url: string; headers: Record<string, string> }[] = [];
+  const seen: { url: string; method: string; headers: Record<string, string> }[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const url = String(input);
-    seen.push({ url, headers: { ...(init.headers ?? {}) } });
+    const method = String(init.method ?? 'GET').toUpperCase();
+    seen.push({ url, method, headers: { ...(init.headers ?? {}) } });
+    // A route may be keyed by path or by "METHOD path", so a test can say
+    // that DELETE is answered differently from GET on the same path.
     const path = new URL(url).pathname;
-    const hit = routes[path] ?? { status: 404 };
+    const hit = routes[`${method} ${path}`] ?? routes[path] ?? { status: 404 };
     return {
       ok: hit.status >= 200 && hit.status < 300,
       status: hit.status,
@@ -83,4 +86,99 @@ test('non-speech markers and the silence hallucinations are dropped', () => {
 test('only audio the server reads is accepted', () => {
   assert.equal(acceptableType('audio/webm;codecs=opus'), true);
   assert.equal(acceptableType('application/json'), false);
+});
+
+
+// ---------- What the transcriber can do ----------
+//
+// Everything below exists because "an OpenAI-shaped transcriber" is not one
+// thing. The card used to offer the same free-text model box to a whisper.cpp
+// that has exactly one model and to a speaches that has forty, and neither
+// was well served by it.
+
+test('a transcriber with no model list is reachable and manages nothing', async () => {
+  forgetVoiceCapabilities();
+  const f = stubFetch({ '/v1/models': { status: 404 }, '/': { status: 200 } });
+  try {
+    const caps = await voiceCapabilities(settings());
+    assert.equal(caps.ok, true);
+    assert.equal(caps.lists, false);
+    assert.equal(caps.manages, false);
+    assert.equal(caps.kind, 'whisper.cpp');
+  } finally { f.restore(); forgetVoiceCapabilities(); }
+});
+
+test('a registry is what marks a transcriber as one that can download', async () => {
+  forgetVoiceCapabilities();
+  const f = stubFetch({
+    '/v1/models': { status: 200, body: { data: [{ id: 'Systran/faster-whisper-small' }] } },
+    '/v1/registry': { status: 200, body: { data: [] } },
+  });
+  try {
+    const caps = await voiceCapabilities(settings());
+    assert.equal(caps.lists, true);
+    assert.equal(caps.manages, true);
+    assert.equal(caps.kind, 'speaches');
+  } finally { f.restore(); forgetVoiceCapabilities(); }
+});
+
+test('a transcriber that lists but has no registry is not offered downloads', async () => {
+  forgetVoiceCapabilities();
+  const f = stubFetch({ '/v1/models': { status: 200, body: { data: [{ id: 'whisper-1' }] } } });
+  try {
+    const caps = await voiceCapabilities(settings());
+    assert.equal(caps.lists, true);
+    assert.equal(caps.registry, false);
+    assert.equal(caps.manages, false);
+    assert.equal(caps.kind, 'openai-shaped');
+  } finally { f.restore(); forgetVoiceCapabilities(); }
+});
+
+test('only speech models are listed: a server that also does text to speech lists both', async () => {
+  const f = stubFetch({
+    '/v1/models': { status: 200, body: { data: [
+      { id: 'Systran/faster-whisper-small', task: 'automatic-speech-recognition' },
+      { id: 'speaches-ai/Kokoro-82M', task: 'text-to-speech' },
+    ] } },
+  });
+  try {
+    const models = await listVoiceModels(settings());
+    assert.deepEqual(models.map((m) => m.id), ['Systran/faster-whisper-small']);
+  } finally { f.restore(); }
+});
+
+test('the registry drops what is already downloaded, so nothing is offered twice', async () => {
+  forgetVoiceCapabilities();
+  const f = stubFetch({
+    '/v1/models': { status: 200, body: { data: [{ id: 'Systran/faster-whisper-small' }] } },
+    '/v1/registry': { status: 200, body: { data: [{ id: 'Systran/faster-whisper-small' }, { id: 'Systran/faster-whisper-medium' }] } },
+  });
+  try {
+    const view = await voiceModelView(settings());
+    assert.deepEqual(view.installed.map((m) => m.id), ['Systran/faster-whisper-small']);
+    assert.deepEqual(view.available.map((m) => m.id), ['Systran/faster-whisper-medium']);
+  } finally { f.restore(); forgetVoiceCapabilities(); }
+});
+
+test('an unreachable transcriber reports why rather than an empty list', async () => {
+  forgetVoiceCapabilities();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error('connect ECONNREFUSED'); }) as any;
+  try {
+    const view = await voiceModelView(settings());
+    assert.equal(view.installed.length, 0);
+    assert.match(view.error ?? '', /ECONNREFUSED/);
+    assert.equal(view.capabilities.ok, false);
+  } finally { globalThis.fetch = original; forgetVoiceCapabilities(); }
+});
+
+// A model id becomes part of a URL path, so it is checked before it gets
+// there rather than trusted because an admin typed it.
+test('a model id has to look like a repository path', () => {
+  for (const ok of ['whisper-1', 'Systran/faster-whisper-large-v3', 'deepdml/faster-whisper-large-v3-turbo-ct2']) {
+    assert.equal(validVoiceModelId(ok), true, ok);
+  }
+  for (const bad of ['', '../etc/passwd', 'a/b/c/d/e', 'has space', 'x?y=1', '/leading']) {
+    assert.equal(validVoiceModelId(bad), false, bad);
+  }
 });

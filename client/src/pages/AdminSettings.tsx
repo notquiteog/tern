@@ -7,7 +7,7 @@ import { useAuth } from '../state/auth';
 import { useAppName } from '../components/Brand';
 import { renderIcons } from '../lib/pwaIcons';
 import { useToast } from '../state/toast';
-import { useAiStatus } from '../lib/queries';
+import { useAiModels, useAiStatus, useVoiceModels } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, ResetButton, Select, Spinner, Textarea, Toggle, Tabs, Avatar } from '../components/ui';
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
 import { DataTable } from '../components/DataTable';
@@ -438,6 +438,145 @@ function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch:
   );
 }
 
+// ---------- Downloads ----------
+//
+// A pull is a job on the server now, not the HTTP request that asked for it,
+// which changes what this side has to do. Starting one opens an event stream
+// for the fine-grained updates; losing that stream — switching page, reloading,
+// a laptop closing — no longer stops anything, and the download is picked up
+// again from the list the models query polls. So the bar can only be dismissed
+// by the job ending or by pressing Cancel, and it tells the truth after a
+// reload, which is when people used to assume the download had died.
+interface PullView {
+  id: string; kind: 'model' | 'voice'; name: string;
+  state: 'running' | 'done' | 'error' | 'cancelled';
+  status: string; completed: number; total: number;
+  pct: number | null; bytesPerSec: number | null; etaSeconds: number | null;
+  startedAt: number; endedAt: number | null; error?: string;
+}
+
+function useDownloads(kind: 'model' | 'voice', polled: PullView[] | undefined, onSettled: () => void) {
+  const toast = useToast();
+  const [live, setLive] = useState<Record<string, PullView>>({});
+  const settle = useRef(onSettled);
+  settle.current = onSettled;
+
+  // Anything this tab started streams here; anything else — another admin,
+  // another tab, this tab before it was reloaded — arrives on the poll. The
+  // stream wins where both have an opinion, because it is newer.
+  const merged: Record<string, PullView> = {};
+  for (const p of polled ?? []) merged[p.name] = p;
+  for (const [name, p] of Object.entries(live)) merged[name] = p;
+  const running = Object.values(merged).filter((p) => p.state === 'running');
+
+  const start = async (name: string) => {
+    if (merged[name]?.state === 'running') return;
+    setLive((m) => ({ ...m, [name]: { id: `${kind}:${name}`, kind, name, state: 'running', status: 'starting', completed: 0, total: 0, pct: null, bytesPerSec: null, etaSeconds: null, startedAt: Date.now(), endedAt: null } }));
+    const path = kind === 'model' ? '/api/ai/models/pull' : '/api/ai/voice/models/pull';
+    const body = kind === 'model' ? { name } : { id: name };
+    try {
+      await apiStream(path, body, {
+        onEvent: (ev, d) => {
+          if (ev === 'progress' || ev === 'done' || ev === 'detached') setLive((m) => ({ ...m, [name]: { ...m[name], ...d } }));
+          if (ev === 'done') toast.success(`${name} is ready`);
+          if (ev === 'error') {
+            setLive((m) => ({ ...m, [name]: { ...m[name], ...d, state: 'error' } }));
+            toast.error(d?.error ?? 'The download failed');
+          }
+        },
+      });
+    } catch (e) {
+      setLive((m) => ({ ...m, [name]: { ...m[name], state: 'error', error: (e as any)?.message ?? String(e) } }));
+      toast.error(e);
+    } finally {
+      settle.current();
+    }
+  };
+
+  const cancel = async (name: string) => {
+    const path = kind === 'model' ? '/api/ai/models/pull/cancel' : '/api/ai/voice/models/pull/cancel';
+    try {
+      await api.post(path, kind === 'model' ? { name } : { id: name });
+      toast.success(`${name} download cancelled`);
+    } catch (e) { toast.error(e); } finally { settle.current(); }
+  };
+
+  // A finished bar is worth reading for a moment and then gone. The server
+  // keeps the record for a minute and a half; this drops it from the page
+  // sooner, and only for jobs that ended.
+  const dismiss = (name: string) => setLive((m) => { const { [name]: _gone, ...rest } = m; return rest; });
+
+  return { pulls: Object.values(merged).sort((a, b) => a.startedAt - b.startedAt), running, start, cancel, dismiss, isPulling: (n: string) => merged[n]?.state === 'running' };
+}
+
+// "This is the server's answer, and this is how old it is." A list that is
+// polled needs to say so, because a stale one and a live one look identical.
+function LiveDot({ at, fetching }: { at?: string; fetching?: boolean }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 5000); return () => clearInterval(t); }, []);
+  if (!at) return null;
+  const age = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 1000));
+  const stale = age > 30;
+  return (
+    <span className="row gap-4 faint" title={`Read from the model server ${fmtDateTime(at)}`}>
+      <span className={cls('live-dot', fetching && 'busy', stale && 'stale')} />
+      {stale ? `${age}s ago` : 'live'}
+    </span>
+  );
+}
+
+function fmtRate(bytesPerSec: number | null): string {
+  return bytesPerSec && bytesPerSec > 0 ? `${fmtBytes(bytesPerSec)}/s` : '';
+}
+
+function fmtEta(seconds: number | null): string {
+  if (!seconds || seconds <= 0) return '';
+  if (seconds < 60) return `${seconds}s left`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m left`;
+  return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m left`;
+}
+
+// One download, as much of it as the far end is willing to describe.
+//
+// A server that reports byte counts gets a real bar, a size, a rate and an
+// estimate. One that does not — speaches downloads in a single blocking call
+// and says nothing until it is finished — gets a moving stripe, the elapsed
+// time and a sentence saying why there is no percentage, rather than a bar
+// that pretends to know.
+function PullRow({ pull, onCancel, onDismiss }: { pull: PullView; onCancel: () => void; onDismiss: () => void }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (pull.state !== 'running') return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [pull.state]);
+  const elapsed = Math.max(0, Math.round(((pull.endedAt ?? Date.now()) - pull.startedAt) / 1000));
+  const kind = pull.state === 'done' ? 'success' : pull.state === 'running' ? 'info' : 'warning';
+  return (
+    <div className="mt-16">
+      <div className="row small mb-8 gap-8 wrap">
+        {pull.state === 'running' ? <Loader2 size={14} className="spin" /> : pull.state === 'done' ? <Check size={14} /> : null}
+        <span className="strong">{pull.name}</span>
+        <Badge kind={kind}>{pull.state === 'running' ? pull.status : pull.state === 'done' ? 'ready' : pull.state === 'cancelled' ? 'cancelled' : 'failed'}</Badge>
+        {pull.total > 0 && <span className="muted">{fmtBytes(pull.completed)} of {fmtBytes(pull.total)}</span>}
+        {pull.pct !== null && <span className="muted">{pull.pct}%</span>}
+        {pull.state === 'running' && <span className="faint">{[fmtRate(pull.bytesPerSec), fmtEta(pull.etaSeconds)].filter(Boolean).join(' · ') || `${elapsed}s`}</span>}
+        <span style={{ flex: 1 }} />
+        {pull.state === 'running'
+          ? <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+          : <Button size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Button>}
+      </div>
+      {pull.pct === null && pull.state === 'running'
+        ? <div className="progress-indeterminate" aria-label={`Downloading ${pull.name}`} />
+        : <Progress value={pull.state === 'done' ? 100 : (pull.pct ?? 0)} max={100} />}
+      {pull.pct === null && pull.state === 'running' && (
+        <p className="small faint mt-8">This server downloads in one call and reports nothing until it has finished, so there is no percentage to show. It is still running, and leaving this page will not stop it.</p>
+      )}
+      {pull.error && pull.state !== 'cancelled' && <p className="small mt-8" style={{ color: 'var(--danger)' }}>{pull.error}</p>}
+    </div>
+  );
+}
+
 // Where dictation is transcribed (F9).
 //
 // Its own card because it is its own server. The bundled overlay puts
@@ -447,11 +586,23 @@ function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch:
 // compose files and restarting.
 function AiVoiceCard() {
   const toast = useToast();
+  const qc = useQueryClient();
   const { data, refetch } = useQuery({ queryKey: ['ai-voice'], queryFn: () => api.get<any>('/api/ai/voice') });
   const [f, setF] = useState<any>(null);
   const [key, setKey] = useState('');
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState<{ ok: boolean; error?: string; models?: string[] } | null>(null);
+  const [busy, setBusy] = useState('');
+  const [del, setDel] = useState<{ id: string; inUse: boolean } | null>(null);
+  const [customVoice, setCustomVoice] = useState('');
+  // The transcriber's own model list, asked of it rather than remembered.
+  // Whether there is anything to show — and whether any of it can be
+  // downloaded or deleted — is the transcriber's answer too: see
+  // services/voice.ts for why that varies so much between two servers that
+  // both speak the same transcription shape.
+  const models = useVoiceModels(Boolean(data?.settings?.baseUrl));
+  const caps = models.data?.capabilities;
+  const downloads = useDownloads('voice', models.data?.pulls, () => { void models.refetch(); void refetch(); });
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   if (!data || !f) return null;
 
@@ -462,8 +613,23 @@ function AiVoiceCard() {
       setKey('');
       setTested(null);
       refetch();
+      // A different address is a different server with a different model list.
+      qc.invalidateQueries({ queryKey: ['voice-models'] });
       toast.success('Saved');
     } catch (e) { toast.error(e); }
+  }
+
+  // Same contract as deleting a writing model: the server only calls it done
+  // once the transcriber's own list agrees, and the table is redrawn from
+  // that list rather than from the assumption that the row is gone.
+  async function doDeleteVoice(id: string) {
+    setBusy(id);
+    try {
+      const r = await api.del<any>(`/api/ai/voice/models?id=${encodeURIComponent(id)}`);
+      toast.success(r?.modelCleared ? `${id} deleted — the transcriber's own default is in use now` : `${id} deleted`);
+      void models.refetch();
+      void refetch();
+    } catch (e) { toast.error(e); void models.refetch(); } finally { setBusy(''); }
   }
   async function test() {
     setTesting(true);
@@ -496,9 +662,26 @@ function AiVoiceCard() {
         <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : 'Only needed for a remote transcriber behind a proxy that wants one.'}>
           <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={data.settings.hasApiKey ? '••••••••' : ''} />
         </Field>
-        <Field label="Model" hint="Leave empty for whatever the transcriber was started with, which is right for the bundled container. A server hosting several needs the name.">
-          <Input value={f.model ?? ''} onChange={(e) => setF({ ...f, model: e.target.value })} placeholder="whisper-1" />
-        </Field>
+        {/* A list when the transcriber has one, a text box when it does not.
+            The box on its own was the wrong control for both cases: against
+            whisper.cpp it does nothing, and against speaches it invited a
+            model name that had to match a list nobody could see. */}
+        {caps?.lists && (models.data?.installed ?? []).length > 0 ? (
+          <Field label="Model" hint="What this transcriber has now, read from it. Empty means whatever it defaults to.">
+            <Select value={f.model ?? ''} onChange={(e) => { setF({ ...f, model: e.target.value }); void save({ model: e.target.value }); }}>
+              <option value="">the transcriber&rsquo;s own default</option>
+              {(models.data?.installed ?? []).map((m: any) => <option key={m.id} value={m.id}>{m.id}</option>)}
+              {/* A model named in the settings that the server no longer has
+                  is still shown, so the mismatch is visible rather than
+                  silently reset to the first entry in the list. */}
+              {f.model && !(models.data?.installed ?? []).some((m: any) => m.id === f.model) && <option value={f.model}>{f.model} — not on this server</option>}
+            </Select>
+          </Field>
+        ) : (
+          <Field label="Model" hint="Leave empty for whatever the transcriber was started with, which is right for the bundled container. A server hosting several needs the name.">
+            <Input value={f.model ?? ''} onChange={(e) => setF({ ...f, model: e.target.value })} placeholder="whisper-1" />
+          </Field>
+        )}
         <Field label="Language" hint="An ISO code (en, de, fr) to stop the model guessing, or empty to let it detect. What the browser sends for a particular clip still wins.">
           <Input value={f.language ?? ''} onChange={(e) => setF({ ...f, language: e.target.value })} placeholder="auto" />
         </Field>
@@ -520,6 +703,79 @@ function AiVoiceCard() {
             : <Badge kind="warning">{health.error ?? 'not reachable'}</Badge>
         )}
       </div>
+      {f.baseUrl && <VoiceModels data={models.data} loading={models.isLoading} at={models.data?.at} fetching={models.isFetching}
+        current={data.settings.model} busy={busy} downloads={downloads}
+        onUse={(id) => { setF({ ...f, model: id }); void save({ model: id }); }}
+        onDelete={(id) => setDel({ id, inUse: data.settings.model === id })}
+        custom={customVoice} setCustom={setCustomVoice} />}
+      <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.id}?`} confirmLabel="Delete model"
+        message={<>The weights are removed from the transcriber and can only come back by downloading them again.{del?.inUse && <><br /><br /><b>This is the model dictation is set to use.</b> The setting is cleared with it, so the transcriber falls back to its own default.</>}</>}
+        onConfirm={() => { const id = del!.id; setDel(null); return doDeleteVoice(id); }} />
+    </div>
+  );
+}
+
+// The transcriber's models, live.
+//
+// Three quite different servers end up here, and the card says which one it
+// is talking to rather than drawing the same table for all of them:
+//
+//   whisper.cpp   one model, fixed when the container started, no model API.
+//                 There is nothing to list and nothing to manage, and saying
+//                 so is more use than an empty table.
+//   speaches      many models, a registry it can download from, and delete.
+//                 Full table.
+//   anything else lists what it has, manages none of it. Table without the
+//                 buttons that would fail.
+function VoiceModels({ data, loading, at, fetching, current, busy, downloads, onUse, onDelete, custom, setCustom }: {
+  data: any; loading: boolean; at?: string; fetching?: boolean; current: string; busy: string;
+  downloads: ReturnType<typeof useDownloads>;
+  onUse: (id: string) => void; onDelete: (id: string) => void;
+  custom: string; setCustom: (v: string) => void;
+}) {
+  if (loading && !data) return <div className="mt-16"><Spinner /></div>;
+  const caps = data?.capabilities;
+  if (!caps) return null;
+  const installed: any[] = data.installed ?? [];
+  const available: any[] = data.available ?? [];
+
+  if (!caps.lists) {
+    return (
+      <Callout kind={caps.ok ? 'info' : 'warning'}>
+        {caps.ok
+          ? <>This transcriber serves one model, chosen when it started, and has no model list to read — that is the bundled whisper.cpp. Change it with <code>WHISPER_MODEL</code> in <code>.env</code> and restart the container; <code>base</code> is 150&nbsp;MB and <code>small</code> is 500&nbsp;MB and better on accents and names. A transcriber that hosts several models, such as speaches, is listed and managed from here instead.</>
+          : <>Its model list could not be read: {caps.error ?? 'no answer'}.</>}
+      </Callout>
+    );
+  }
+
+  const rows = [
+    ...installed.map((m: any) => ({ ...m, installed: true, active: current === m.id })),
+    ...available.map((m: any) => ({ ...m, installed: false, active: false })),
+  ];
+  return (
+    <div className="mt-16">
+      <div className="row gap-8 mb-8 small muted">
+        <LiveDot at={at} fetching={fetching} />
+        <span>{installed.length} on the transcriber{caps.manages ? `, ${available.length} more it can fetch` : ''}</span>
+      </div>
+      {data.error && <Callout kind="warning">The model list could not be read: {data.error}</Callout>}
+      {downloads.pulls.map((p) => <PullRow key={p.name} pull={p} onCancel={() => downloads.cancel(p.name)} onDismiss={() => downloads.dismiss(p.name)} />)}
+      <DataTable rows={rows} rowKey={(m: any) => m.id} columns={[
+        { key: 'model', header: 'Model', primary: true, cell: (m: any) => <span className="row gap-4 wrap"><span className="strong">{m.id}</span>{m.active && <Badge kind="accent">in use</Badge>}{!m.installed && <Badge kind="info">not downloaded</Badge>}</span> },
+        { key: 'lang', header: 'Languages', className: 'muted small', nowrap: true, cell: (m: any) => Array.isArray(m.language) ? (m.language.length > 3 ? `${m.language.slice(0, 3).join(', ')} +${m.language.length - 3}` : m.language.join(', ')) : (m.language ?? <span className="faint">—</span>) },
+        { key: 'act', actions: true, cell: (m: any) => m.installed ? <>
+          <Button size="sm" disabled={m.active} onClick={() => onUse(m.id)}>{m.active ? 'Selected' : 'Use'}</Button>
+          {caps.manages && <IconButton label="Delete" className="btn-sm" disabled={busy === m.id} onClick={() => onDelete(m.id)}><Trash2 size={14} /></IconButton>}
+        </> : <Button size="sm" icon={<Download size={13} />} loading={downloads.isPulling(m.id)} disabled={downloads.isPulling(m.id)} onClick={() => void downloads.start(m.id)}>Download</Button> },
+      ]} />
+      {caps.manages && (
+        <div className="row mt-16">
+          <Input className="input-sm" placeholder="any repository the transcriber can fetch, e.g. Systran/faster-whisper-medium" value={custom} onChange={(e) => setCustom(e.target.value)} style={{ maxWidth: 420 }} />
+          <Button size="sm" disabled={!custom.trim() || downloads.isPulling(custom.trim())} onClick={() => { void downloads.start(custom.trim()); setCustom(''); }}>Download</Button>
+        </div>
+      )}
+      {!caps.manages && <p className="small faint mt-8">This transcriber lists its models but does not download or remove them from an API, so those are managed wherever it runs.</p>}
     </div>
   );
 }
@@ -527,15 +783,21 @@ function AiVoiceCard() {
 function AiAdminSettings() {
   const qc = useQueryClient();
   const toast = useToast();
-  const { data, isLoading, refetch } = useAiStatus();
+  const { data, isLoading } = useAiStatus();
   const [f, setF] = useState<any>(null);
-  const [pull, setPull] = useState<{ name: string; status: string; pct: number } | null>(null);
   const [customModel, setCustomModel] = useState('');
   const [customEmbed, setCustomEmbed] = useState('');
   const [del, setDel] = useState<{ name: string; inUse: boolean; loaded: boolean; kind: 'write' | 'embed' } | null>(null);
   const [busy, setBusy] = useState('');
   const [probe, setProbe] = useState<any>(null);
   const [probing, setProbing] = useState(false);
+  // What the model server has, asked of it every few seconds rather than
+  // taken from whatever /status happened to see when the page was opened.
+  // Only for Ollama: an OpenAI-compatible endpoint has no models to manage.
+  const isOllama = (f?.provider ?? data?.settings?.provider) === 'ollama';
+  const live = useAiModels(isOllama);
+  const refetch = () => { qc.invalidateQueries({ queryKey: ['ai-status'] }); return live.refetch(); };
+  const downloads = useDownloads('model', live.data?.pulls, () => { void live.refetch(); qc.invalidateQueries({ queryKey: ['ai-status'] }); });
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   async function save(patch: any) {
     try {
@@ -557,37 +819,44 @@ function AiAdminSettings() {
       setProbe(r);
     } catch (e: any) { setProbe({ result: { ok: false, error: e?.message ?? String(e) } }); } finally { setProbing(false); }
   }
-  async function doPull(name: string) {
-    setPull({ name, status: 'starting', pct: 0 });
-    try {
-      await apiStream('/api/ai/models/pull', { name }, { onEvent: (ev, d) => { if (ev === 'progress') setPull({ name, status: d.status, pct: d.total ? Math.round((100 * (d.completed ?? 0)) / d.total) : 0 }); if (ev === 'error') toast.error(d.error); } });
-      toast.success(`${name} is ready`); refetch();
-    } catch (e) { toast.error(e); } finally { setPull(null); }
-  }
   // Deleting a model removes gigabytes that can only come back over the
-  // network, so it is confirmed, and — unlike before — a refusal is reported
-  // rather than swallowed by a promise nobody was watching.
+  // network, so it is confirmed, a refusal is reported, and the table is
+  // redrawn from the list the server sends back rather than from the
+  // assumption that the row is now gone. The server only calls it deleted
+  // once the model server's own list agrees.
   async function doDelete(name: string) {
     setBusy(name);
     try {
-      await api.del(`/api/ai/models/${encodeURIComponent(name)}`);
+      const r = await api.del<any>(`/api/ai/models?name=${encodeURIComponent(name)}`);
       toast.success(`${name} deleted`);
-      qc.invalidateQueries({ queryKey: ['ai-status'] });
-    } catch (e) { toast.error(e); } finally { setBusy(''); }
+      // Straight from the answer: no window in which the page shows a model
+      // that is not there any more, and none in which it shows one that is.
+      if (Array.isArray(r?.models)) qc.setQueryData(['ai-models'], (prev: any) => ({ ...(prev ?? {}), ok: true, models: r.models, loaded: r.loaded ?? [], at: new Date().toISOString() }));
+      void refetch();
+    } catch (e) { toast.error(e); void refetch(); } finally { setBusy(''); }
   }
   async function doUnload(name: string) {
     setBusy(name);
     try {
       const r = await api.post<{ unloaded: boolean }>('/api/ai/models/unload', { name });
       toast.success(r.unloaded ? `${name} unloaded` : `${name} was not in memory`);
-      qc.invalidateQueries({ queryKey: ['ai-status'] });
+      void refetch();
     } catch (e) { toast.error(e); } finally { setBusy(''); }
   }
   if (isLoading || !data || !f) return <Spinner />;
-  const findInstalled = (n: string) => data.models.find((x: any) => x.name === n || x.name === `${n}:latest`);
+  // The tables are drawn from the live answer. /status is still where the
+  // catalogue and the settings come from, but it is not asked what the model
+  // server has — it saw that once, when the page opened.
+  const installed: any[] = live.data?.models ?? data.models ?? [];
+  const loadedList: any[] = live.data?.loaded ?? data.loaded ?? [];
+  // Reachable at this instant, as opposed to when /status last ran. An
+  // unreachable server and a server with no models used to draw the same
+  // empty table.
+  const liveError: string | null = live.data && !live.data.ok ? (live.data.error ?? 'The model server did not answer') : null;
+  const findInstalled = (n: string) => installed.find((x: any) => x.name === n || x.name === `${n}:latest`);
   // What Ollama is holding in memory, matched the same way: the settings say
   // "qwen2.5", /api/ps says "qwen2.5:latest".
-  const findLoaded = (n: string) => (data.loaded ?? []).find((x: any) => x.name === n || x.name === `${n}:latest`);
+  const findLoaded = (n: string) => loadedList.find((x: any) => x.name === n || x.name === `${n}:latest`);
   // Ollama tags an untagged name with `:latest`, so "all-minilm" in the
   // settings and "all-minilm:latest" in the model list are the same thing.
   const sameName = (a: string, b: string) => { const n = (v: string) => (String(v ?? '').includes(':') ? String(v) : `${v}:latest`); return Boolean(a) && n(a) === n(b); };
@@ -598,13 +867,16 @@ function AiAdminSettings() {
   const knownEmbed = (n: string) => (data.embedModels ?? []).some((c: any) => sameName(c.name, n));
   const modelRows: { name: string; inst: any; loaded: any; active: boolean; note: string; sizeGB?: number }[] = [
     ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
-    ...data.models.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name) && !embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+    ...installed.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name) && !embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
   const embedRows: any[] = [
     ...(data.embedModels ?? []).map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: sameName(data.settings.embedModel, m.name), note: m.note, params: m.params, contextTokens: m.contextTokens, sizeBytes: m.sizeBytes, needsBytes: m.needsBytes })),
-    ...data.models.filter((x: any) => embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: sameName(data.settings.embedModel, x.name), note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+    ...installed.filter((x: any) => embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: sameName(data.settings.embedModel, x.name), note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
-  const residentGB = (data.loaded ?? []).reduce((n: number, m: any) => n + (m.size ?? m.sizeVram ?? 0), 0) / 1024 ** 3;
+  // Which downloads belong to which card, so a bar appears under the table
+  // that started it rather than under both.
+  const embedNames = new Set<string>(embedRows.map((m: any) => m.name));
+  const residentGB = loadedList.reduce((n: number, m: any) => n + (m.size ?? m.sizeVram ?? 0), 0) / 1024 ** 3;
   return (
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI model" sub="The provider and model behind everyone's assistant, its standing instructions and its tuning." />
@@ -708,9 +980,17 @@ function AiAdminSettings() {
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">
-          <div className="card-title"><h2>Models</h2><span className="small muted">Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b>{(data.loaded ?? []).length > 0 && <> · {(data.loaded ?? []).length} in memory, {residentGB.toFixed(1)} GB</>}</span></div>
-          <Callout>{data.recommended.note} Pulling downloads from the Ollama registry once; models live in the <code>ollama</code> volume.</Callout>
-          {pull && <div className="mt-16"><div className="row small mb-8"><Loader2 size={14} className="spin" /> Pulling {pull.name}: {pull.status} {pull.pct ? `${pull.pct}%` : ''}</div><Progress value={pull.pct} max={100} /></div>}
+          <div className="card-title"><h2>Models</h2><span className="small muted row gap-8">
+            <LiveDot at={live.data?.at} fetching={live.isFetching} />
+            Recommended for {data.totalMemGiB} GB: <b>{data.recommended.model}</b>{loadedList.length > 0 && <> · {loadedList.length} in memory, {residentGB.toFixed(1)} GB</>}
+          </span></div>
+          {/* An unreachable model server says so. Without this the table was
+              empty and read as "you have no models", which about a remote box
+              holding forty gigabytes of them is a lie the page told calmly. */}
+          {liveError
+            ? <Callout kind="danger">This list could not be read from <code>{data.settings.baseUrl}</code>: {liveError}. Nothing below is current until it answers again.</Callout>
+            : <Callout>{data.recommended.note} Pulling downloads from the Ollama registry once; models live in the <code>ollama</code> volume{data.local === false ? ' on that machine' : ''}.</Callout>}
+          {downloads.pulls.filter((p) => !embedNames.has(p.name)).map((p) => <PullRow key={p.name} pull={p} onCancel={() => downloads.cancel(p.name)} onDismiss={() => downloads.dismiss(p.name)} />)}
           <div className="mt-16"><DataTable rows={modelRows} rowKey={(m) => m.name} columns={[
             { key: 'model', header: 'Model', primary: true, cell: (m) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.loaded && <Badge kind="warning" dot>loaded</Badge>}{m.name === data.recommended.model && <Badge kind="success">recommended</Badge>}</span> },
             { key: 'size', header: 'Size', className: 'muted', nowrap: true, cell: (m) => m.inst ? fmtBytes(m.inst.size) : `~${m.sizeGB} GB` },
@@ -723,9 +1003,9 @@ function AiAdminSettings() {
               <Button size="sm" disabled={m.active} onClick={() => save({ model: m.name })}>{m.active ? 'Selected' : 'Use'}</Button>
               {m.loaded && <Button size="sm" variant="ghost" loading={busy === m.name} onClick={() => doUnload(m.name)}>Unload</Button>}
               <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'write' })}><Trash2 size={14} /></IconButton>
-            </> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
+            </> : <Button size="sm" icon={<Download size={13} />} loading={downloads.isPulling(m.name)} disabled={downloads.isPulling(m.name) || Boolean(liveError)} onClick={() => downloads.start(m.name)}>Pull</Button> },
           ]} /></div>
-          <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || Boolean(pull)} onClick={() => { doPull(customModel); setCustomModel(''); }}>Pull</Button></div>
+          <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || downloads.isPulling(customModel)} onClick={() => { void downloads.start(customModel.trim()); setCustomModel(''); }}>Pull</Button></div>
           <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.name}?`} confirmLabel="Delete model"
             message={<>The files are removed from the <code>ollama</code> volume and can only come back by downloading them again.{del?.loaded && ' It is in memory now and will be unloaded first.'}{del?.inUse && (del.kind === 'embed'
               ? <><br /><br /><b>This is the model meaning search is set to use.</b> Search falls back to matching words until you pick another one, and the vectors already stored stay unusable until something is indexed again.</>
@@ -735,13 +1015,14 @@ function AiAdminSettings() {
       )}
       {f.provider === 'ollama' && (
         <div className="card mb-16">
-          <div className="card-title"><h2>Meaning search</h2><span className="small muted">In use: <b>{data.settings.embedModel}</b>{findInstalled(data.settings.embedModel) ? '' : ' · not downloaded'}</span></div>
+          <div className="card-title"><h2>Meaning search</h2><span className="small muted row gap-8"><LiveDot at={live.data?.at} fetching={live.isFetching} />In use: <b>{data.settings.embedModel}</b>{findInstalled(data.settings.embedModel) ? '' : ' · not downloaded'}</span></div>
           <Callout kind={findInstalled(data.settings.embedModel) ? 'info' : 'warning'}>
             {findInstalled(data.settings.embedModel)
               ? <>Search by meaning turns each message into a vector with a second, much smaller model — it loads beside the writing model rather than instead of it, so the memory it wants is on top. It never writes a word.</>
               : <><b>{data.settings.embedModel}</b> is not downloaded, so meaning search cannot index anything and falls back to matching words. Pull it below.</>}
             {' '}Vectors are only comparable with others from the same model, so changing it queues every indexed message to be embedded again.
           </Callout>
+          {downloads.pulls.filter((p) => embedNames.has(p.name)).map((p) => <PullRow key={p.name} pull={p} onCancel={() => downloads.cancel(p.name)} onDismiss={() => downloads.dismiss(p.name)} />)}
           <div className="mt-16"><DataTable rows={embedRows} rowKey={(m: any) => m.name} columns={[
             { key: 'model', header: 'Model', primary: true, cell: (m: any) => <span className="row gap-4 wrap"><span className="strong">{m.name}</span>{m.active && <Badge kind="accent">in use</Badge>}{m.loaded && <Badge kind="warning" dot>loaded</Badge>}</span> },
             // The download and, separately, what it occupies once loaded —
@@ -755,9 +1036,9 @@ function AiAdminSettings() {
               <Button size="sm" disabled={m.active} onClick={() => save({ embedModel: m.name })}>{m.active ? 'Selected' : 'Use'}</Button>
               {m.loaded && <Button size="sm" variant="ghost" loading={busy === m.name} onClick={() => doUnload(m.name)}>Unload</Button>}
               <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'embed' })}><Trash2 size={14} /></IconButton>
-            </> : <Button size="sm" icon={<Download size={13} />} disabled={Boolean(pull)} onClick={() => doPull(m.name)}>Pull</Button> },
+            </> : <Button size="sm" icon={<Download size={13} />} loading={downloads.isPulling(m.name)} disabled={downloads.isPulling(m.name) || Boolean(liveError)} onClick={() => downloads.start(m.name)}>Pull</Button> },
           ]} /></div>
-          <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed || Boolean(pull)} onClick={() => { doPull(customEmbed); setCustomEmbed(''); }}>Pull</Button></div>
+          <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed || downloads.isPulling(customEmbed)} onClick={() => { void downloads.start(customEmbed.trim()); setCustomEmbed(''); }}>Pull</Button></div>
         </div>
       )}
       <AiVoiceCard />

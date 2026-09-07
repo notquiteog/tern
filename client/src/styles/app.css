@@ -299,6 +299,19 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .progress { height: 6px; border-radius: 6px; background: var(--bg-sunken); overflow: hidden; }
 .progress > div { height: 100%; background: var(--accent); border-radius: 6px; transition: width .2s; }
 .progress.warn > div { background: var(--warning); } .progress.full > div { background: var(--danger); }
+/* A download whose far end reports no byte counts: it is running, and that is
+   all anyone can honestly be told. A stripe that moves says "still working"
+   without inventing a percentage. */
+/* The "this is live" marker beside a polled list. */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; }
+.live-dot.busy { animation: live-pulse 1s ease-in-out infinite; }
+.live-dot.stale { background: var(--warning); }
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .live-dot.busy { animation: none; } }
+.progress-indeterminate { height: 6px; border-radius: 6px; background: var(--bg-sunken); overflow: hidden; position: relative; }
+.progress-indeterminate::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 35%; border-radius: 6px; background: var(--accent); animation: slide-progress 1.4s ease-in-out infinite; }
+@keyframes slide-progress { 0% { left: -35%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .progress-indeterminate::after { animation: none; left: 0; width: 100%; opacity: .45; } }
 
 /* ---------- overlays ---------- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10, 12, 20, .45); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 80; padding: 20px; animation: fade .12s ease-out; }
