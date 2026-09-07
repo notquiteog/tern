@@ -20,7 +20,7 @@ import { api } from '../api';
 import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
 import { Badge, Button, IconButton, Input, Segmented } from './ui';
-import { fmtDate } from '../lib/format';
+import { dueIn, fmtDate } from '../lib/format';
 import type { SemanticHit } from './SearchExtras';
 
 export interface ThreadCommitment {
@@ -86,7 +86,6 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
     );
   }
 
-  const now = Date.now();
   return (
     <div className="aside-card">
       <div className="aside-head">
@@ -97,7 +96,7 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
       </div>
 
       {items.map((c) => {
-        const overdue = c.dueAt ? new Date(c.dueAt).getTime() < now : false;
+        const due = dueIn(c.dueAt);
         return (
           <div key={c.id} className="aside-commit">
             <span className={`aside-commit-kind ${c.kind}`} title={c.kind === 'owed' ? 'You said you would' : 'You are waiting on someone'}>
@@ -107,7 +106,7 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
               <div className="aside-commit-text">{c.text}</div>
               {(c.dueAt || c.counterparty) && (
                 <div className="aside-commit-meta">
-                  {c.dueAt && <Badge kind={overdue ? 'danger' : undefined}>{overdue ? 'Overdue' : 'By'} {fmtDate(c.dueAt, { always: true })}</Badge>}
+                  {due && <Badge kind={due.late ? 'danger' : due.today ? 'warning' : undefined}>{due.label}</Badge>}
                   {c.counterparty && <span className="muted">{c.counterparty}</span>}
                 </div>
               )}

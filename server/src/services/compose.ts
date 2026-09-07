@@ -184,6 +184,11 @@ export async function composeAndSend(acc: AccountRow, input: ComposeInput): Prom
     headers['List-Unsubscribe'] = `<${url}>`;
     headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
     html += `<p style="margin-top:24px;font-size:12px;color:#6b7280">${escapeHtml(s.unsubscribeText)} <a href="${url}" style="color:#6b7280">${url}</a>${s.physicalAddress ? `<br>${escapeHtml(s.physicalAddress)}` : ''}</p>`;
+    // The plain-text alternative is derived from this HTML further down, but
+    // only when the caller did not supply one of its own. When it did, the
+    // footer has to be added to it here as well, or the text part of a
+    // commercial message goes out with no way to unsubscribe from it.
+    if (input.text) input = { ...input, text: `${input.text}\n\n${s.unsubscribeText} ${url}${s.physicalAddress ? `\n${s.physicalAddress}` : ''}` };
   }
 
   // OpenPGP: a browser-signed message arrives complete; otherwise encrypt here

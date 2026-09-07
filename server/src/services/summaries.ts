@@ -62,7 +62,12 @@ export async function cachedSummaries(userId: number, accountIds: number[], thre
 
 // Writes one conversation's line. Returns null when there is nothing worth
 // summarising or the model had nothing to say.
-export async function generateSummary(userId: number, acc: AccountRow, threadId: string): Promise<Summary | null> {
+//
+// `interactive` is for the one case where somebody is watching this happen:
+// a reader who asked for this row's line by hand. The list's own filling-in
+// stays background work — nobody is waiting on it — but a request made by
+// pressing a button waits in the same queue as a composer does.
+export async function generateSummary(userId: number, acc: AccountRow, threadId: string, opts: { interactive?: boolean } = {}): Promise<Summary | null> {
   const s = await getAiSettings();
   if (!s.enabled) return null;
   const sealed = await query<any>(
@@ -106,8 +111,9 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
       stop: tuning.stop,
       // Nobody is watching a summary arrive, so it waits behind anyone who is
       // at a composer rather than beside them; a page of fifty conversations
-      // must not be able to take every slot the model has.
-      background: true,
+      // must not be able to take every slot the model has. Unless somebody
+      // asked for this one, in which case they are watching.
+      background: !opts.interactive,
       owner: String(userId),
       consent: { userId, capability: 'ai.summaries' },
       // Never. A one-line summary is not worth a reasoning budget, and on a

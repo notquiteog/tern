@@ -5,6 +5,7 @@ import { badRequest, notFound } from '../errors.js';
 import { query } from '../db.js';
 import { generateDefaultSvg, getBrand, sanitizeSvg, saveBrand, setBrandVmc } from '../services/brand.js';
 import { fitToBimi, BIMI_MAX_BYTES } from '../services/svgTiny.js';
+import { checkBimi } from '../services/vmc.js';
 import { config } from '../config.js';
 
 export const brandRouter = Router();
@@ -41,6 +42,17 @@ brandRouter.put('/:domain/options', requireAdmin, async (req, res) => {
   await setBrandVmc(domain, b.vmcUrl);
   const updated = await getBrand(domain);
   res.json({ brand: publicBrand(updated) });
+});
+
+// Everything BIMI needs, checked live: the logo, the DMARC policy under it,
+// the published record, and the mark certificate Gmail and Apple Mail want.
+// A POST because it makes DNS lookups and fetches the certificate.
+brandRouter.post('/:domain/bimi/check', requireAdmin, async (req, res) => {
+  const domain = domainParam(String(req.params.domain));
+  const b = await getBrand(domain);
+  const report = await checkBimi({ domain, hostedUrl: bimiUrlFor(domain), logo: b ? Buffer.from(b.svg) : null, vmcUrl: b?.vmc_url || null });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(report);
 });
 
 // Upload an SVG (raw body) or generate a default avatar from initials.

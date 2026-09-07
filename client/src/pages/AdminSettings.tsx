@@ -804,6 +804,18 @@ function recordValue(r: any): string {
   return r.value;
 }
 
+// A registrar's SRV form, already filled in. Every DNS host asks for these
+// seven boxes rather than one value, and the two numbers in the middle are
+// the ones people transpose; each value copies itself on click.
+function SrvFields({ r, copy }: { r: any; copy: (t: string) => void }) {
+  const fields: [string, string][] = [['Service', r.srv.service], ['Protocol', r.srv.protocol], ['Name', r.srv.host], ['Priority', String(r.srv.priority)], ['Weight', String(r.srv.weight)], ['Port', String(r.srv.port)], ['Target', r.srv.target]];
+  return (
+    <dl className="srv-fields">
+      {fields.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd><button type="button" title={`Copy ${v}`} onClick={() => copy(v)}>{v}</button></dd></Fragment>)}
+    </dl>
+  );
+}
+
 function DnsSetup({ data }: { data: any }) {
   const toast = useToast();
   const { data: dns, isLoading, refetch } = useQuery({ queryKey: ['dns'], queryFn: () => api.get<any>('/api/stalwart/dns'), enabled: data.reachable });
@@ -855,10 +867,13 @@ function DnsSetup({ data }: { data: any }) {
       {groups.map((g) => (g !== 'clients' || showClients) && (
         <div key={g} className="card">
           <div className="card-title"><h2>{GROUP_TITLES[g][0]}</h2><span className="small muted">{GROUP_TITLES[g][1]}</span></div>
+          {g === 'clients' && dns.records.some((r: any) => r.group === 'clients' && r.type === 'SRV') && (
+            <p className="small muted mb-8" style={{ marginTop: 0 }}>Nearly every DNS host splits an SRV record into its own boxes — Service, Protocol, Name, Priority, Weight, Port and Target — so each SRV row below says which piece goes in which box, and each one copies on click. If yours asks only for a name and a value instead, use the full name in the Name column and <code>priority weight port target</code> (the <b>Value</b> button copies exactly that).</p>
+          )}
           <DataTable rows={dns.records.filter((r: any) => r.group === g)} rowKey={(r: any) => r.id} minWidth={720} columns={[
             { key: 'type', header: 'Type', width: 70, cell: (r: any) => <Badge>{r.type}</Badge> },
             { key: 'name', header: 'Name', primary: true, className: 'mono small', cell: (r: any) => <span style={{ display: 'block', maxWidth: 260, overflowWrap: 'anywhere' }}>{r.name}{r.purpose && <div className="small muted" style={{ fontFamily: 'var(--font)', fontWeight: 400 }}>{r.purpose}</div>}</span> },
-            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning-text)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
+            { key: 'value', header: 'Value', wide: true, className: 'mono small', cell: (r: any) => { const c = checks[r.id]; return <span style={{ display: 'block', maxWidth: 360, overflowWrap: 'anywhere' }}>{r.type === 'SRV' && r.srv ? <SrvFields r={r} copy={copy} /> : recordValue(r).length > 140 ? recordValue(r).slice(0, 137) + '…' : recordValue(r)}{c && c.status !== 'ok' && c.found?.length > 0 && <div className="small" style={{ color: 'var(--warning-text)', fontFamily: 'var(--font)' }}>found: {c.found.join(' | ').slice(0, 160)}</div>}{c?.note && <div className="small muted" style={{ fontFamily: 'var(--font)' }}>{c.note}</div>}</span>; } },
             { key: 'status', header: 'Status', width: 100, cell: (r: any) => { const c = checks[r.id]; return c ? <Badge kind={STATUS_KIND[c.status]} dot>{STATUS_LABEL[c.status]}</Badge> : <span className="faint small">not checked</span>; } },
             { key: 'act', actions: true, cell: (r: any) => <>{r.type !== 'PTR' && <Button size="sm" icon={<Copy size={13} />} onClick={() => copy(recordValue(r))}>Value</Button>}<Button size="sm" variant="ghost" onClick={() => copy(r.type === 'PTR' ? r.value : r.name)}>Name</Button></> },
           ]} />
@@ -958,7 +973,7 @@ function BrandLogo({ domain }: { domain: string }) {
           <div className="col gap-4 flex-1">
             {brand ? <div className="small">Hosted at <code>{brand.url}</code> <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.url); toast.success('Copied'); }}>Copy</Button></div> : <div className="small muted">No logo yet. Drop an image here, upload one, or generate a default avatar below.</div>}
             {brand?.report?.removedAttributes !== undefined && <div className="small muted">Last import: {Object.values(brand.report.removedElements ?? {}).reduce((a: number, b: any) => a + Number(b), 0)} metadata elements and {brand.report.removedAttributes} attributes removed, {brand.report.stylesConverted ?? 0} style rules converted, coordinates rounded to {brand.report.precision ?? 3} decimals.</div>}
-            <div className="row gap-4 wrap"><Button size="sm" icon={<Upload size={13} />} loading={busy || Boolean(tracing)} onClick={() => input.current?.click()}>Upload image or SVG</Button>{brand && <Button size="sm" variant="ghost" onClick={() => runTrace(`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`, 'svg')}>Simplify by tracing</Button>}{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
+            <div className="row gap-4 wrap"><Button size="sm" icon={<Upload size={13} />} loading={busy || Boolean(tracing)} onClick={() => input.current?.click()}>Upload image or SVG</Button>{brand && <a className="btn btn-sm" href={`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`} download={`${domain}.svg`}><Download size={13} />Download SVG</a>}{brand && <Button size="sm" variant="ghost" onClick={() => runTrace(`/bimi/${domain}.svg?v=${new Date(brand.updated_at).getTime()}`, 'svg')}>Simplify by tracing</Button>}{brand && <Button size="sm" variant="ghost" onClick={() => api.del(`/api/brand/${domain}`).then(done)}>Remove</Button>}</div>
             <div className="help-text">Square works best. The result is SVG Tiny PS: no scripts, no external references, no bitmaps, no metadata, under {Math.round(maxBytes / 1024)} KB.</div>
             <input ref={input} type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void onFile(f); }} />
           </div>
@@ -989,10 +1004,10 @@ function BrandLogo({ domain }: { domain: string }) {
           <>
             <div className="small mb-8">Publish this TXT record at <code>default._bimi.{domain}</code> (it is also listed under DNS setup):</div>
             <div className="row"><code className="small" style={{ overflowWrap: 'anywhere', flex: 1 }}>{brand.record}</code><Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard?.writeText(brand.record); toast.success('Copied'); }}>Copy</Button></div>
-            <Field label="Verified Mark Certificate URL (optional)" hint="Gmail and Apple Mail only show the logo with a VMC or CMC from DigiCert or Entrust. Host the .pem at a public https address and paste it here; it fills the a= part of the record." className="mt-16"><div className="row"><Input value={vmc} onChange={(e) => setVmc(e.target.value)} placeholder="https://outreach.example.com/bimi/vmc.pem" /><Button onClick={() => api.put(`/api/brand/${domain}/options`, { vmcUrl: vmc.trim() }).then(() => { done(); toast.success('Record updated'); }).catch((e) => toast.error(e))}>Save</Button></div></Field>
           </>
         ) : <div className="small muted">The record appears once a logo exists.</div>}
       </div>
+      <BimiChecklist domain={domain} brand={brand} vmc={vmc} setVmc={setVmc} onSaved={done} />
       <div className="card">
         <div className="card-title"><h2>Generate a default avatar</h2></div>
         <div className="row gap-16 wrap" style={{ alignItems: 'flex-end' }}>
@@ -1004,6 +1019,104 @@ function BrandLogo({ domain }: { domain: string }) {
           <Button variant="primary" loading={busy} disabled={!initials} onClick={generate} style={{ marginBottom: 14 }}>Generate and use</Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const BIMI_STATUS: Record<string, { kind?: 'success' | 'warning' | 'danger'; label: string }> = {
+  ok: { kind: 'success', label: 'done' }, warn: { kind: 'warning', label: 'check' }, fail: { kind: 'danger', label: 'blocked' }, skipped: { label: 'not yet' },
+};
+
+function BimiStep({ n, title, checks, children }: { n: number; title: string; checks: any[]; children: ReactNode }) {
+  return (
+    <div className="bimi-step">
+      <div className="n">{n}</div>
+      <div>
+        <h3>{title}</h3>
+        <div className="small muted">{children}</div>
+        {checks.map((c) => (
+          <div className="bimi-check" key={c.id}>
+            <Badge kind={BIMI_STATUS[c.status]?.kind} dot>{BIMI_STATUS[c.status]?.label ?? c.status}</Badge>
+            <div className="small"><b>{c.label}:</b> {c.detail}</div>
+            {c.fix && <div className="small muted bimi-fix">{c.fix}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Getting a logo into Gmail is five separate errands at four different
+// companies, and every one of them fails silently: no bounce, no header, the
+// logo simply does not appear. So the page states the errands in order and
+// then goes and looks, rather than leaving someone to guess which of the five
+// is the one that is wrong.
+function BimiChecklist({ domain, brand, vmc, setVmc, onSaved }: { domain: string; brand: any; vmc: string; setVmc: (v: string) => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [report, setReport] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  async function run() {
+    setBusy(true);
+    try { setReport(await api.post<any>(`/api/brand/${domain}/bimi/check`, {})); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+  async function saveVmc() {
+    setSaving(true);
+    try {
+      await api.put(`/api/brand/${domain}/options`, { vmcUrl: vmc.trim() });
+      onSaved(); toast.success('Record updated');
+      if (vmc.trim()) await run();
+    } catch (e) { toast.error(e); } finally { setSaving(false); }
+  }
+  const at = (step: number) => (report?.checks ?? []).filter((c: any) => c.step === step);
+  const cert = report?.vmc;
+  return (
+    <div className="card">
+      <div className="card-title"><h2>Verify BIMI, with or without a certificate</h2><span className="small muted">Yahoo, Fastmail and La Poste need the first three steps. Gmail and Apple Mail need all five.</span></div>
+      <div className="row wrap mb-16">
+        <Button variant="primary" icon={<ShieldCheck size={15} />} loading={busy} onClick={run}>Check BIMI now</Button>
+        {report && <span className="small" style={{ color: report.ready.gmail ? 'var(--success-text)' : report.ready.basic ? undefined : 'var(--warning-text)' }}>
+          {report.ready.gmail ? 'Everything Gmail and Apple Mail ask for is in place.' : report.ready.basic ? 'Ready for the clients that do not require a certificate.' : 'Not showing anywhere yet — see the blocked steps below.'}
+        </span>}
+      </div>
+
+      <BimiStep n={1} title="A logo the certificate authority will accept" checks={at(1)}>
+        Square, under 32 KB, SVG Tiny Portable/Secure, no bitmaps and no metadata. Whatever you upload above is rebuilt into that form.
+        {' '}<b>Download the result before you apply for a certificate</b> — that exact file is what goes inside the certificate and what mail clients compare against, and a re-export from Illustrator or Figma will not be the same bytes.
+      </BimiStep>
+
+      <BimiStep n={2} title="DMARC that enforces" checks={at(2)}>
+        BIMI is ignored unless the domain already tells receivers to act on failures: <code>p=quarantine</code> or <code>p=reject</code>, applied to all mail. Raise it on the DNS setup tab, and give the reports a week at quarantine before moving to reject.
+      </BimiStep>
+
+      <BimiStep n={3} title="Publish the BIMI record" checks={at(3)}>
+        The TXT record above, at <code>default._bimi.{domain}</code>. On its own this is enough for Yahoo, Fastmail and La Poste; the certificate below is what Gmail and Apple Mail add.
+      </BimiStep>
+
+      <BimiStep n={4} title="Buy a mark certificate, and host it" checks={at(4)}>
+        <p style={{ marginTop: 0 }}>Only two authorities issue them: <a href="https://www.digicert.com/tls-ssl/verified-mark-certificates" target="_blank" rel="noreferrer">DigiCert</a> and <a href="https://www.entrust.com/products/digital-certificates/verified-mark-certificates" target="_blank" rel="noreferrer">Entrust</a>. A <b>VMC</b> needs the logo registered as a trademark at an office they recognise (USPTO, EUIPO, UKIPO, CIPO, IP Australia, JPO and a handful more); a <b>CMC</b> takes a logo you have used publicly for at least a year instead, and Gmail accepts it. Both are paid, renewed yearly, and take weeks rather than minutes: identity checks, a signed subscriber agreement and usually a video call.</p>
+        <p>Give them the SVG downloaded in step 1. They return a <code>.pem</code> holding the certificate and its chain; host that at a public https address and paste the URL here. It fills the <code>a=</code> part of the record.</p>
+        <Field label="Certificate URL" className="mt-8"><div className="row"><Input value={vmc} onChange={(e) => setVmc(e.target.value)} placeholder="https://outreach.example.com/bimi/vmc.pem" /><Button loading={saving} onClick={saveVmc}>Save</Button></div></Field>
+      </BimiStep>
+
+      <BimiStep n={5} title="Check that the certificate really describes this logo" checks={at(5)}>
+        A mark certificate carries a copy of the logo sealed inside it, and mail clients compare that copy against the file your record points at, byte for byte. Re-uploading, re-tracing or even reformatting the logo afterwards breaks the match, and Gmail then drops the logo without an error anywhere. Checking here opens the certificate and holds the two files against each other.
+      </BimiStep>
+
+      {cert?.ok && (
+        <div className="mt-16" style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+          <div className="small strong mb-8">Inside the certificate</div>
+          <dl className="kv kv-tight small">
+            <dt>Issued to</dt><dd>{cert.organization ?? '—'}{cert.subject?.L || cert.subject?.C ? <span className="muted"> · {[cert.subject.L, cert.subject.ST, cert.subject.C].filter(Boolean).join(', ')}</span> : null}</dd>
+            <dt>Issued by</dt><dd>{cert.issuer ?? '—'}</dd>
+            <dt>Names</dt><dd>{cert.altNames.length ? cert.altNames.join(', ') : '—'}</dd>
+            <dt>Valid until</dt><dd>{cert.validTo ? `${cert.validTo.slice(0, 10)}${cert.daysLeft !== null ? ` (${cert.daysLeft} days)` : ''}` : '—'}</dd>
+            <dt>Logo inside</dt><dd>{cert.logotype ? `${cert.logotype.mediaType ?? 'unknown type'}${cert.logoBytes ? `, ${Math.round(cert.logoBytes / 1024 * 10) / 10} KB` : ''}${cert.logotype.encoding && cert.logotype.encoding !== 'none' ? ` (${cert.logotype.encoding})` : ''}` : 'none — this is not a mark certificate'}</dd>
+            <dt>Fetched from</dt><dd style={{ overflowWrap: 'anywhere' }}><code>{cert.url}</code></dd>
+          </dl>
+        </div>
+      )}
+      {report && !brand && <Callout kind="warning">There is no logo yet, so most of this cannot be checked. Upload one above first.</Callout>}
     </div>
   );
 }

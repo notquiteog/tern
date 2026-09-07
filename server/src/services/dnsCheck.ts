@@ -7,15 +7,20 @@ import net from 'node:net';
 
 export type RecordType = 'A' | 'AAAA' | 'PTR' | 'MX' | 'TXT' | 'CNAME' | 'SRV';
 export type Group = 'required' | 'recommended' | 'brand' | 'clients';
+// A DNS host's form for an SRV record almost never has one "value" box: it
+// asks for Service, Protocol, Name, Priority, Weight, Port and Target as
+// separate fields, so a row has to say which piece goes where.
+export interface SrvParts { priority: number; weight: number; port: number; target: string }
+export interface SrvFields extends SrvParts { service: string; protocol: string; host: string }
 // `ip` is the address a PTR row reverses, so a v4 and a v6 row can sit in
 // the same list and each check the address it belongs to.
-export interface DnsRecord { id: string; group: Group; type: RecordType; name: string; value: string; purpose: string; priority?: number; srv?: { priority: number; weight: number; port: number; target: string }; ip?: string }
+export interface DnsRecord { id: string; group: Group; type: RecordType; name: string; value: string; purpose: string; priority?: number; srv?: SrvFields; ip?: string }
 export type Status = 'ok' | 'missing' | 'mismatch' | 'error' | 'skipped';
 export interface CheckResult { id: string; status: Status; found: string[]; note?: string }
 
 // Zone lines can span parentheses; TXT values arrive as several quoted chunks.
-export function parseZone(zone: string): { name: string; type: RecordType; value: string; priority?: number; srv?: DnsRecord['srv'] }[] {
-  const out: { name: string; type: RecordType; value: string; priority?: number; srv?: DnsRecord['srv'] }[] = [];
+export function parseZone(zone: string): { name: string; type: RecordType; value: string; priority?: number; srv?: SrvParts }[] {
+  const out: { name: string; type: RecordType; value: string; priority?: number; srv?: SrvParts }[] = [];
   const joined: string[] = [];
   let buf = '';
   let depth = 0;
@@ -50,6 +55,18 @@ export function parseZone(zone: string): { name: string; type: RecordType; value
     }
   }
   return out;
+}
+
+// `_jmap._tcp.example.com` is three fields to a registrar: the service, the
+// protocol, and the name the record hangs off — "@" when that is the domain
+// itself, which is what every mail-app record here uses.
+export function splitSrvName(name: string, domain: string): { service: string; protocol: string; host: string } {
+  const m = name.match(/^(_[^.]+)\.(_[^.]+)\.?(.*)$/);
+  if (!m) return { service: '', protocol: '', host: name || '@' };
+  const rest = m[3].replace(/\.$/, '');
+  const d = domain.replace(/\.$/, '').toLowerCase();
+  const host = !rest || rest.toLowerCase() === d ? '@' : rest.toLowerCase().endsWith(`.${d}`) ? rest.slice(0, -(d.length + 1)) : rest;
+  return { service: m[1], protocol: m[2], host };
 }
 
 function purposeFor(name: string, type: RecordType, value: string, domain: string, mailHost: string): { group: Group; purpose: string } {
@@ -93,7 +110,8 @@ export function buildRecords(input: { zone: string; domain: string; mailHost: st
     // knows; a duplicate from the zone would just check the same thing twice.
     if ((r.type === 'A' || r.type === 'AAAA') && norm(r.name) === norm(mailHost)) continue;
     const { group, purpose } = purposeFor(r.name, r.type, r.value, domain, mailHost);
-    out.push({ id: `z${i++}`, group, type: r.type, name: r.name, value: r.value, priority: r.priority, srv: r.srv, purpose });
+    const srv = r.srv ? { ...r.srv, ...splitSrvName(r.name, domain) } : undefined;
+    out.push({ id: `z${i++}`, group, type: r.type, name: r.name, value: r.value, priority: r.priority, srv, purpose });
   }
   if (input.bimiUrl) {
     out.push({ id: 'bimi', group: 'brand', type: 'TXT', name: `default._bimi.${domain}`, value: `v=BIMI1; l=${input.bimiUrl}; a=${input.vmcUrl ?? ''};`, purpose: 'BIMI: points mail clients at your brand logo so it appears beside your messages. Yahoo, Fastmail and others show it as is; Gmail and Apple Mail also want a paid Verified Mark Certificate (a=).' });

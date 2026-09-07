@@ -62,6 +62,26 @@ export function fmtBytes(n: number): string {
 export function fmtNumber(n: number): string { return new Intl.NumberFormat().format(n); }
 export function plural(n: number, s: string, p = s + 's'): string { return `${fmtNumber(n)} ${n === 1 ? s : p}`; }
 
+// A due date said the way somebody would say it. "By Sep 4" needs the reader
+// to work out whether that has been and gone; "4 days late" does not, which
+// matters on a list where being late is the only thing worth spotting.
+// Days are counted between calendar days rather than in 24-hour steps, so
+// something due this evening is "today" and not "in 0 days".
+export function dueIn(v: string | Date | null | undefined): { label: string; late: boolean; today: boolean } | null {
+  if (!v) return null;
+  const d = typeof v === 'string' ? new Date(v) : v;
+  if (Number.isNaN(d.getTime())) return null;
+  const midnight = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(d) - midnight(new Date())) / 86_400_000);
+  if (days < 0) return { label: days === -1 ? 'A day late' : `${-days} days late`, late: true, today: false };
+  // Only today gets the flag the callers colour on. "Due tomorrow" in amber
+  // down a whole column makes amber mean nothing by the second screen.
+  if (days === 0) return { label: 'Due today', late: false, today: true };
+  if (days === 1) return { label: 'Due tomorrow', late: false, today: false };
+  if (days <= 7) return { label: `Due ${d.toLocaleDateString([], { weekday: 'long' })}`, late: false, today: false };
+  return { label: `Due ${fmtDate(d, { always: true })}`, late: false, today: false };
+}
+
 export function stripHtml(html: string): string {
   return new DOMParser().parseFromString(html, 'text/html').body?.textContent ?? '';
 }

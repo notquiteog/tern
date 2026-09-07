@@ -489,13 +489,16 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .why-list li.up { color: var(--text); }
 .why-list li.down { color: var(--text-2); }
 
-/* A line of the brief, and the button that turns it into a commitment. */
+/* A line of the brief, and the button that turns it into a commitment. The
+   button is dim rather than absent when the pointer is elsewhere: it is the
+   only verb on the page, and a verb you cannot see is a verb nobody uses. */
 .brief-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
 .brief-list .brief-row:last-child { border-bottom: 0; }
 .brief-row .brief-item { flex: 1; min-width: 0; border-bottom: 0; }
-.brief-track { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 0 12px; border: 0; border-left: 1px solid var(--border); background: none; color: var(--text-3); font: inherit; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.brief-track { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 0 14px; border: 0; border-left: 1px solid var(--border); background: none; color: var(--text-3); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; opacity: .45; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
 .brief-row:hover .brief-track, .brief-track:focus-visible, .brief-track:disabled { opacity: 1; }
 .brief-track:hover { color: var(--text); background: var(--bg-hover); }
+.brief-track:focus-visible { outline: none; box-shadow: inset var(--focus); }
 .brief-track:disabled { cursor: default; color: var(--success-text); }
 @media (hover: none) { .brief-track { opacity: 1; } }
 
@@ -1191,34 +1194,125 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .feature-off { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--bg-sunken); }
 .feature-off p { margin: 0; max-width: 62ch; }
 
-/* The brief. */
-.brief-summary { padding: 16px 18px; font-size: 15px; line-height: 1.6; }
-.brief-summary p { margin: 0; max-width: 70ch; }
-.brief-list { padding: 4px 0; }
-.brief-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 13.5px; line-height: 1.5; color: inherit; text-decoration: none; }
+/* ---------- the brief ----------
+   Read top to bottom: one paragraph of prose, a line saying how big the day
+   is, then sections that get quieter as they get less urgent. Nothing here
+   invents a colour — a row's weight comes from the tone the server put on
+   it, mapped onto the palette's existing status tokens. */
+
+/* Prose measure. Wider than this and the eye loses the line coming back. */
+.page-read { max-width: 900px; }
+
+.brief { display: flex; flex-direction: column; gap: 26px; }
+.callout + .brief, .callout + .empty { margin-top: 18px; }
+
+/* The one paragraph a model wrote, set like the standfirst it is. */
+.brief-lede { margin: 0; padding-left: 17px; border-left: 3px solid rgba(var(--accent-rgb), .4); max-width: 64ch; font-size: 16.5px; line-height: 1.65; letter-spacing: -.005em; color: var(--text); text-wrap: pretty; }
+
+/* How big the day is, before you read any of it. */
+.brief-shape { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-sunken); font-size: 13px; }
+.brief-shape-item { display: inline-flex; align-items: center; gap: 7px; }
+.brief-shape-item strong { font-size: 15px; font-variant-numeric: tabular-nums; color: var(--text); }
+.brief-shape-item svg { flex: none; }
+
+.brief-section { display: flex; flex-direction: column; gap: 10px; }
+.brief-section-head { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); }
+.brief-section-title { flex: none; }
+.brief-section-count { flex: none; display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 9px; background: var(--bg-sunken); color: var(--text-2); font-size: 11px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.brief-rule { flex: 1; height: 1px; background: var(--border); }
+/* The two sections that mean "somebody is waiting" say so in the heading. */
+.brief-section-warning .brief-section-title { color: var(--warning-text); }
+.brief-section-warning .brief-section-count { background: var(--warning-soft); color: var(--warning-text); }
+.brief-section-needs-you .brief-section-count { background: var(--accent-soft); color: var(--accent-text); }
+
+.brief-list { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); overflow: hidden; }
+.brief-item { display: flex; align-items: flex-start; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 14px; line-height: 1.5; color: inherit; text-decoration: none; }
 .brief-list .brief-item:last-child { border-bottom: 0; }
 .brief-item-link:hover { background: var(--bg-hover); }
+.brief-item-link:hover .brief-go { opacity: .8; transform: none; }
 .brief-item-link:focus-visible { outline: none; box-shadow: inset var(--focus); }
-.brief-text { min-width: 0; }
-.brief-tone { flex: none; display: inline-flex; margin-top: 2px; opacity: .75; }
-.brief-tone-warning { color: var(--warning); opacity: 1; }
+.brief-text { flex: 1; min-width: 0; max-width: 74ch; text-wrap: pretty; }
+/* Where the row leads, and it only shows itself when the row is under the
+   pointer — twelve arrows down the page would be twelve arrows of noise. */
+.brief-go { flex: none; margin-top: 3px; color: var(--text-3); opacity: 0; transform: translateX(-3px); transition: opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
+
+/* The tone tile. A tinted square is legible at a glance in a column of
+   sentences in a way a loose 14px glyph is not. The tint is on the tile
+   itself, never on the tone class, so the same tone class can be reused in
+   the shape line above without dragging a box along with it. */
+.brief-tone { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--bg-sunken); color: var(--text-3); }
+.brief-tone.brief-tone-warning { background: var(--warning-soft); }
+.brief-tone.brief-tone-needs-you { background: var(--accent-soft); }
+.brief-tone-warning { color: var(--warning-text); }
 .brief-tone-needs-you { color: var(--accent-text); }
-.brief-tone-waiting { color: var(--text-3); }
+.brief-tone-waiting { color: var(--text-2); }
 .brief-tone-bulk { color: var(--text-3); }
 
-/* Commitments. The actions sit at the end of the row on a desktop and drop
-   under the text on a phone, where a row of buttons beside 40 characters of
-   text is unreadable. */
-.commitment-list { padding: 4px 0; }
-.commitment-row { display: flex; align-items: flex-start; gap: 14px; padding: 11px 16px; border-bottom: 1px solid var(--border); }
-.commitment-list .commitment-row:last-child { border-bottom: 0; }
-.commitment-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.commitment-text { font-size: 13.5px; line-height: 1.45; }
-.commitment-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.commitment-actions { flex: none; display: flex; gap: 6px; }
+/* A warning row carries a rule as well as a tile: it is the one kind of line
+   on this page where being missed has a cost. */
+.brief-row-warning { box-shadow: inset 2px 0 0 var(--warning); }
+/* Bulk is the bottom of the page and reads like a footnote. */
+.brief-row-bulk .brief-item { padding-top: 8px; padding-bottom: 8px; font-size: 13px; color: var(--text-2); }
+.brief-row-bulk .brief-tone { width: 22px; height: 22px; border-radius: 7px; }
+
+.brief-colophon { margin: 0; padding-top: 4px; font-size: 12px; color: var(--text-3); }
+.brief-colophon strong { font-weight: 500; color: var(--text-2); }
+
+/* ---------- commitments ----------
+   A board of two columns, because "what is on me" and "what is on somebody
+   else" are read together and neither should be below the fold. Under
+   1080px there is not room for two readable columns, so they stack. */
+.commit-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 1080px) { .commit-board { grid-template-columns: minmax(0, 1fr); } }
+
+.commit-col { padding: 0; overflow: hidden; }
+.commit-col-head { display: flex; align-items: center; gap: 9px; margin: 0; padding: 13px 16px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; letter-spacing: -.005em; }
+.commit-col-icon { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--bg-sunken); color: var(--text-2); }
+.commit-col-icon-owed { background: var(--warning-soft); color: var(--warning-text); }
+.commit-col-icon-awaiting { background: var(--accent-soft); color: var(--accent-text); }
+.commit-col-title { flex: 1; min-width: 0; }
+.commit-col-count { flex: none; display: inline-grid; place-items: center; min-width: 21px; height: 21px; padding: 0 7px; border-radius: 10px; background: var(--bg-sunken); color: var(--text-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.commit-col-empty { margin: 0; padding: 22px 16px; color: var(--text-3); font-size: 13px; }
+
+.commit-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.commit-list .commit-row:last-child { border-bottom: 0; }
+.commit-row:hover { background: var(--bg-hover); }
+/* Late is the only state on this page worth a colour of its own. */
+.commit-row-late { box-shadow: inset 2px 0 0 var(--danger); }
+
+.commit-who { grid-row: span 2; align-self: start; margin-top: 1px; }
+.commit-who-none { width: 26px; height: 26px; border-radius: 50%; border: 1px dashed var(--border-strong); }
+.commit-body { min-width: 0; }
+.commit-text { display: block; font-size: 14px; line-height: 1.45; color: var(--text); text-wrap: pretty; }
+.commit-text-link:hover { text-decoration: none; }
+.commit-text-link:hover .commit-go { opacity: .75; transform: none; }
+.commit-text-link:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 4px; }
+.commit-go { margin: 0 0 -2px 4px; color: var(--text-3); opacity: 0; transform: translateX(-3px); transition: opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
+.commit-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 14px; margin-top: 5px; }
+.commit-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; min-height: 26px; font-size: 12px; color: var(--text-3); }
+.commit-meta:empty { display: none; }
+.commit-party { color: var(--text-2); font-weight: 500; }
+.commit-late-note { color: var(--danger-text); }
+
+/* The row's two ways out. They sit under the text in the second column so
+   that a long promise is never squeezed by a pair of buttons, and they hold
+   their height whether or not the pointer is on the row. */
+.commit-acts { display: flex; gap: 2px; margin: 0 -9px 0 -9px; opacity: .4; transition: opacity var(--dur-1) var(--ease); }
+.commit-row:hover .commit-acts, .commit-row:focus-within .commit-acts { opacity: 1; }
+@media (hover: none) { .commit-acts { opacity: 1; } }
+.commit-act { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border: 0; border-radius: 7px; background: none; color: var(--text-3); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.commit-act:hover { background: var(--bg-sunken); color: var(--text); }
+.commit-act:focus-visible { outline: none; box-shadow: var(--focus); }
+.commit-act-done:hover { color: var(--success-text); }
+
 @media (max-width: 640px) {
-  .commitment-row { flex-direction: column; gap: 8px; }
-  .commitment-actions { width: 100%; }
+  .brief-lede { font-size: 15.5px; padding-left: 13px; }
+  .brief-shape { gap: 6px 16px; }
+  /* On a phone the button's label is a quarter of the row's width, and the
+     sentence it is stealing from is the reason anybody opened the page. */
+  .brief-track { padding: 0 11px; }
+  .brief-track span { display: none; }
+  .commit-acts { flex-wrap: wrap; margin-left: -9px; }
   .feature-row { gap: 12px; }
 }
 
@@ -1309,3 +1403,24 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .describe-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .describe-row .input { flex: 1; min-width: 0; }
 @media (max-width: 640px) { .describe-row { flex-wrap: wrap; } .describe-row .input { flex-basis: 100%; } }
+
+/* An SRV record as a registrar's form asks for it. Every DNS host splits
+   `_jmap._tcp` and `0 1 443 mx1.example.com` back into seven boxes, and the
+   guesswork about which number is the weight and which the port is where
+   these records get typed in wrong. */
+.srv-fields { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1px 10px; align-items: baseline; margin: 0; }
+.srv-fields dt { font-family: var(--font); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
+.srv-fields dd { margin: 0; min-width: 0; }
+.srv-fields dd button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.srv-fields dd button:hover { color: var(--accent); text-decoration: underline; }
+
+/* The BIMI walkthrough: five numbered stages, each with the live checks that
+   say whether that stage is done. The prose stays visible after a check runs,
+   because the fix for a red row is usually to redo the step above it. */
+.bimi-step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; padding: 14px 0; border-top: 1px solid var(--border); }
+.bimi-step:first-child { border-top: 0; padding-top: 0; }
+.bimi-step > .n { width: 24px; height: 24px; border-radius: 999px; background: var(--bg-sunken); display: grid; place-items: center; font-size: 12px; font-weight: 700; color: var(--text-2); }
+.bimi-step h3 { margin: 2px 0 6px; font-size: 14px; }
+.bimi-check { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: baseline; margin-top: 8px; }
+.bimi-check > .badge { grid-row: span 2; }
+.bimi-fix { grid-column: 2; }

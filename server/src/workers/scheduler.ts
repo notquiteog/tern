@@ -248,10 +248,15 @@ async function processOutbox(): Promise<void> {
     const raw = await open(item.user_id, item.payload);
     let payload: ComposeInput & { humanize?: boolean; undoWindow?: boolean };
     try { payload = JSON.parse(raw ?? '{}'); } catch { await query(`UPDATE outbox SET status='failed', error='The queued message could not be read' WHERE id=$1`, [id]); continue; }
-    if (payload.humanize) {
-      // The person asked for a natural gap: respect the account's pacing and
-      // window rather than firing at the exact second.
-      const slot = await reserveSendSlot(acc);
+    // Pacing is two separate things. The daily cap and the send window are
+    // limits on mail this install sends by itself, and they apply to every
+    // automated message whether or not it also wants to look unhurried; a
+    // person's own scheduled message is not outreach and is never held by
+    // them. The random gap is the optional half: it is what "natural delay"
+    // means, and a responder that turns it off is still capped.
+    const automated = payload.kind === 'auto_reply';
+    if (automated || payload.humanize) {
+      const slot = await reserveSendSlot(acc, { jitter: Boolean(payload.humanize) });
       if (!slot.ok) {
         await query(`UPDATE outbox SET status='scheduled', attempts = attempts - 1, send_at=$2 WHERE id=$1`, [id, new Date(slot.retryAt.getTime() + Math.random() * 30_000)]);
         continue;
@@ -309,6 +314,30 @@ function waitMs(step: StepRow): number {
   return (step.wait_days * 24 + step.wait_hours) * 3600_000;
 }
 
+// How long a step may sleep on a closed window or a spent cap before it asks
+// again. A deferral is computed from the account as it is at that moment, and
+// both halves of it can be edited while the row sleeps: widening a window or
+// raising a cap should not leave mail parked until tomorrow on a rule that no
+// longer exists. Waking early is cheap — a few selects and the same gate,
+// with no model call, because generation happens after the gate — so the
+// deferral is capped and re-asked rather than trusted for hours.
+export const MAX_DEFER_MS = 15 * 60_000;
+
+export function deferUntil(retryAt: Date): Date {
+  return new Date(Math.min(retryAt.getTime() + Math.random() * 60_000, Date.now() + MAX_DEFER_MS));
+}
+
+// When the step after the one just sent becomes due. A wait step owns its own
+// delay — it applies `waitMs` when it runs — so it is only made due here.
+// Adding the delay in both places counted it twice, and a four-day wait took
+// eight. Anything else waits out the account's randomised gap, with a floor so
+// two emails never leave in the same minute.
+export function nextRunAfterSend(next: StepRow | undefined, acc: Pick<AccountRow, 'jitter_enabled' | 'jitter_min_s' | 'jitter_max_s'>): Date | null {
+  if (!next) return null;
+  if (next.kind === 'wait') return new Date();
+  return new Date(Date.now() + Math.max(jitterMs(acc), 60_000));
+}
+
 async function runEnrollment(enr: any): Promise<void> {
   const seq = await one<any>('SELECT * FROM sequences WHERE id=$1', [enr.sequence_id]);
   if (!seq || seq.status !== 'active') { await query(`UPDATE enrollments SET next_run_at = now() + interval '1 hour' WHERE id=$1`, [enr.id]); return; }
@@ -343,7 +372,7 @@ async function runEnrollment(enr: any): Promise<void> {
   if (willGenerate && seq.ai_mode === 'auto') {
     const gate = await sendingBlocked(acc);
     if (gate) {
-      await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, new Date(gate.retryAt.getTime() + Math.random() * 60_000)]);
+      await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, deferUntil(gate.retryAt)]);
       log.debug(`enrollment ${enr.id} deferred before generating (${gate.reason}) until ${gate.retryAt.toISOString()}`);
       return;
     }
@@ -395,7 +424,7 @@ async function runEnrollment(enr: any): Promise<void> {
 
   const slot = await reserveSendSlot(acc);
   if (!slot.ok) {
-    await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, new Date(slot.retryAt.getTime() + Math.random() * 60_000)]);
+    await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, deferUntil(slot.retryAt)]);
     log.debug(`enrollment ${enr.id} deferred (${slot.reason}) until ${slot.retryAt.toISOString()}`);
     return;
   }
@@ -422,10 +451,7 @@ async function runEnrollment(enr: any): Promise<void> {
 
   const nextIndex = enr.current_step + 1;
   const next = steps[nextIndex];
-  let nextRun: Date | null;
-  if (!next) nextRun = null;
-  else if (next.kind === 'wait') nextRun = new Date(Date.now() + waitMs(next));
-  else nextRun = new Date(Date.now() + Math.max(jitterMs(acc), 60_000));
+  const nextRun = nextRunAfterSend(next, acc);
   if (!next) {
     await query(`UPDATE enrollments SET current_step=$2, last_message_id=$3, thread_id=COALESCE($4, thread_id), last_subject=$5, status='finished', finished_at=now(), next_run_at=NULL, error=NULL, updated_at=now() WHERE id=$1`, [enr.id, nextIndex, outcome.messageId, outcome.threadId, finalSubject]);
     publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'finished' });
@@ -594,10 +620,10 @@ async function runResponderJob(job: any): Promise<string> {
   }
   // A reply to someone whose key is on file goes back encrypted.
   const payload = { to: gen.to, subject: gen.subject, html: gen.html, replyToEmailId: email.id, kind: 'auto_reply', contactId: contact?.id ?? null, responderId: responder.id, includeSignature: true, encrypt: 'if_possible' };
-  if (responder.humanize) {
-    await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, await seal(acc.user_id, JSON.stringify({ ...payload, humanize: true }))]);
-    return 'queued to send with natural delay';
-  }
-  await composeAndSend(acc, payload as any);
-  return 'sent';
+  // Both paths queue. Sending straight from here would have skipped the
+  // account's daily cap and send window along with the delay, which made
+  // "no natural delay" quietly mean "no limits at all" — the one thing an
+  // automated responder must not be able to do.
+  await query('INSERT INTO outbox (user_id, account_id, payload, send_at) VALUES ($1,$2,$3,now())', [acc.user_id, acc.id, await seal(acc.user_id, JSON.stringify({ ...payload, humanize: Boolean(responder.humanize) }))]);
+  return responder.humanize ? 'queued to send with natural delay' : 'queued to send';
 }

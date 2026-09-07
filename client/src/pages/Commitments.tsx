@@ -8,15 +8,21 @@
 //
 // Every row is editable and dismissible. The model only ever proposed it;
 // the person decides whether it was really a commitment.
-import { useCallback, useEffect, useState } from 'react';
+//
+// Drawn as two columns rather than two stacked lists. They are answers to
+// different questions and you want both at once — "what is on me" beside
+// "what is on somebody else" — and stacked, the second one is below the fold
+// on every screen. Inside a column the order is urgency, not arrival: late
+// first, then soonest, then the ones with no date at all.
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Clock, Plus, Timer, X } from 'lucide-react';
+import { Check, ChevronRight, Clock, Plus, Timer, X } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { useFeatures } from '../state/features';
-import { Badge, Button, Empty, Field, Input, Modal, PageHeader, Select, Spinner } from '../components/ui';
+import { Avatar, Badge, Button, Empty, Field, Input, Modal, PageHeader, Select, Spinner } from '../components/ui';
 import { FeatureOffNotice } from './Features';
 import { useToast } from '../state/toast';
-import { fmtDate } from '../lib/format';
+import { cls, dueIn } from '../lib/format';
 
 interface Commitment {
   id: number;
@@ -29,6 +35,16 @@ interface Commitment {
   accountId: number;
   source: 'ai' | 'manual';
   createdAt: string;
+}
+
+// Late first, then by how soon, then the undated. A commitment with no date
+// is not urgent — it is unscheduled — so it belongs at the bottom rather
+// than sorted as though it were due at the epoch.
+function byUrgency(a: Commitment, b: Commitment): number {
+  const ta = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
+  const tb = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
+  if (ta !== tb) return ta - tb;
+  return a.id - b.id;
 }
 
 export default function CommitmentsPage() {
@@ -57,11 +73,20 @@ export default function CommitmentsPage() {
     catch (e) { toast.error(e); void load(); }
   };
 
-  if (featuresLoading || loading) return <div className="center pad-24"><Spinner /></div>;
+  const { owed, awaiting, overdue } = useMemo(() => {
+    const now = Date.now();
+    return {
+      owed: items.filter((c) => c.kind === 'owed').sort(byUrgency),
+      awaiting: items.filter((c) => c.kind === 'awaiting').sort(byUrgency),
+      overdue: items.filter((c) => c.dueAt && new Date(c.dueAt).getTime() < now).length,
+    };
+  }, [items]);
+
+  if (featuresLoading || loading) return <div className="page center pad-24"><Spinner /></div>;
 
   if (!allowed) {
     return (
-      <div className="stack-20">
+      <div className="page page-read">
         <PageHeader title="Commitments" sub="What you promised, and what you are waiting on." />
         <FeatureOffNotice cap={info('commitments')}>
           This reads your conversations to find the specific things people said they would do — yours
@@ -72,71 +97,115 @@ export default function CommitmentsPage() {
     );
   }
 
-  const owed = items.filter((c) => c.kind === 'owed');
-  const awaiting = items.filter((c) => c.kind === 'awaiting');
-
   return (
-    <div className="stack-20">
+    <div className="page">
       <PageHeader
         title="Commitments"
-        sub={items.length ? `${owed.length} owed, ${awaiting.length} awaiting` : 'Nothing outstanding.'}
+        sub={items.length
+          ? <>{owed.length} on you, {awaiting.length} on somebody else{overdue > 0 ? <> · <span className="commit-late-note">{overdue} past its date</span></> : null}</>
+          : 'Nothing outstanding.'}
         actions={<Button icon={<Plus size={15} />} onClick={() => setAdding(true)}>Add one</Button>}
       />
 
-      {!items.length && (
+      {!items.length ? (
         <Empty icon={<Check size={26} />} title="Nothing outstanding">
           Nothing in your recent conversations is waiting on you or on anyone else. New ones appear
           here as your mail is read.
         </Empty>
+      ) : (
+        <div className="commit-board">
+          <Column
+            title="You said you would"
+            icon={<Clock size={14} />}
+            kind="owed"
+            empty="Nothing is on you right now."
+            items={owed}
+            onClose={close}
+          />
+          <Column
+            title="You are waiting on"
+            icon={<Timer size={14} />}
+            kind="awaiting"
+            empty="You are not waiting on anybody."
+            items={awaiting}
+            onClose={close}
+          />
+        </div>
       )}
-
-      <List title="You said you would" icon={<Clock size={15} />} items={owed} onClose={close} />
-      <List title="You are waiting on" icon={<Timer size={15} />} items={awaiting} onClose={close} />
 
       <AddModal open={adding} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); void load(); }} />
     </div>
   );
 }
 
-function List({ title, icon, items, onClose }: { title: string; icon: React.ReactNode; items: Commitment[]; onClose: (id: number, s: 'done' | 'dropped') => void }) {
-  if (!items.length) return null;
-  const now = Date.now();
+// A column keeps its header and its frame even when it is empty, so the board
+// does not reflow into one lopsided list the moment you clear one side.
+function Column({ title, icon, kind, items, empty, onClose }: {
+  title: string; icon: React.ReactNode; kind: 'owed' | 'awaiting';
+  items: Commitment[]; empty: string; onClose: (id: number, s: 'done' | 'dropped') => void;
+}) {
   return (
-    <section className="stack-8">
-      <h3 className="section-title">{icon} {title}</h3>
-      <div className="card commitment-list">
-        {items.map((c) => {
-          const overdue = c.dueAt ? new Date(c.dueAt).getTime() < now : false;
-          return (
-            <div key={c.id} className="commitment-row">
-              <div className="commitment-body">
-                <div className="commitment-text">{c.text}</div>
-                <div className="commitment-meta muted small">
-                  {c.counterparty && <span>{c.counterparty}</span>}
-                  {c.dueAt && (
-                    <Badge kind={overdue ? 'danger' : undefined}>
-                      {overdue ? 'Overdue' : 'By'} {fmtDate(c.dueAt, { always: true })}
-                    </Badge>
-                  )}
-                  {c.source === 'manual' && <Badge>Added by you</Badge>}
-                  {c.threadId && (
-                    <Link to={`/mail/inbox/t/${c.accountId}:${c.threadId}`}>Open the conversation</Link>
-                  )}
-                </div>
-              </div>
-              <div className="commitment-actions">
-                <Button size="sm" icon={<Check size={14} />} onClick={() => onClose(c.id, 'done')}>Done</Button>
-                {/* "Not a commitment" rather than "delete": the model proposed
-                    it, and saying so is how somebody learns what the list is. */}
-                <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => onClose(c.id, 'dropped')}>
-                  Not a commitment
-                </Button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+    <section className={cls('card commit-col', `commit-col-${kind}`)}>
+      <h2 className="commit-col-head">
+        <span className={`commit-col-icon commit-col-icon-${kind}`}>{icon}</span>
+        <span className="commit-col-title">{title}</span>
+        <span className="commit-col-count">{items.length}</span>
+      </h2>
+      {items.length
+        ? <div className="commit-list">{items.map((c) => <Row key={c.id} c={c} onClose={onClose} />)}</div>
+        : <p className="commit-col-empty">{empty}</p>}
     </section>
+  );
+}
+
+function Row({ c, onClose }: { c: Commitment; onClose: (id: number, s: 'done' | 'dropped') => void }) {
+  const due = dueIn(c.dueAt);
+  return (
+    <div className={cls('commit-row', due?.late && 'commit-row-late')}>
+      {/* The other party is the fastest thing to recognise in a row of
+          sentences, so it gets the colour and the left edge. Without one
+          — a note you wrote yourself — the slot stays, dimmed, rather than
+          collapsing and knocking every row out of alignment. */}
+      {c.counterparty
+        ? <Avatar name={c.counterparty} size="sm" className="commit-who" />
+        : <span className="commit-who commit-who-none" aria-hidden="true" />}
+
+      <div className="commit-body">
+        {/* The promise itself is the way into the conversation it came from.
+            A row that spelled out "open the conversation" said the same six
+            words twenty times down a column and still left the sentence
+            above it looking inert. */}
+        {c.threadId
+          ? <Link className="commit-text commit-text-link" to={`/mail/inbox/t/${c.accountId}:${c.threadId}`}>
+              {c.text}<ChevronRight className="commit-go" size={14} />
+            </Link>
+          : <div className="commit-text">{c.text}</div>}
+        {/* Who and when on the left, the ways out on the right, and they
+            share a line whenever the column is wide enough to hold both. */}
+        <div className="commit-foot">
+          <div className="commit-meta">
+            {c.counterparty && <span className="commit-party">{c.counterparty}</span>}
+            {due && <Badge kind={due.late ? 'danger' : due.today ? 'warning' : undefined}>{due.label}</Badge>}
+            {c.source === 'manual' && <Badge>Added by you</Badge>}
+          </div>
+
+          {/* Both ways out sit in the row and hold their space: a commitment
+              you cannot see how to close is one that stays open. They are
+              quiet until the row is under the pointer, because on a list of
+              twenty the buttons otherwise read louder than the promises. */}
+          <div className="commit-acts">
+            <button type="button" className="commit-act commit-act-done" onClick={() => onClose(c.id, 'done')} title="Mark this done">
+              <Check size={14} /><span>Done</span>
+            </button>
+            {/* "Not a commitment" rather than "delete": the model proposed
+                it, and saying so is how somebody learns what the list is. */}
+            <button type="button" className="commit-act" onClick={() => onClose(c.id, 'dropped')} title="This was never a commitment">
+              <X size={14} /><span>Not a commitment</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

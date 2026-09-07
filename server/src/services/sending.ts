@@ -78,7 +78,11 @@ export async function sendingBlocked(acc: AccountRow): Promise<{ reason: 'cap' |
 // Decide whether an automated send may go out now, and if so claim the slot
 // by pushing next_send_at forward with fresh jitter. Uses a row lock so two
 // scheduler ticks cannot both claim the same gap.
-export async function reserveSendSlot(acc: AccountRow): Promise<SlotResult> {
+// `jitter: false` asks for the limits without the delay. The daily cap and
+// the send window are limits on automated mail and are not negotiable by the
+// caller; the random gap is the part a responder may reasonably turn off,
+// and turning it off must not also turn off the cap.
+export async function reserveSendSlot(acc: AccountRow, opts: { jitter?: boolean } = {}): Promise<SlotResult> {
   if (!acc.enabled) return { ok: false, reason: 'disabled', retryAt: new Date(Date.now() + 3600_000) };
   const now = new Date();
   if (!isWindowOpen(acc.send_window, now)) return { ok: false, reason: 'window', retryAt: nextWindowOpen(acc.send_window, now) };
@@ -87,7 +91,7 @@ export async function reserveSendSlot(acc: AccountRow): Promise<SlotResult> {
   const row = await one<{ next_send_at: Date | null }>(`SELECT next_send_at FROM accounts WHERE id=$1 FOR UPDATE`, [acc.id]);
   const gate = row?.next_send_at ? new Date(row.next_send_at) : null;
   if (gate && gate.getTime() > now.getTime()) return { ok: false, reason: 'gap', retryAt: gate };
-  const wait = jitterMs(acc);
+  const wait = opts.jitter === false ? 0 : jitterMs(acc);
   await query(`UPDATE accounts SET next_send_at = now() + ($2 || ' milliseconds')::interval WHERE id=$1`, [acc.id, String(wait)]);
   return { ok: true, waitMs: wait };
 }

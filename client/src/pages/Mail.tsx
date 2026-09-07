@@ -59,10 +59,24 @@ export function dateGroup(iso: string, now = new Date()): string {
   return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' });
 }
 
-// Who a conversation is "from", for stacking. Threads with no sender never
-// stack: an empty key would fold unrelated rows together.
-function senderKey(t: ThreadRow): string {
-  return String(t.latest?.from?.[0]?.email ?? '').toLowerCase();
+// Who a conversation is "from", for stacking. The newest message in a thread
+// is not always the other party's: a reply you sent bumps the thread the same
+// as one that arrived, so keying on it folded every conversation you had
+// answered into one pile under your own name. Your own addresses are never
+// the key — when the last word was yours the stack is the one other person on
+// the thread. Threads with nobody else on them, and threads with several,
+// return an empty key and never stack.
+function senderKey(t: ThreadRow, mine: Set<string>): string {
+  const from = String(t.latest?.from?.[0]?.email ?? '').toLowerCase();
+  if (from && !mine.has(from)) return from;
+  const others = new Set((t.participants ?? []).map((a) => String(a?.email ?? '').toLowerCase()).filter((e) => e && !mine.has(e)));
+  return others.size === 1 ? [...others][0] : '';
+}
+
+// The address a stack is keyed on, as it is written on the thread, for the
+// "3 more from …" line. The head row's newest sender may be you.
+function stackFrom(t: ThreadRow, key: string): Addr | undefined {
+  return [...(t.latest?.from ?? []), ...(t.participants ?? [])].find((a) => String(a?.email ?? '').toLowerCase() === key);
 }
 
 export default function MailPage() {
@@ -84,6 +98,9 @@ export default function MailPage() {
   const [acctFilter] = useAccountFilter();
   const { data: accounts = [] } = useAccounts();
   const { data: mailboxes = [] } = useMailboxes();
+  // Every address that is you, across accounts: what a stack of conversations
+  // is keyed on has to be someone else.
+  const myEmails = useMemo(() => new Set(accounts.map((a) => a.email.toLowerCase())), [accounts]);
   const wide = useMediaQuery('(min-width: 1180px)');
   const tall = useMediaQuery('(min-width: 900px)');
   const [prefs, setPrefs] = useMailPrefs();
@@ -249,15 +266,17 @@ export default function MailPage() {
   // A run of messages from one sender reads as one thing — six receipts from
   // the same shop, a week of alerts from one service — so consecutive rows
   // from the same address fold into a stack that opens. Only ever within one
-  // date group, and never across the separator that starts a new one.
-  const stacks: { sep?: string; rows: ThreadRow[]; indices: number[] }[] = [];
+  // date group, and never across the separator that starts a new one, and
+  // never before the account list has arrived: until it has, there is no way
+  // to tell your own addresses from anyone else's.
+  const stacks: { sep?: string; rows: ThreadRow[]; indices: number[]; sender: string }[] = [];
   for (const item of grouped) {
     const head = stacks[stacks.length - 1];
-    const sender = senderKey(item.row);
-    if (prefs.digest && head && !item.sep && sender && senderKey(head.rows[0]) === sender && head.rows.length < 12) {
+    const sender = senderKey(item.row, myEmails);
+    if (prefs.digest && accounts.length > 0 && head && !item.sep && sender && head.sender === sender && head.rows.length < 12) {
       head.rows.push(item.row); head.indices.push(item.index);
     } else {
-      stacks.push({ sep: item.sep, rows: [item.row], indices: [item.index] });
+      stacks.push({ sep: item.sep, rows: [item.row], indices: [item.index], sender });
     }
   }
 
@@ -380,7 +399,7 @@ export default function MailPage() {
             {q && !isLoading && <SemanticResults query={searchWords(q)} />}
             <div className="thread-rows" role="listbox" aria-multiselectable="true"
               aria-label={q ? `Search results for ${q}` : `Conversations in ${mailboxName}`} onKeyDown={onListKeys}>
-            {stacks.map(({ sep, rows, indices }) => {
+            {stacks.map(({ sep, rows, indices, sender }) => {
               const headKey = rows[0].key;
               const stacked = rows.length > 1;
               const open = openStacks.has(headKey);
@@ -406,7 +425,7 @@ export default function MailPage() {
                   {stacked && (
                     <button type="button" className="digest-toggle" onClick={() => setOpenStacks((s) => { const n = new Set(s); if (n.has(headKey)) n.delete(headKey); else n.add(headKey); return n; })}>
                       <Layers size={13} />
-                      {open ? 'Show less' : `${rows.length - 1} more from ${addrName(rows[0].latest?.from?.[0]) || 'this sender'}`}
+                      {open ? 'Show less' : `${rows.length - 1} more from ${addrName(stackFrom(rows[0], sender)) || 'this sender'}`}
                       <ChevronDown size={13} className={cls('digest-caret', open && 'up')} />
                     </button>
                   )}

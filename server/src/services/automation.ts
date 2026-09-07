@@ -152,8 +152,11 @@ async function handleBounce(acc: AccountRow, e: any, logs: SendLogRow[]): Promis
     }
     if (l.contact_id) {
       await query(`UPDATE contacts SET status='bounced', updated_at=now() WHERE id=$1 AND status='active'`, [l.contact_id]);
-      await query(`INSERT INTO suppressions (user_id, email, reason, source) VALUES ($1, lower($2), 'bounce', $3) ON CONFLICT (user_id, email) DO NOTHING`, [acc.user_id, l.to_email, `bounce report ${e.id}`]);
     }
+    // Suppressing the address does not need a contact row. An address that
+    // bounced is dead whether or not it is in the address book, and sending
+    // to it again spends this domain's reputation on nothing.
+    await query(`INSERT INTO suppressions (user_id, email, reason, source) VALUES ($1, lower($2), 'bounce', $3) ON CONFLICT (user_id, email) DO NOTHING`, [acc.user_id, l.to_email, `bounce report ${e.id}`]);
   }
   log.info('bounce recorded', { account: acc.id, matched: logs.length });
 }
@@ -162,12 +165,20 @@ async function handleReply(acc: AccountRow, e: any, logs: SendLogRow[], contact:
   for (const l of logs) await query(`UPDATE send_log SET replied_at=now() WHERE id=$1 AND replied_at IS NULL`, [l.id]);
   const contactId: number | null = contact?.id ?? logs.find((l) => l.contact_id)?.contact_id ?? null;
   const wantsStop = STOP_RE.test(firstLines(text));
+  // "Stop" is the strongest opt-out there is, so it is recorded first and
+  // without needing a contact row: a reply can arrive on a send whose contact
+  // was deleted since, or on mail composed by hand, and dropping the request
+  // in those cases would mean writing again to someone who asked us not to.
+  // Suppression is keyed on the address, which is always known here; only the
+  // contact's own status needs the row.
+  const repliedFrom: string | null = contact?.email ?? logs.find((l) => l.to_email)?.to_email ?? null;
+  if (wantsStop && repliedFrom) {
+    await query(`INSERT INTO suppressions (user_id, email, reason, source) VALUES ($1, lower($2), 'reply_stop', $3) ON CONFLICT (user_id, email) DO UPDATE SET reason='reply_stop'`, [acc.user_id, repliedFrom, `reply ${e.id}`]);
+  }
   if (contactId) {
     await query(`UPDATE contacts SET last_replied_at=now(), status = CASE WHEN status='active' THEN 'replied' ELSE status END, updated_at=now() WHERE id=$1`, [contactId]);
     await query(`INSERT INTO contact_threads (contact_id, account_id, thread_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [contactId, acc.id, e.threadId]);
     if (wantsStop) {
-      const email: string = contact?.email ?? logs[0]?.to_email;
-      await query(`INSERT INTO suppressions (user_id, email, reason, source) VALUES ($1, lower($2), 'reply_stop', $3) ON CONFLICT (user_id, email) DO UPDATE SET reason='reply_stop'`, [acc.user_id, email, `reply ${e.id}`]);
       await query(`UPDATE contacts SET status='unsubscribed', updated_at=now() WHERE id=$1`, [contactId]);
     }
   }

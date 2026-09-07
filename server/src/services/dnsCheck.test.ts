@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRecords, normIp6, parseZone } from './dnsCheck.js';
+import { buildRecords, normIp6, parseZone, splitSrvName } from './dnsCheck.js';
 import { generateDefaultSvg, sanitizeSvg } from './brand.js';
 
 const ZONE = `v1-rsa-20260905._domainkey.probe.test. IN TXT (
@@ -82,6 +82,21 @@ test('buildRecords adds A, PTR and BIMI and groups by importance', () => {
   const groups = recs.map((r) => r.group);
   assert.equal(groups.indexOf('recommended') > groups.lastIndexOf('required'), true);
   assert.ok(recs.find((r) => r.value.startsWith('v=DMARC1'))!.purpose.includes('BIMI'));
+});
+
+test('splitSrvName breaks a name into the fields a registrar asks for', () => {
+  assert.deepEqual(splitSrvName('_jmap._tcp.probe.test', 'probe.test'), { service: '_jmap', protocol: '_tcp', host: '@' });
+  // A record under a subdomain keeps the label, without the zone repeated.
+  assert.deepEqual(splitSrvName('_imaps._tcp.mail.probe.test', 'probe.test'), { service: '_imaps', protocol: '_tcp', host: 'mail' });
+  assert.deepEqual(splitSrvName('_jmap._tcp.probe.test.', 'probe.test.'), { service: '_jmap', protocol: '_tcp', host: '@' });
+  // Anything that is not service._protocol.zone is left whole rather than cut in the wrong place.
+  assert.deepEqual(splitSrvName('probe.test', 'probe.test'), { service: '', protocol: '', host: 'probe.test' });
+});
+
+test('buildRecords carries the SRV fields for the mail-app rows', () => {
+  const srv = buildRecords({ zone: ZONE, domain: 'probe.test', mailHost: 'mail.probe.test', serverIp: '203.0.113.5' }).find((r) => r.type === 'SRV')!;
+  assert.equal(srv.group, 'clients');
+  assert.deepEqual(srv.srv, { service: '_imaps', protocol: '_tcp', host: '@', priority: 0, weight: 1, port: 993, target: 'mail.probe.test' });
 });
 
 test('sanitizeSvg accepts clean logos and rejects unsafe ones', () => {

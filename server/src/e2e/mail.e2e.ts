@@ -2,11 +2,16 @@
 // Real mail goes between alice@ and bob@probe.test (both owned by user 1);
 // every scenario is what a person would do in the client, driven through the
 // same HTTP API the browser uses. Run: npx tsx server/src/e2e/mail.e2e.ts
+// Message content is sealed at rest, so the checks below open rows with the
+// owner's own key rather than matching ciphertext in SQL. That needs the
+// install's ENCRYPTION_KEY, so run this with the env file:
+//   npx tsx --env-file=.env.dev server/src/e2e/mail.e2e.ts
 //   TERN_BASE  (default http://127.0.0.1:3090)   DATABASE_URL (default dev db)
 //   ONLY=group,group   to run a subset (reply, undo, undoable, mute, empty, ai, search, labels, images, list, drafts)
 import pg from 'pg';
 import { createHash, randomBytes } from 'node:crypto';
 import net from 'node:net';
+import { openEmails } from '../services/mailVault.js';
 
 const BASE = process.env.TERN_BASE ?? 'http://127.0.0.1:3090';
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? 'postgres://tern:tern@127.0.0.1:5480/tern' });
@@ -84,9 +89,37 @@ async function send(accountId: number, body: Record<string, unknown>) {
   if (r.status !== 200) throw new Error(`send failed ${r.status}: ${JSON.stringify(r.data)}`);
   return r.data;
 }
-const arrived = (accountId: number, subject: string, extra = '', timeoutMs = 90_000) => waitFor<Email>(`"${subject}" in account ${accountId}${extra}`, async () => (await sql<Email>('SELECT * FROM emails WHERE account_id=$1 AND subject=$2 ORDER BY id DESC LIMIT 1', [accountId, subject]))[0], timeoutMs);
+// Which user's key opens a given account's mail. Accounts belong to different
+// people here — the sink mailbox is someone else's — and opening a row with
+// the wrong key yields nothing rather than an error, so this is not optional.
+const acctUser = new Map<number, number>();
+async function userOf(accountId: number): Promise<number> {
+  let u = acctUser.get(accountId);
+  if (u === undefined) {
+    u = Number((await sql<{ user_id: number }>('SELECT user_id FROM accounts WHERE id=$1', [accountId]))[0]?.user_id);
+    acctUser.set(accountId, u);
+  }
+  return u;
+}
+
+// Subject, body and the address lists are sealed in the database, so a
+// message cannot be found with a WHERE clause on its subject. Recent rows for
+// the account are opened with the owner's own key — 'owner' is the same
+// reader the client itself uses, and needs no capability — and matched in
+// memory. Everything returned is plaintext, so the checks below read it the
+// way they always did.
+async function openedFor(accountId: number, limit = 150): Promise<Email[]> {
+  const rows = await sql<Email>('SELECT * FROM emails WHERE account_id=$1 ORDER BY id DESC LIMIT $2', [accountId, limit]);
+  // `Opened` widens the content fields to optional; openEmailWith always
+  // writes a string for subject and preview, so they are read as before.
+  return rows.length ? ((await openEmails<Email>(await userOf(accountId), 'owner', rows)) as Email[]) : [];
+}
+const arrived = (accountId: number, subject: string, extra = '', timeoutMs = 90_000) => waitFor<Email>(`"${subject}" in account ${accountId}${extra}`, async () => (await openedFor(accountId)).find((e) => e.subject === subject), timeoutMs);
 const inInbox = async (e: Email) => e.mailbox_ids.includes(await roleBox(e.mailbox_ids.length ? Number((await sql('SELECT account_id FROM emails WHERE id=$1', [e.id]))[0].account_id) : 0, 'inbox'));
-async function fresh(accountId: number, id: number): Promise<Email> { return (await sql<Email>('SELECT * FROM emails WHERE id=$1', [id]))[0]; }
+async function fresh(accountId: number, id: number): Promise<Email> {
+  const rows = await sql<Email>('SELECT * FROM emails WHERE id=$1', [id]);
+  return rows.length ? ((await openEmails<Email>(await userOf(accountId), 'owner', rows))[0] as Email) : rows[0];
+}
 async function act(accountId: number, body: Record<string, unknown>) { const r = await api('POST', '/api/mail/actions', { accountId, ...body }); if (r.status !== 200) throw new Error(`action failed ${r.status}: ${JSON.stringify(r.data)}`); return r.data; }
 async function aliceToBob(subject: string, extra: Record<string, unknown> = {}): Promise<{ a: Email; b: Email }> {
   await send(ALICE, { to: [{ name: 'Bob Probe', email: 'bob@probe.test' }], subject, html: `<p>Hello Bob, ${subject}</p>`, ...extra });
@@ -108,7 +141,7 @@ const replyGroup = group('reply', async () => {
   await test('bob\'s reply threads under the original for alice: In-Reply-To, References, same thread', async () => {
     const r = await send(BOB, { to: [{ email: 'alice@probe.test' }], subject: `Re: ${subject}`, html: '<p>Hi Alice, yes!</p><div class="tern-quote"><blockquote>Hello Bob</blockquote></div>', replyToEmailId: b.id });
     ok(r.messageId, 'message id returned');
-    reply = await waitFor('reply at alice', async () => { const rows = await sql<Email>('SELECT * FROM emails WHERE account_id=$1 AND subject=$2 ORDER BY id DESC LIMIT 1', [ALICE, `Re: ${subject}`]); return rows[0]; });
+    reply = await arrived(ALICE, `Re: ${subject}`, ' as a reply');
     eq(reply.in_reply_to, b.message_id, 'In-Reply-To');
     ok(reply.references_ids.includes(b.message_id[0]), 'References includes original');
     eq(reply.thread_id, a.thread_id, 'same thread as alice\'s original');
@@ -163,7 +196,7 @@ const replyGroup = group('reply', async () => {
     const keep = withAtt.b.attachments.find((x: any) => x.name === 'notes.txt');
     const s4 = `Fwd: ${withAtt.b.subject}`;
     await send(BOB, { to: [{ email: 'alice@probe.test' }], subject: s4, html: '<p>fyi</p><div class="tern-quote">---------- Forwarded message ---------</div>', forwardOfEmailId: withAtt.b.id, forwardBlobIds: [keep.blobId] });
-    const got = await waitFor('forward at alice', async () => (await sql<Email>('SELECT * FROM emails WHERE account_id=$1 AND subject=$2 ORDER BY id DESC LIMIT 1', [ALICE, s4]))[0]);
+    const got = await arrived(ALICE, s4, ' as a forward');
     eq(got.attachments.map((x: any) => x.name), ['notes.txt']);
   });
   await test('forwarding with no blob ids drops every attachment; omitting the list forwards all', async () => {
@@ -231,7 +264,7 @@ const undoGroup = group('undo', async () => {
   });
   await test('the message never arrives after an undo', async () => {
     await sleep(11_000);
-    eq((await sql('SELECT 1 FROM emails WHERE account_id=$1 AND subject=$2', [BOB, s])).length, 0);
+    eq((await openedFor(BOB)).filter((e) => e.subject === s).length, 0);
     eq((await sql('SELECT 1 FROM send_log WHERE subject=$1', [s])).length, 0);
   });
   await test('an undo window that is left alone sends on time and logs as a plain compose, not scheduled', async () => {
@@ -481,7 +514,7 @@ const emptyGroup = group('empty', async () => {
     await api('POST', '/api/mail/empty', { box: 'trash', accountId: BOB });
     await api('POST', `/api/accounts/${BOB}/resync`);
     await sleep(4000);
-    eq((await sql('SELECT 1 FROM emails WHERE account_id=$1 AND subject=$2', [BOB, s])).length, 0);
+    eq((await openedFor(BOB)).filter((e) => e.subject === s).length, 0);
   });
   await test('the inbox count is unaffected by emptying', async () => {
     const before = (await api('GET', '/api/mail/counts')).data.inboxUnread;
