@@ -38,6 +38,8 @@ import { useToast } from '../state/toast';
 import { replyRecipients, replySubject } from '../lib/reply';
 import { Button, Field, Input, Textarea } from './ui';
 import { AiThinking, useAiThinking } from './AiThinking';
+import { DictateBox, appendDictated } from './Dictate';
+import { useMailPrefs } from '../state/mailPrefs';
 import { ProposeTimesButton, localZone } from './ProposeTimes';
 
 export interface MovableCommitment {
@@ -85,6 +87,7 @@ export function CommitmentMove({ c, onClose, onMoved }: {
   const toast = useToast();
   const canCalendar = useCan('calendar');
   const thinking = useAiThinking();
+  const [prefs] = useMailPrefs();
 
   const reschedule = c.kind === 'owed';
   const [reason, setReason] = useState('');
@@ -100,7 +103,10 @@ export function CommitmentMove({ c, onClose, onMoved }: {
   // the other depending on the zone it is rendered in.
   const dueAt = date ? new Date(`${date}T12:00:00`).toISOString() : null;
 
-  async function write() {
+  // Same reason as the AI panel: a dictation that fires this passes what it
+  // heard, because the state it just set is a render away.
+  async function write(saidReason?: string) {
+    const said = saidReason ?? reason;
     setBusy(true);
     setDraft('');
     setWrote(false);
@@ -112,7 +118,7 @@ export function CommitmentMove({ c, onClose, onMoved }: {
         commitmentId: c.id,
         accountId: c.accountId,
         threadKey: c.threadId ? `${c.accountId}:${c.threadId}` : null,
-        reason: [reason.trim(), times && `Offer these times: ${times}`].filter(Boolean).join('\n') || undefined,
+        reason: [said.trim(), times && `Offer these times: ${times}`].filter(Boolean).join('\n') || undefined,
         dueAt,
         tz: localZone(),
       }, {
@@ -157,14 +163,23 @@ export function CommitmentMove({ c, onClose, onMoved }: {
       <Field label={reschedule ? 'Why has it slipped?' : 'Anything to add?'} hint={reschedule
         ? 'One line, in your words. It goes into the email as the reason, so say the true thing rather than the polite one.'
         : 'Optional. Context the model should use — a deadline it is holding up, say.'}>
-        <Textarea
-          autoFocus
-          value={reason}
-          maxLength={500}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder={reschedule ? 'The pricing review slipped to next week' : 'We need it before the board meeting'}
-          style={{ minHeight: 56 }}
-        />
+        <DictateBox
+          title={reschedule ? 'Say why it slipped' : 'Say what to add'}
+          onText={(t) => {
+            const said = appendDictated(reason, t);
+            setReason(said);
+            if (prefs.dictateAutoRun) void write(said);
+          }}
+        >
+          <Textarea
+            autoFocus
+            value={reason}
+            maxLength={500}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={reschedule ? 'The pricing review slipped to next week' : 'We need it before the board meeting'}
+            style={{ minHeight: 56 }}
+          />
+        </DictateBox>
       </Field>
 
       <Field

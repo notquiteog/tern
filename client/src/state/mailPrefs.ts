@@ -26,9 +26,15 @@ export interface MailPrefs {
   sendAndArchive: boolean;
   showImagesFromContacts: boolean;
   markReadDelay: 0 | 2 | 5; // seconds a conversation stays unread after opening; 0 = at once
+  // Start generating the moment a dictation lands, instead of waiting for
+  // Generate to be pressed. Off unless asked for: a transcription can mishear
+  // you, and spending a slot on the model because somebody spoke is a choice
+  // to make rather than a default to inherit. Only applies where the result
+  // is a preview that still has to be accepted.
+  dictateAutoRun: boolean;
 }
 
-export const MAIL_PREF_DEFAULTS: MailPrefs = { categories: false, view: 'list', summaries: false, digest: false, undoSendSeconds: 10, layout: 'right', defaultReplyAll: false, sendAndArchive: false, showImagesFromContacts: true, markReadDelay: 0 };
+export const MAIL_PREF_DEFAULTS: MailPrefs = { categories: false, view: 'list', summaries: false, digest: false, undoSendSeconds: 10, layout: 'right', defaultReplyAll: false, sendAndArchive: false, showImagesFromContacts: true, markReadDelay: 0, dictateAutoRun: false };
 const KEY = 'tern.mail';
 const listeners = new Set<(p: MailPrefs) => void>();
 

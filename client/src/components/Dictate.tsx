@@ -11,9 +11,10 @@
 // The recording never touches disk on either side. It exists as a Blob in
 // the tab, goes up as the request body, and the server zeroes its buffer
 // before replying. Nothing is stored, here or there.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2, Mic, Square } from 'lucide-react';
 import { uploadWithWork } from '../lib/work';
+import { useVoiceConfigured } from '../lib/queries';
 import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
 
@@ -113,18 +114,10 @@ export function useDictation(onText: (text: string) => void) {
 // would fail.
 export function DictateButton({ onText, title = 'Dictate', className }: { onText: (text: string) => void; title?: string; className?: string }) {
   const can = useCan('voice');
-  const [configured, setConfigured] = useState<boolean | null>(null);
+  const { data: configured, isError } = useVoiceConfigured(can);
   const { state, toggle } = useDictation(onText);
 
-  useEffect(() => {
-    if (!can) return;
-    void fetch('/api/assist/voice', { credentials: 'same-origin', headers: { 'X-Requested-With': 'tern' } })
-      .then((r) => r.json())
-      .then((j) => setConfigured(Boolean(j.configured)))
-      .catch(() => setConfigured(false));
-  }, [can]);
-
-  if (!can || configured === false) return null;
+  if (!can || configured === false || isError) return null;
 
   return (
     <button
@@ -138,6 +131,30 @@ export function DictateButton({ onText, title = 'Dictate', className }: { onText
     >
       {state === 'working' ? <Loader2 size={15} className="spin" /> : state === 'recording' ? <Square size={14} /> : <Mic size={15} />}
     </button>
+  );
+}
+
+// Talking into a field that already has words in it adds to them rather than
+// replacing them: a second sentence spoken after a first is a second
+// sentence, not a correction. The space is the one the speaker would have
+// left. Search is the exception and says so where it overrides this.
+export function appendDictated(prev: string, text: string): string {
+  const base = prev.replace(/\s+$/, '');
+  return base ? `${base} ${text}` : text;
+}
+
+// A mic docked inside a text box rather than beside it, for the AI fields
+// that are a paragraph rather than a line. A button next to a full-width
+// textarea either squashes it or sits oddly under it; this puts the mic in a
+// gutter the text never runs into. When dictation is off the button renders
+// nothing and the CSS gives the gutter back, so those installs see exactly
+// the box they had.
+export function DictateBox({ onText, title = 'Dictate', className, children }: { onText: (text: string) => void; title?: string; className?: string; children: ReactNode }) {
+  return (
+    <div className={`dictate-box${className ? ` ${className}` : ''}`}>
+      {children}
+      <DictateButton className="btn-sm" title={title} onText={onText} />
+    </div>
   );
 }
 

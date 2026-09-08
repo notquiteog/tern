@@ -1478,6 +1478,19 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 @keyframes dictatePulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 54, 74, .45); } 50% { box-shadow: 0 0 0 5px rgba(217, 54, 74, 0); } }
 @media (prefers-reduced-motion: reduce) { .dictate-recording { animation: none; } }
 
+/* A mic docked inside a text box, for the AI fields that are a paragraph
+   rather than a line. :has() so the gutter is reserved only when the button
+   is really there — an install with dictation turned off, or with no
+   transcriber configured, gets back the full width of the box it always
+   had. Top right rather than bottom right: it clears the textarea's own
+   resize handle, and it does not move as the box grows. */
+.dictate-box { position: relative; min-width: 0; }
+.row > .dictate-box, .form-row > .dictate-box { flex: 1; }
+.dictate-box > .dictate-btn { position: absolute; top: 5px; right: 5px; }
+.dictate-box:has(> .dictate-btn) > .textarea { padding-right: 40px; }
+.dictate-box:has(> .dictate-btn) > .input { padding-right: 38px; }
+.dictate-box:has(> .input) > .dictate-btn { top: 50%; transform: translateY(-50%); }
+
 /* Admin → Features, and the retention table beside it. */
 .admin-feature-row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
 .admin-feature-row:last-child { border-bottom: 0; }

@@ -7,7 +7,8 @@ import { useToast } from '../state/toast';
 import { useAccounts, useMailboxes } from '../lib/queries';
 import { Badge, Button, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Toggle } from '../components/ui';
 import { ConditionsEditor } from '../components/Conditions';
-import { DictateButton } from '../components/Dictate';
+import { DictateButton, appendDictated } from '../components/Dictate';
+import { useMailPrefs } from '../state/mailPrefs';
 import { useCan } from '../state/features';
 import { postWithWork } from '../lib/work';
 const ACTIONS = [['archive', 'Skip the inbox (archive)'], ['mark_read', 'Mark as read'], ['star', 'Star it'], ['label', 'Apply label'], ['trash', 'Delete it'], ['spam', 'Mark as junk']];
@@ -81,6 +82,7 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   const [busy, setBusy] = useState(false);
   const [sentence, setSentence] = useState('');
   const [describing, setDescribing] = useState(false);
+  const [prefs] = useMailPrefs();
   const canDescribe = useCan('nlrules');
   const labels = mailboxes.filter((m) => !m.role && (accountId === '' || m.account_id === accountId));
   async function save() {
@@ -118,7 +120,14 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
             onKeyDown={(e) => { if (e.key === 'Enter' && sentence.trim().length > 3) { e.preventDefault(); void describe(sentence.trim()); } }}
             placeholder="Describe it: “when a receipt from Stripe arrives, label it Finance and skip the inbox”"
           />
-          <DictateButton title="Describe the rule out loud" onText={(t) => setSentence((v) => (v ? `${v} ${t}` : t))} />
+          <DictateButton
+            title="Describe the rule out loud"
+            onText={(t) => {
+              const said = appendDictated(sentence, t);
+              setSentence(said);
+              if (prefs.dictateAutoRun && said.trim().length > 3) void describe(said.trim());
+            }}
+          />
           <Button icon={describing ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} loading={describing} disabled={sentence.trim().length < 4} onClick={() => void describe(sentence.trim())}>
             Fill in
           </Button>

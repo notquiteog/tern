@@ -12,10 +12,12 @@ import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, ResetButton, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
+import { DictateBox, DictateButton, appendDictated } from '../components/Dictate';
 import { getAppearance, setAppearance, onAppearance, myAppearanceChoices, resetAppearance, resetAppearanceKeys, isMyChoice, type Theme, type Appearance } from '../state/theme';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
 import { Avatar } from '../components/ui';
 import { useMailPrefs } from '../state/mailPrefs';
+import { useCan } from '../state/features';
 import { fmtDateTime, fmtRelative, cls, describeUa } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { createPasskey, passkeysSupported } from '../lib/passkeys';
@@ -413,11 +415,36 @@ export function AiPlayground({ enabled }: { enabled: boolean }) {
   return (
     <div className="card mb-16">
       <div className="card-title"><h2>Playground</h2><span className="small muted">Uses the saved system prompt and tuning</span></div>
-      <div className="row mb-8"><Select className="input-sm" style={{ width: 150 }} value={playMode} onChange={(e) => setPlayMode(e.target.value as any)}><option value="compose">Draft</option><option value="reply">Reply</option><option value="rewrite">Rewrite</option><option value="subject">Subject line</option></Select><Input className="input-sm" value={playInstruction} onChange={(e) => setPlayInstruction(e.target.value)} placeholder="Instruction" /></div>
-      {(playMode === 'rewrite' || playMode === 'subject' || playMode === 'reply') && <Textarea className="mb-8" value={playDraft} onChange={(e) => setPlayDraft(e.target.value)} placeholder={playMode === 'reply' ? 'Paste the message you are replying to' : 'Paste the draft to work on'} style={{ minHeight: 70 }} />}
+      <div className="row mb-8"><Select className="input-sm" style={{ width: 150 }} value={playMode} onChange={(e) => setPlayMode(e.target.value as any)}><option value="compose">Draft</option><option value="reply">Reply</option><option value="rewrite">Rewrite</option><option value="subject">Subject line</option></Select><Input className="input-sm" value={playInstruction} onChange={(e) => setPlayInstruction(e.target.value)} placeholder="Instruction" /><DictateButton className="btn-sm" title="Say the instruction" onText={(t) => setPlayInstruction((v) => appendDictated(v, t))} /></div>
+      {(playMode === 'rewrite' || playMode === 'subject' || playMode === 'reply') && <DictateBox className="mb-8" title="Dictate the draft" onText={(t) => setPlayDraft((v) => appendDictated(v, t))}><Textarea value={playDraft} onChange={(e) => setPlayDraft(e.target.value)} placeholder={playMode === 'reply' ? 'Paste the message you are replying to' : 'Paste the draft to work on'} style={{ minHeight: 70 }} /></DictateBox>}
       <div className="row"><Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={testing} onClick={test} disabled={!enabled}>Run</Button></div>
       <AiThinking trace={thinking} busy={testing} className="mt-8" />
       {testOut && <div className="ai-preview mt-8">{testOut}</div>}
+    </div>
+  );
+}
+
+// Speaking into an instruction box, and having the draft start on its own.
+//
+// Opt-in, and only where the answer is a preview somebody still has to
+// accept: a mis-heard word costing a model slot is a nuisance, and a
+// mis-heard word overwriting an email that was already written is not. The
+// card is absent entirely when dictation is off, because a switch for a
+// feature you do not have is a question you cannot answer.
+function DictationCard() {
+  const can = useCan('voice');
+  const [p, set] = useMailPrefs();
+  if (!can) return null;
+  return (
+    <div className="card mb-16">
+      <div className="card-title"><h2>Dictation</h2></div>
+      <div className="row">
+        <Toggle checked={p.dictateAutoRun} onChange={(v) => set({ dictateAutoRun: v })} label="Generate as soon as I stop talking" />
+        <span className="small">Start generating as soon as a dictation lands, instead of waiting for Generate</span>
+      </div>
+      <div className="help-text mt-8">
+        Applies to AI drafts and replies, rescheduling and nudges, and rules described out loud — everywhere the answer arrives as a preview you still have to accept. Never where generating would replace something you have already written.
+      </div>
     </div>
   );
 }
@@ -431,6 +458,7 @@ function AiSettings() {
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI assistant" sub="Drafts, replies, rewrites, summaries and per-contact personalisation, generated on this server." actions={admin ? <NavLink className="btn" to="/admin/ai"><Server size={15} />Model and provider</NavLink> : undefined} />
       <div className="card mb-16"><AiStatusLine data={data} admin={admin} /></div>
+      <DictationCard />
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
       <div className="card">
         <div className="card-title"><h2>What the assistant never does on its own</h2></div>

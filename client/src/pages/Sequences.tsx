@@ -7,6 +7,7 @@ import { useToast } from '../state/toast';
 import { useAccounts, useSequences, useContactTags } from '../lib/queries';
 import { Badge, Button, Empty, Field, Input, Modal, PageHeader, Select, Textarea, Callout } from '../components/ui';
 import { textToHtml } from '../lib/format';
+import { DictateBox, DictateButton, appendDictated } from '../components/Dictate';
 
 const STATUS_KIND: Record<string, any> = { active: 'success', paused: 'warning', draft: undefined, archived: undefined };
 
@@ -163,7 +164,9 @@ function CampaignModal({ open, onClose, accounts }: { open: boolean; onClose: ()
     >
       <Callout>Write one sentence about what the email should say. The model writes a different email for each contact from that and their own fields, and you see three of them before anything is created.{!hasReviewedBefore && ' Your first campaign always goes through review — nothing is sent until you approve it.'}</Callout>
       <Field label="What should the email say?" hint="Facts only; nothing that is not here will be invented.">
-        <Textarea autoFocus value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they'd like a 15 minute walkthrough next week." style={{ minHeight: 90 }} />
+        <DictateBox title="Say what the email should say" onText={(t) => setBrief((v) => appendDictated(v, t))}>
+          <Textarea autoFocus value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="We just launched same-day bookkeeping reports for wholesale businesses. Existing customers get it free until January. Ask if they'd like a 15 minute walkthrough next week." style={{ minHeight: 90 }} />
+        </DictateBox>
       </Field>
       <div className="form-row">
         <Field label="Who to"><Select value={audience} onChange={(e) => setAudience(e.target.value as any)}><option value="tag">Contacts with a tag</option><option value="all">All active contacts</option><option value="none">Nobody yet (enroll later)</option></Select></Field>
@@ -195,7 +198,7 @@ function CampaignModal({ open, onClose, accounts }: { open: boolean; onClose: ()
             <Field label="Campaign name" hint={`Defaults to "${derivedName || 'New campaign'}"`}><Input value={name} onChange={(e) => setName(e.target.value)} placeholder={derivedName} /></Field>
             <Field label="Sending account"><Select value={acc} onChange={(e) => setAcc(Number(e.target.value))}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name} &lt;{a.email}&gt; · cap {a.daily_cap}/day</option>)}</Select></Field>
           </div>
-          <Field label="Style instructions"><Input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Under 100 words, no exclamation marks" /></Field>
+          <Field label="Style instructions"><div className="row"><Input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Under 100 words, no exclamation marks" /><DictateButton title="Say the style instructions" onText={(t) => setInstructions((v) => appendDictated(v, t))} /></div></Field>
           <Field label="Before sending" hint={hasReviewedBefore ? undefined : 'Available once you have reviewed and sent one campaign.'}>
             <Select value={effectiveMode} disabled={!hasReviewedBefore} onChange={(e) => setMode(e.target.value as any)}><option value="review">Review each draft</option><option value="auto">Send automatically</option></Select>
           </Field>

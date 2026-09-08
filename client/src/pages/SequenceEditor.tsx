@@ -11,6 +11,7 @@ import { SafeHtml } from '../components/SafeHtml';
 import { MERGE_FIELDS } from './Templates';
 import { fmtDateTime, fmtDuration, plural } from '../lib/format';
 import { DataTable } from '../components/DataTable';
+import { DictateBox, appendDictated } from '../components/Dictate';
 
 interface Step { id?: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean }
 
@@ -157,7 +158,7 @@ function StepCard({ step, index, stats, templates, onChange, onMove, onRemove, f
             {index > 0 && <div className="row"><Toggle checked={step.reply_in_thread} onChange={(v) => onChange({ reply_in_thread: v })} /><span className="small">Send as a reply in the same thread</span></div>}
             <div className="row"><Toggle checked={step.ai_personalize} onChange={(v) => onChange({ ai_personalize: v })} /><span className="small"><Sparkles size={13} /> AI personalise for each contact</span></div>
           </div>
-          {step.ai_personalize && <Field label="Instructions for the model" hint={aiMode === 'off' ? 'AI mode is off in Settings; the template is sent as written.' : aiMode === 'review' ? 'Each draft waits in AI review before sending.' : 'Drafts send automatically; consider review mode first.'} className="mt-8"><Textarea value={step.ai_instructions} onChange={(e) => onChange({ ai_instructions: e.target.value })} placeholder="Mention something specific about their company from the notes. Keep it under 90 words. No exclamation marks." style={{ minHeight: 60 }} /></Field>}
+          {step.ai_personalize && <Field label="Instructions for the model" hint={aiMode === 'off' ? 'AI mode is off in Settings; the template is sent as written.' : aiMode === 'review' ? 'Each draft waits in AI review before sending.' : 'Drafts send automatically; consider review mode first.'} className="mt-8"><DictateBox title="Say how to personalise this step" onText={(t) => onChange({ ai_instructions: appendDictated(step.ai_instructions ?? '', t) })}><Textarea value={step.ai_instructions} onChange={(e) => onChange({ ai_instructions: e.target.value })} placeholder="Mention something specific about their company from the notes. Keep it under 90 words. No exclamation marks." style={{ minHeight: 60 }} /></DictateBox></Field>}
         </div>
       )}
     </div>

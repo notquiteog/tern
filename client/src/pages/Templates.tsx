@@ -10,6 +10,7 @@ import { useAccounts, useTemplates } from '../lib/queries';
 import { Badge, Button, Callout, Confirm, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle } from '../components/ui';
 import { Editor, type EditorHandle } from '../components/Editor';
 import { SafeHtml } from '../components/SafeHtml';
+import { DictateBox, appendDictated } from '../components/Dictate';
 import { cls, fmtDate, textToHtml } from '../lib/format';
 
 export const MERGE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'title', 'email', 'domain', 'greeting', 'sender_name', 'sender_first_name', 'today', 'weekday', 'month', 'year', 'unsubscribe_url'];
@@ -142,7 +143,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
   const [subject, setSubject] = useState(isNew ? '' : template.subject);
   const [category, setCategory] = useState(isNew ? 'outreach' : template.category);
   const [description, setDescription] = useState(isNew ? '' : template.description ?? '');
-  const [brief, setBrief] = useState(isNew ? '' : template.ai_brief ?? '');
+  const [brief, setBrief] = useState<string>(isNew ? '' : template.ai_brief ?? '');
   const [includeSignature, setIncludeSignature] = useState(isNew ? true : template.include_signature !== false);
   const [starred, setStarred] = useState(isNew ? false : Boolean(template.starred));
   const html = useRef(isNew ? '' : template.body_html);
@@ -228,7 +229,7 @@ export function TemplateEditor({ template, onClose, onSaved }: { template: any |
             <div className="row"><Toggle checked={starred} onChange={setStarred} /><span className="small">Star (shown first)</span></div>
           </div>
           <Field label="AI brief" hint="Optional. 'Generate' writes a draft from it, and sequences with 'AI personalise' use it as the message to deliver for each contact." className="mt-16">
-            <div className="row" style={{ alignItems: 'flex-start' }}><Textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Introduce our bookkeeping service to small e-commerce shops; ask if they'd like a 15 minute call; mention we work with Shopify stores." style={{ minHeight: 60 }} /><Button variant="ai" icon={<Sparkles size={14} />} loading={gen} onClick={generate}>Generate</Button></div>
+            <div className="row" style={{ alignItems: 'flex-start' }}><DictateBox title="Say what this template should do" onText={(t) => setBrief((v) => appendDictated(v, t))}><Textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Introduce our bookkeeping service to small e-commerce shops; ask if they'd like a 15 minute call; mention we work with Shopify stores." style={{ minHeight: 60 }} /></DictateBox><Button variant="ai" icon={<Sparkles size={14} />} loading={gen} onClick={generate}>Generate</Button></div>
             <AiThinking trace={thinking} busy={gen} className="mt-8" />
           </Field>
         </div>

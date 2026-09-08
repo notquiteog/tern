@@ -8,6 +8,7 @@ import { Badge, Button, Callout, Confirm, Empty, Field, IconButton, Input, Modal
 import { ConditionsEditor, type Condition } from '../components/Conditions';
 import { fmtRelative } from '../lib/format';
 import { DataTable } from '../components/DataTable';
+import { DictateBox, appendDictated } from '../components/Dictate';
 
 const MODE_LABEL: Record<string, string> = { draft: 'Draft a reply', review: 'Queue for review', send: 'Send automatically' };
 const MODE_KIND: Record<string, any> = { draft: undefined, review: 'warning', send: 'danger' };
@@ -113,7 +114,7 @@ function ResponderEditor({ responder, onClose, onSaved }: { responder: any | 'ne
         </Select>
       </Field>
       {f.mode === 'send' && <Callout kind="danger">Automatic replies leave in your name. Keep "skip lists" on, keep the cap low, and consider "contacts only" so strangers and scanners never get an answer.</Callout>}
-      <Field label="Instructions for the model" hint="What the reply should do, in plain words. The model also sees the whole thread, the contact's notes, the account's writing voice and the system prompt from Settings → AI." className="mt-16"><Textarea value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Thank them, answer what you can from the thread, and offer a 20 minute call. If they ask about pricing, say a proposal will follow within a day. Never promise discounts." /></Field>
+      <Field label="Instructions for the model" hint="What the reply should do, in plain words. The model also sees the whole thread, the contact's notes, the account's writing voice and the system prompt from Settings → AI." className="mt-16"><DictateBox title="Say what the reply should do" onText={(t) => set({ instructions: appendDictated(f.instructions ?? '', t) })}><Textarea value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder="Thank them, answer what you can from the thread, and offer a 20 minute call. If they ask about pricing, say a proposal will follow within a day. Never promise discounts." /></DictateBox></Field>
       <div className="form-grid-3">
         <Field label="Tone"><Select value={f.tone} onChange={(e) => set({ tone: e.target.value })}>{['friendly', 'professional', 'casual', 'direct', 'warm', 'formal', 'enthusiastic'].map((t) => <option key={t} value={t}>{t}</option>)}</Select></Field>
         <Field label="Length"><Select value={f.length} onChange={(e) => set({ length: e.target.value })}><option value="short">short</option><option value="medium">medium</option><option value="long">long</option></Select></Field>

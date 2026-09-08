@@ -24,6 +24,20 @@ export const useTemplates = () => useQuery({ queryKey: ['templates'], queryFn: (
 export const useSequences = () => useQuery({ queryKey: ['sequences'], queryFn: () => api.get<{ sequences: any[] }>('/api/sequences').then((r) => r.sequences) });
 export const useAiStatus = () => useQuery({ queryKey: ['ai-status'], queryFn: () => api.get<any>('/api/ai/status'), staleTime: 30_000 });
 
+// Whether a transcriber is actually wired up, asked once for the whole page.
+//
+// A mic now sits beside most of the AI fields, and a sequence editor with six
+// steps would otherwise ask this six times over to get one answer that only
+// an admin can change. Long stale time for the same reason: it is a fact
+// about the install, not about the screen.
+export const useVoiceConfigured = (enabled = true) => useQuery({
+  queryKey: ['voice-configured'],
+  queryFn: () => api.get<{ configured: boolean }>('/api/assist/voice').then((r) => Boolean(r.configured)),
+  staleTime: 5 * 60_000,
+  retry: false,
+  enabled,
+});
+
 // What the model server has right now, asked of it every few seconds while
 // the page is open.
 //
