@@ -825,7 +825,7 @@ function AiAdminSettings() {
   async function testProvider() {
     setProbing(true); setProbe(null);
     try {
-      const r = await api.post<any>('/api/ai/test', { provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model });
+      const r = await api.post<any>('/api/ai/test', { provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor), model: f.model });
       setProbe(r);
     } catch (e: any) { setProbe({ result: { ok: false, error: e?.message ?? String(e) } }); } finally { setProbing(false); }
   }
@@ -895,13 +895,46 @@ function AiAdminSettings() {
       <div className="card mb-16">
         <div className="card-title"><h2>Provider and model</h2><div className="row"><Toggle checked={f.enabled} onChange={(v) => { setF({ ...f, enabled: v }); void save({ enabled: v }); }} /><span className="small">Enabled</span></div></div>
         <div className="form-row">
-          <Field label="Provider"><Select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option></Select></Field>
-          <Field label="Base URL" hint="The server's root — scheme, host and port, with no path and no trailing slash. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
-          <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it — as Authorization: Bearer. A hosted box usually calls it an instance or open-button token. The bundled container needs nothing here.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => { setF({ ...f, apiKey: e.target.value }); setProbe(null); }} /></Field>
+          <Field label="Provider"><Select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option><option value="anthropic">Anthropic (Messages API)</option></Select></Field>
+          <Field label="Base URL" hint="The server's root — scheme, host and port, with no path and no trailing slash. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : f.provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.example.com'} /></Field>
+          <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it — as Authorization: Bearer. A hosted box usually calls it an instance or open-button token. The bundled container needs nothing here.' : f.provider === 'anthropic' ? 'Sent as x-api-key, not as a bearer token. Required — the Messages API has no anonymous mode.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => { setF({ ...f, apiKey: e.target.value }); setProbe(null); }} /></Field>
           <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
+        {/* Off by default and only worth anything when the model is somebody
+            else's machine: a rented GPU host learns this server's address from
+            every request otherwise. It is also the only way to reach an
+            .onion model server at all. It does not change WHAT is sent. */}
+        <div className="mt-16">
+          <div className="row">
+            <Toggle checked={Boolean(f.useTor)} onChange={(v) => { setF({ ...f, useTor: v }); setProbe(null); }} />
+            <span className="small">Reach the model through Tor</span>
+          </div>
+          <p className="small muted">
+            {f.useTor
+              ? 'Requests go through the local Tor proxy, so the model server sees an exit node rather than this machine. Slower, and pointless for a model on this box. The same prompt is sent either way — this changes who learns where you are, not what they read.'
+              : 'For a model on somebody else\u2019s hardware: the host otherwise logs this server\u2019s address with every request. Required for an .onion address. Needs a Tor proxy running locally (TOR_SOCKS_HOST / TOR_SOCKS_PORT, default 127.0.0.1:9150).'}
+          </p>
+        </div>
+        {/* Anthropic cannot embed, so choosing it splits meaning search off
+            onto a second server. Shown only when that is the situation: an
+            Ollama install has one server and should not have to read about a
+            second one it does not have. */}
+        {f.provider === 'anthropic' && (
+          <div className="mt-16">
+            <p className="small muted">Anthropic has no embeddings endpoint, so meaning search needs a second server. Leave this unset and search falls back to matching words, which still works — it just stops finding messages that mean the same thing in different words.</p>
+            <div className="form-row">
+              <Field label="Embeddings from"><Select value={f.embedProvider ?? 'same'} onChange={(e) => setF({ ...f, embedProvider: e.target.value })}><option value="same">Nowhere — word search only</option><option value="ollama">An Ollama</option><option value="openai">An OpenAI-compatible server</option></Select></Field>
+              {(f.embedProvider ?? 'same') !== 'same' && (
+                <>
+                  <Field label="Embedding server URL" hint="The same rules as above: the server's root, no path, no trailing slash."><Input value={f.embedBaseUrl ?? ''} onChange={(e) => setF({ ...f, embedBaseUrl: e.target.value })} placeholder={f.embedProvider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
+                  <Field label="Embedding server key" hint={data.settings.hasEmbedApiKey ? 'A key is stored; leave blank to keep it.' : 'Blank for the bundled Ollama.'}><Input type="password" value={f.embedApiKey ?? ''} onChange={(e) => setF({ ...f, embedApiKey: e.target.value })} /></Field>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         {/* Only asked about for an https address, because it is only https
             that can fail this way. A hosted GPU box issues itself a
             certificate at boot and no public authority will vouch for it. */}
@@ -945,7 +978,11 @@ function AiAdminSettings() {
           </Callout>
         )}
         <div className="row">
-          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx })}>Save settings</Button>
+          {/* Both keys go as `undefined` when blank, never as an empty
+              string: blank means "leave the stored one alone", and sending ''
+              would clear a working credential every time an admin saved an
+              unrelated field. */}
+          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx, useTor: Boolean(f.useTor), embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined })}>Save settings</Button>
           <Button variant="ghost" loading={probing} disabled={!f.baseUrl} onClick={testProvider}>Test connection</Button>
         </div>
       </div>

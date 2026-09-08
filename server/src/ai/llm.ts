@@ -1,7 +1,8 @@
 // LLM access. Ollama's native API is the default (streams NDJSON); an
-// OpenAI-compatible endpoint is supported for people who already run one.
-// Nothing here is in the mail path: if the model is down, drafting is
-// unavailable and everything else keeps working.
+// OpenAI-compatible endpoint is supported for people who already run one; and
+// Anthropic's Messages API is supported for people who would rather rent the
+// model than run it. Nothing here is in the mail path: if the model is down,
+// drafting is unavailable and everything else keeps working.
 import { config } from '../config.js';
 import { assertFreshConversation } from './prompts.js';
 import { one, query } from '../db.js';
@@ -12,12 +13,21 @@ import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
 import { logger } from '../log.js';
 import { explainOutboundError, inspectCertificate, normalizeBaseUrl, outboundFetch, type CertInfo, type TlsTrust } from '../util/outbound.js';
+import { explainTorError, torAgent, torProxyAddress } from '../util/tor.js';
 
 const log = logger('ai');
 
+export type AiProvider = 'ollama' | 'openai' | 'anthropic';
+
+// Where embeddings come from, which is not always where drafting comes from.
+// `same` is the default and what every install had before this existed. There
+// is deliberately no `anthropic`: the Messages API has no embeddings endpoint
+// at all, so an option for it would be an option that cannot work.
+export type EmbedProvider = 'same' | 'ollama' | 'openai';
+
 export interface AiSettings {
   enabled: boolean;
-  provider: 'ollama' | 'openai';
+  provider: AiProvider;
   baseUrl: string;
   apiKey: string;
   // Whether a certificate this machine cannot verify is accepted from the
@@ -25,6 +35,15 @@ export interface AiSettings {
   // On is for a model server that issued itself a certificate at boot, which
   // is what a rented GPU host does — see util/outbound.ts.
   tlsInsecure: boolean;
+  // Reach the model through the local Tor proxy.
+  //
+  // For one situation, and off by default because it is useless in every
+  // other: the model is somebody else's machine, and a rented GPU host
+  // otherwise learns this mail server's address from every request. It also
+  // makes an .onion model server reachable at all. It does NOT change what is
+  // sent — the same prompt crosses either way — only who learns where this
+  // install is, so a model running on this box has nothing to gain from it.
+  useTor: boolean;
   model: string;
   temperature: number;
   numCtx: number;
@@ -71,6 +90,13 @@ export interface AiSettings {
   // setting because it is a different, much smaller model from the one that
   // writes, and an install may want one without the other.
   embedModel: string;
+  // ...and, since one of the three providers cannot embed at all, its own
+  // server as well. An install that drafts on Anthropic still wants meaning
+  // search, so it points this at the Ollama it was already running. Left on
+  // `same`, everything below behaves exactly as it did before this existed.
+  embedProvider: EmbedProvider;
+  embedBaseUrl: string;
+  embedApiKey: string;
   // Whether several people may be answered at once. Off serialises every
   // generation on this install, which is the right setting for a small box:
   // each slot Ollama serves in parallel costs another context window of KV
@@ -88,6 +114,7 @@ const BASE_DEFAULTS: AiSettings = {
   baseUrl: config.ollamaUrl,
   apiKey: '',
   tlsInsecure: false,
+  useTor: false,
   model: DEFAULT_MODEL,
   temperature: 0.7,
   // How much conversation the model is shown, sized to the machine rather
@@ -139,6 +166,9 @@ const BASE_DEFAULTS: AiSettings = {
   wipeAfterUse: true,
   wipeIdleSeconds: 90,
   embedModel: config.aiEmbedModel,
+  embedProvider: 'same',
+  embedBaseUrl: '',
+  embedApiKey: '',
   concurrency: true,
 };
 
@@ -195,13 +225,96 @@ export function aiDefaults(): AiSettings { return { ...DEFAULTS }; }
 // bundled container over the compose network.
 export async function providerHeaders(s?: AiSettings): Promise<Record<string, string>> {
   const cfg = s ?? (await getAiSettings());
+  // Anthropic does not read `Authorization`. It reads `x-api-key`, and it
+  // needs `anthropic-version` on every single request or it refuses the lot —
+  // a mandatory version header is unusual enough to be worth naming, because
+  // the failure it produces is a 400 on every call that reads like a
+  // malformed body rather than a missing header.
+  if (cfg.provider === 'anthropic') {
+    return {
+      'anthropic-version': ANTHROPIC_VERSION,
+      ...(cfg.apiKey ? { 'x-api-key': cfg.apiKey } : {}),
+    };
+  }
   return cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {};
 }
 
-// The TLS trust for this install's model server, in the shape
-// util/outbound.ts wants. Read from the same settings as the key, so a single
-// place decides both halves of "how do we talk to that box".
-export function trustOf(s: AiSettings): TlsTrust { return { insecure: Boolean(s.tlsInsecure) }; }
+// The Messages API is versioned by a header rather than by its path. Pinned
+// rather than tracking whatever is newest: a version bump is a wire-format
+// change and an install should not adopt one the day it ships.
+const ANTHROPIC_VERSION = '2023-06-01';
+
+// Which server an embedding request goes to.
+//
+// Returns settings of the same shape, so every call below — the URL, the
+// headers, the TLS decision — stays one code path rather than a second one
+// that has to remember the same rules. `same` returns the settings untouched.
+export function embedTarget(s: AiSettings): AiSettings {
+  if (s.embedProvider === 'same') return s;
+  return { ...s, provider: s.embedProvider, baseUrl: normalizeBaseUrl(s.embedBaseUrl), apiKey: s.embedApiKey };
+}
+
+// Models that still accept `temperature`.
+//
+// The trap the Messages API sets for an adapter written from older
+// documentation: `temperature`, `top_p` and `top_k` were REMOVED on the
+// current generation, and sending one is not ignored — it is a 400 and the
+// whole draft fails. So Tern's tuning panel cannot simply be forwarded.
+//
+// An allowlist, so a model released after this was written is treated as not
+// taking it. That is the safe direction: omitting temperature costs an admin
+// some control over how varied the drafts are, while sending it to a model
+// that refuses it costs them every draft.
+export function anthropicTakesSampling(model: string): boolean {
+  return /^claude-(3|opus-4-[0-6]|sonnet-4|haiku-4)/i.test(String(model ?? ''));
+}
+
+// Anthropic keeps the system prompt OUT of the message list: a top-level
+// `system` string, and the role itself is rejected. Tern builds prompts as
+// message lists, so the lifting happens here rather than in prompts.ts.
+//
+// Several system messages are joined rather than the last one winning — a
+// dropped instruction produces a model that mostly behaves, which is much
+// harder to spot than one that plainly does not.
+export function toAnthropicMessages(messages: ChatMessage[]): { system: string; messages: { role: 'user' | 'assistant'; content: string }[] } {
+  const system: string[] = [];
+  const rest: { role: 'user' | 'assistant'; content: string }[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') { system.push(m.content); continue; }
+    rest.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
+  }
+  return { system: system.filter(Boolean).join('\n\n'), messages: rest };
+}
+
+// How this install talks to its model server, in the shape util/outbound.ts
+// wants: whether to accept an unverifiable certificate, and whether to go
+// through Tor. Read from the same settings as the key, so a single place
+// decides every part of "how do we reach that box".
+//
+// It is async and it is one function rather than two because of how the
+// alternative failed: `trustOf` was synchronous and returned only the
+// certificate half, so adding the proxy would have meant a second call that
+// every existing call site had to remember. One of the fifteen had already
+// forgotten the first one — `openaiStream` shipped without it, and the symptom
+// was a connection test that passed beside a feature that never worked. A
+// single call that carries everything cannot be half-applied.
+// Why a request failed, said in terms of the thing that actually broke.
+//
+// With Tor on there are two candidates — the proxy and the model server — and
+// they have completely different fixes. `explainTorError` recognises only the
+// proxy's own failures and returns null otherwise, so a model server refusing
+// a key still gets the far better explanation outbound.ts has for it.
+export function reachError(s: AiSettings, e: unknown): string {
+  if (s.useTor) { const tor = explainTorError(e); if (tor) return tor; }
+  return explainOutboundError(e, s.baseUrl);
+}
+
+export function transportFor(s: AiSettings): TlsTrust {
+  return {
+    insecure: Boolean(s.tlsInsecure),
+    ...(s.useTor ? { agent: torAgent() } : {}),
+  };
+}
 
 // Ollama's keep_alive is either a duration string ("10m", "1h") or a number
 // of seconds, where -1 means "keep it loaded" and 0 "unload at once". A bare
@@ -282,7 +395,7 @@ async function describeModel(baseUrl: string, model: string): Promise<{ capabili
   let out: { capabilities: string[]; info: Record<string, unknown> } | null = null;
   try {
     const s = await getAiSettings();
-    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) }, trustOf(s));
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) }, transportFor(s));
     if (res.ok) {
       const j: any = await res.json();
       out = { capabilities: Array.isArray(j.capabilities) ? j.capabilities : [], info: j.model_info ?? {} };
@@ -389,6 +502,14 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   const model = opts.model || s.model;
   const session = beginSession();
   try {
+    if (s.provider === 'anthropic') {
+      // Same reasoning as the OpenAI branch below: a hosted API decides its
+      // own concurrency, there is no single loaded model being shared with
+      // this install, and the slot gate would only add a queue in front of
+      // one that already exists on the other side.
+      yield* anthropicStream(s, model, opts);
+      return;
+    }
     if (s.provider === 'openai') {
       // Somebody else's endpoint decides how much it will do at once, and it
       // is not sharing one loaded model with this install; the gate below
@@ -469,7 +590,7 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       },
     }),
     signal: opts.signal,
-  }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => '');
     // A 404 with Ollama's own "model not found" body is a missing model; a
@@ -514,11 +635,98 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
   }
 }
 
+async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
+  const reply = opts.maxTokens ?? s.maxTokens;
+  const think = !opts.noThink && s.allowThinking;
+  const { system, messages } = toAnthropicMessages(opts.messages);
+  const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+    body: JSON.stringify({
+      model,
+      messages,
+      ...(system ? { system } : {}),
+      stream: true,
+      // Required — there is no "as much as it takes" on this API. As on the
+      // other two providers, reasoning gets its own allowance on top rather
+      // than eating the email's.
+      max_tokens: think ? reply + Math.max(0, s.thinkingBudget) : reply,
+      // `budget_tokens` is a 400 on the current models; depth is `adaptive`
+      // plus an effort level now. `display: 'summarized'` is what makes the
+      // working-out non-empty — without it the composer's thinking panel
+      // would stay blank through a two-minute generation, which is the exact
+      // failure the setting's own comment above describes.
+      ...(think
+        ? { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: s.thinkEffort } }
+        // `{ type: 'disabled' }` is itself refused on the models that always
+        // think, so there the parameter is omitted. Not a silent failure to
+        // honour the setting: with no display asked for, the reasoning comes
+        // back empty and the draft arrives as it always did.
+        : /^claude-(fable|mythos)/i.test(model) ? {} : { thinking: { type: 'disabled' } }),
+      // The tuning that crosses over, and only that. `top_k`, `min_p`,
+      // `repeat_penalty`, `presence_penalty`, `frequency_penalty` and `seed`
+      // have no equivalent here and an unknown parameter is a 400, so they
+      // are dropped rather than guessed at.
+      ...(anthropicTakesSampling(model) ? { temperature: opts.temperature ?? s.temperature, top_p: s.topP } : {}),
+      ...(opts.stop?.length ? { stop_sequences: opts.stop } : {}),
+    }),
+    signal: opts.signal,
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 401 || res.status === 403) throw new Error(`Anthropic refused the request (HTTP ${res.status}). Check the API key in Admin → AI model.`);
+    // A 404 here is the base URL, not a missing model: the Messages API has
+    // exactly one path, and an unknown model name comes back as a 400 naming
+    // it. Saying "pull the model" for this would send an admin to fix the one
+    // thing that is fine.
+    if (res.status === 404) throw new Error(`No Messages API at ${s.baseUrl}. The base URL is the server's root — https://api.anthropic.com, with no path and no trailing slash.`);
+    if (res.status === 429) throw new Error('Anthropic is rate-limiting this key. Try again shortly.');
+    throw new Error(`Anthropic returned HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let produced = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      // SSE carries `event:` lines and blank separators beside the payloads.
+      // The type is in the data line too, so the event line carries nothing
+      // the payload does not and is skipped rather than parsed.
+      if (!line.startsWith('data:')) continue;
+      let j: any;
+      try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      if (j.type === 'error') throw new Error(String(j.error?.message ?? 'the model server reported an error'));
+      // The terminator is a typed event rather than a sentinel string.
+      if (j.type === 'message_stop') {
+        if (!produced) throw new Error(emptyAnswer(model, think ? 1 : 0, reply));
+        return;
+      }
+      if (j.type !== 'content_block_delta') continue;
+      // Unlike the other two shapes, the answer and the working-out do not
+      // arrive as two fields of one object — one delta comes at a time and
+      // says which kind it is. Reading `delta.text` unconditionally would
+      // render the model's private deliberation as the draft.
+      if (j.delta?.type === 'thinking_delta') { opts.onThinking?.(String(j.delta.thinking ?? '')); continue; }
+      if (j.delta?.type === 'text_delta') {
+        const piece = String(j.delta.text ?? '');
+        if (piece) { produced = true; yield piece; }
+      }
+    }
+  }
+  if (!produced) throw new Error(emptyAnswer(model, think ? 1 : 0, reply));
+}
+
 async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
   const reply = opts.maxTokens ?? s.maxTokens;
   const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
       model, messages: opts.messages, stream: true,
       temperature: opts.temperature ?? s.temperature,
@@ -539,7 +747,13 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       ...(!opts.noThink && s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
     }),
     signal: opts.signal,
-  });
+    // This argument was missing, and its absence was invisible: the Admin →
+    // AI model connection test passes `transportFor` and so succeeded, while
+    // every draft on this path went out without the install's TLS decision
+    // and failed on a self-signed certificate. A page reporting the provider
+    // as reachable beside a feature that never works is a bad pair of
+    // symptoms to debug, and both halves now read the same settings.
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok || !res.body) throw new Error(`LLM endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -593,30 +807,42 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   await assertCapability(consent.userId, consent.capability);
   const s = await getAiSettings();
   if (!s.enabled) throw new Error('The model is turned off in Admin → AI model');
+  // Embeddings may come from a different server than drafting does. Everything
+  // below reads `t`, and nothing reads `s.baseUrl` or `s.apiKey`, so an
+  // install drafting on Anthropic and embedding on the Ollama next door does
+  // not take a wrong turn here.
+  const t = embedTarget(s);
   const model = s.embedModel || DEFAULTS.embedModel;
-  const input = texts.map((t) => String(t ?? '').slice(0, 8000)).filter(Boolean);
+  const input = texts.map((x) => String(x ?? '').slice(0, 8000)).filter(Boolean);
   if (!input.length) return { vectors: [], model, dims: 0 };
+  // Named for the setting that fixes it. An admin who hits this has configured
+  // a model server — it just cannot embed, and sending them to the base URL
+  // they are about to go and check would waste the trip.
+  if (t.provider === 'anthropic') {
+    throw new Error('Anthropic has no embeddings endpoint. Point "Where embeddings come from" at an Ollama or OpenAI-compatible server in Admin → AI model.');
+  }
+  if (!t.baseUrl) throw new Error('No address is set for the embedding server');
 
   const session = beginSession();
   try {
-    if (s.provider === 'openai') {
-      const res = await outboundFetch(`${s.baseUrl}/v1/embeddings`, {
+    if (t.provider === 'openai') {
+      const res = await outboundFetch(`${t.baseUrl}/v1/embeddings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: `Bearer ${s.apiKey}` } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(await providerHeaders(t)) },
         body: JSON.stringify({ model, input }),
         signal,
-      }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+      }, transportFor(t)).catch((e) => { throw new Error(reachError(t, e)); });
       if (!res.ok) throw new Error(`Embedding endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
       const j: any = await res.json();
       const vectors = (j.data ?? []).map((d: any) => (Array.isArray(d.embedding) ? d.embedding : []));
       return { vectors, model, dims: vectors[0]?.length ?? 0 };
     }
-    const res = await outboundFetch(`${s.baseUrl}/api/embed`, {
+    const res = await outboundFetch(`${t.baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+      headers: { 'Content-Type': 'application/json', ...(await providerHeaders(t)) },
       body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
       signal,
-    }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+    }, transportFor(t)).catch((e) => { throw new Error(reachError(t, e)); });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       if (res.status === 404) throw new Error(`The embedding model "${model}" is not downloaded. Pull it in Admin → AI model.`);
@@ -640,14 +866,14 @@ export async function ollamaHealth(candidate?: AiSettings): Promise<{ ok: boolea
   const s = candidate ?? (await getAiSettings());
   if (!s.baseUrl) return { ok: false, error: 'No address is set for the model server' };
   try {
-    const res = await outboundFetch(`${s.baseUrl}/api/version`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, trustOf(s));
+    const res = await outboundFetch(`${s.baseUrl}/api/version`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, transportFor(s));
     if (!res.ok) return { ok: false, error: httpHint(res.status, s) };
     const j: any = await res.json();
     return { ok: true, version: j.version };
   } catch (e) {
     // The reason, not `fetch failed`: a self-signed certificate, a closed
     // port and a bad hostname have three different fixes.
-    return { ok: false, error: explainOutboundError(e, s.baseUrl) };
+    return { ok: false, error: reachError(s, e) };
   }
 }
 
@@ -656,7 +882,7 @@ export async function ollamaHealth(candidate?: AiSettings): Promise<{ ok: boolea
 // a base URL with a path or a trailing slash on it.
 export function httpHint(status: number, s: AiSettings): string {
   if (status === 401 || status === 403) return `HTTP ${status}: that server wants authentication. Put its token in the API key field — it is sent as \`Authorization: Bearer\`.`;
-  if (status === 404) return `HTTP 404: nothing is serving the Ollama API at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
+  if (status === 404) return `HTTP 404: nothing is serving the ${s.provider === 'anthropic' ? 'Messages API' : s.provider === 'openai' ? 'OpenAI-compatible API' : 'Ollama API'} at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
   if (status === 502 || status === 503 || status === 504) return `HTTP ${status}: a proxy in front of that server could not reach it.`;
   return `HTTP ${status}`;
 }
@@ -683,17 +909,26 @@ export async function checkProvider(candidate: AiSettings): Promise<ProviderChec
   // Looked at whichever way the check goes: an admin deciding whether to
   // trust a certificate should be able to see it, and an admin who already
   // has should be able to confirm it is still the same one.
-  const cert = await inspectCertificate(s.baseUrl).catch(() => null);
+  // NOT inspected when Tor is on. This opens its own TLS connection straight
+  // to the model host, outside the proxy — so an admin with Tor switched on,
+  // merely loading this page, would have announced their address to the exact
+  // machine the setting exists to hide it from. A leak from a diagnostic is
+  // still a leak, and this one fires without anybody asking for it.
+  const cert = s.useTor ? null : await inspectCertificate(s.baseUrl).catch(() => null);
 
-  if (s.provider === 'openai') {
+  // Anthropic lists models at the same path as the OpenAI shape and returns
+  // the same `{ data: [{ id }] }` envelope, so the two share a branch. What
+  // they do not share is the credential header — `providerHeaders` handles
+  // that, which is why this reads it rather than building one inline.
+  if (s.provider === 'openai' || s.provider === 'anthropic') {
     try {
-      const res = await outboundFetch(`${s.baseUrl}/v1/models`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, trustOf(s));
+      const res = await outboundFetch(`${s.baseUrl}/v1/models`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, transportFor(s));
       if (!res.ok) return { ok: false, error: httpHint(res.status, s), cert };
       const j: any = await res.json().catch(() => null);
       const models = Array.isArray(j?.data) ? j.data.map((m: any) => String(m?.id ?? '')).filter(Boolean) : undefined;
       return { ok: true, models, modelInstalled: models ? models.includes(s.model) : undefined, cert };
     } catch (e) {
-      return { ok: false, error: explainOutboundError(e, s.baseUrl), cert };
+      return { ok: false, error: reachError(s, e), cert };
     }
   }
 
@@ -703,13 +938,13 @@ export async function checkProvider(candidate: AiSettings): Promise<ProviderChec
   // to be one this server actually has, and on somebody else's Ollama it
   // very often is not.
   try {
-    const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, trustOf(s));
+    const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, transportFor(s));
     if (!res.ok) return { ok: true, version: health.version, cert, error: `Reachable, but it would not list its models: ${httpHint(res.status, s)}` };
     const j: any = await res.json();
     const models = (j.models ?? []).map((m: any) => String(m.name ?? '')).filter(Boolean);
     return { ok: true, version: health.version, models, modelInstalled: models.some((n: string) => sameModel(n, s.model)), cert };
   } catch (e) {
-    return { ok: true, version: health.version, cert, error: explainOutboundError(e, s.baseUrl) };
+    return { ok: true, version: health.version, cert, error: reachError(s, e) };
   }
 }
 
@@ -717,7 +952,7 @@ export interface InstalledModel { name: string; size: number; modified: string; 
 
 export async function listModels(): Promise<InstalledModel[]> {
   const s = await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok) throw new Error(httpHint(res.status, s));
   const j: any = await res.json();
   // `capabilities` is what separates a model that writes from one that only
@@ -732,7 +967,7 @@ export async function listModels(): Promise<InstalledModel[]> {
 // figure there makes a resident 3 GB model look free.
 export async function loadedModels(): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
   const s = await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, trustOf(s));
+  const res = await outboundFetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, transportFor(s));
   if (!res.ok) return [];
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
@@ -763,6 +998,9 @@ export async function liveModels(): Promise<LiveModels> {
   const s = await getAiSettings();
   const at = new Date().toISOString();
   const base = { provider: s.provider, baseUrl: s.baseUrl, models: [], loaded: [], at };
+  // Managing models means pulling and deleting them, which only makes sense
+  // for a server holding files on somebody's disk. A hosted API has a
+  // catalogue, not an install — `checkProvider` is what reads that.
   if (s.provider !== 'ollama') return { ...base, ok: false, error: 'The provider is not Ollama, so it has no model list to manage' };
   const health = await ollamaHealth(s);
   if (!health.ok) return { ...base, ok: false, error: health.error };
@@ -776,7 +1014,7 @@ export async function liveModels(): Promise<LiveModels> {
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {
   const s = await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name, stream: true }), signal }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  const res = await outboundFetch(`${s.baseUrl}/api/pull`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model: name, stream: true }), signal }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok || !res.body) throw new Error(`${httpHint(res.status, s)}${(await res.text().catch(() => '')).slice(0, 200)}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -821,7 +1059,7 @@ export async function deleteModel(name: string): Promise<InstalledModel[]> {
     // nothing and covers a delete that silently matched nothing.
     body: JSON.stringify({ model: name, name }),
     signal: AbortSignal.timeout(60_000),
-  }, trustOf(s)).catch((e) => { throw new Error(explainOutboundError(e, s.baseUrl)); });
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     if (res.status === 404) throw new Error(`That server has no model called "${name}"`);
@@ -859,7 +1097,7 @@ async function setResidency(baseUrl: string, model: string, keepAlive: string | 
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
       body: JSON.stringify({ model, keep_alive: keepAlive }),
       signal: AbortSignal.timeout(15_000),
-    }, trustOf(s));
+    }, transportFor(s));
     if (!res.ok) return false;
     await res.text().catch(() => '');
     return true;
@@ -870,7 +1108,7 @@ async function setResidency(baseUrl: string, model: string, keepAlive: string | 
 async function residentAt(baseUrl: string, model: string): Promise<boolean> {
   try {
     const s = await getAiSettings();
-    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, trustOf(s));
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, transportFor(s));
     if (!res.ok) return false;
     const j: any = await res.json();
     return (j.models ?? []).some((m: any) => sameModel(String(m.name ?? ''), model));

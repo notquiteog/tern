@@ -128,7 +128,20 @@ Nothing leaves your server except the mail itself.
   holding and when it expires, with an **Unload** button, and deleting a
   model frees its memory first and reports a refusal rather than failing
   quietly.
-- Any OpenAI-compatible endpoint works too.
+- **Reachable through Tor, as an opt-in toggle.** Off by default and pointless
+  for a model on this box; the case it is for is a model on somebody else's
+  hardware, which otherwise logs this server's address with every request. It
+  also makes an `.onion` model server reachable at all. It changes who learns
+  where you are, not what is sent — the same prompt crosses either way, and the
+  page still says plainly whether the model is local. With it on, nothing
+  resolves or connects to the model host outside the proxy: the certificate
+  inspector and the "is this local" probe both stand down, because a
+  diagnostic that leaks is still a leak.
+- Any OpenAI-compatible endpoint works too, and so does Anthropic's Messages
+  API for people who would rather rent the model than run one. Anthropic has
+  no embeddings endpoint, so meaning search gets its own server setting there:
+  draft on Anthropic, embed on the Ollama that was already running, or leave
+  it unset and search falls back to matching words.
 
 **Accounts and admin**
 - Sign in with username and password, TOTP two-factor with recovery codes,

@@ -26,7 +26,18 @@ export function normalizeBaseUrl(raw: string): string {
 // certificate at boot and there is no authority that will vouch for it — but
 // it is theirs to make knowingly, so it is stored per install, defaults to
 // on, and the page says what it costs. It is never inferred from a failure.
-export interface TlsTrust { insecure?: boolean }
+export interface TlsTrust {
+  insecure?: boolean;
+  /**
+   * A proxy agent, when this install routes model traffic through Tor.
+   *
+   * Typed loosely on purpose: this module is about transport mechanics and has
+   * no business importing the SOCKS library, which is only ever constructed by
+   * util/tor.ts. What matters here is that its presence forces the node path,
+   * because the platform's `fetch` cannot be given one.
+   */
+  agent?: http.Agent | https.Agent;
+}
 
 export interface OutboundResponse {
   ok: boolean;
@@ -41,9 +52,21 @@ export interface OutboundResponse {
 // takes the second one, which exists because `fetch` has no way to pass
 // `rejectUnauthorized` without pulling in undici as a dependency.
 export function outboundFetch(url: string, init: RequestInit = {}, trust: TlsTrust = {}): Promise<OutboundResponse> {
+  const isHttps = /^https:/i.test(url);
+  // An agent forces the node path whatever the scheme, because `fetch` has no
+  // way to be given one — and unlike the certificate setting, a proxy is not
+  // meaningless over http. Getting this wrong is silent: the request succeeds,
+  // it simply goes out directly instead of through Tor, which is the one
+  // outcome the setting exists to prevent.
+  if (trust.agent) {
+    return requestWithTls(url, init, {
+      agent: trust.agent,
+      ...(isHttps && trust.insecure ? { rejectUnauthorized: false } : {}),
+    });
+  }
   // http has no certificate to relax, so the setting is meaningless there and
   // the platform path — pooled, redirect-following, well-tested — is kept.
-  if (!trust.insecure || !/^https:/i.test(url)) return fetch(url, init) as unknown as Promise<OutboundResponse>;
+  if (!trust.insecure || !isHttps) return fetch(url, init) as unknown as Promise<OutboundResponse>;
   return requestWithTls(url, init, { rejectUnauthorized: false });
 }
 
@@ -65,7 +88,12 @@ export function requestWithTls(url: string, init: RequestInit, tlsOpts: https.Re
         ...((init.headers as Record<string, string>) ?? {}),
         ...(body === null ? {} : { 'Content-Length': String(Buffer.byteLength(body)) }),
       },
-      ...(secure ? tlsOpts : {}),
+      // TLS options only mean anything over https, but the AGENT means
+      // something over both — and an .onion model server is almost always
+      // plain http, which is exactly the case Tor routing exists for. Passing
+      // only `tlsOpts` here dropped the proxy for every http URL and sent the
+      // request out directly, succeeding, with nothing to show it had.
+      ...(secure ? tlsOpts : (tlsOpts.agent ? { agent: tlsOpts.agent } : {})),
     }, (res) => {
       // The streaming callers read `body.getReader()` a chunk at a time and
       // the rest read the whole thing; both are served from one stream, and

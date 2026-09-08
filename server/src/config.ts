@@ -78,6 +78,11 @@ export const config = {
   allowPrivateHosts: bool('ALLOW_PRIVATE_NETWORK_HOSTS', false),
   // AI
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
+  // Where a local Tor proxy listens, for installs that turn on Tor routing in
+  // Admin → AI model. 9150 is Arti's default; the C tor daemon uses 9050. See
+  // util/tor.ts for why the other port is never tried as a fallback.
+  torSocksHost: env('TOR_SOCKS_HOST', '127.0.0.1'),
+  torSocksPort: int('TOR_SOCKS_PORT', 9150),
   aiModel: env('AI_MODEL', ''),
   // The small model that turns a message into a vector for meaning search.
   // A separate setting because it is a different, much smaller model from

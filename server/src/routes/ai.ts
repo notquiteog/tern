@@ -62,18 +62,28 @@ aiRouter.get('/status', async (req, res) => {
   // think" on for a model that cannot is the usual reason someone sees no
   // working-out and assumes the streamer is broken.
   const canThink = health.ok && s.provider === 'ollama' ? await modelCanThink(s.baseUrl, s.model) : null;
-  const { apiKey, ...safe } = s;
+  // Both keys are stripped, not just the main one. `embedApiKey` is a
+  // credential for somebody's model server exactly as `apiKey` is, and a
+  // rest-spread that names only one of them is how the second quietly becomes
+  // readable by every admin page load.
+  const { apiKey, embedApiKey, ...safe } = s;
   res.json({
-    settings: { ...safe, hasApiKey: Boolean(apiKey) },
+    settings: { ...safe, hasApiKey: Boolean(apiKey), hasEmbedApiKey: Boolean(embedApiKey) },
     // Whether the model this install uses is on this box or somewhere else.
     // The page says so plainly: a remote provider is a supported choice and
     // an admin's to make, but it is the one setting that decides whether
     // email text leaves the building, so it is never left to be inferred
     // from a URL.
-    local: await isLocalReach(s.baseUrl),
+    // Both of the next two lines reach the model host directly, outside any
+    // proxy: one resolves its name, the other opens a TLS connection to it.
+    // With Tor on that is precisely the disclosure the setting exists to
+    // prevent, and it would happen every time an admin opened this page. So
+    // neither runs — the page reports the reach as non-local, which is what
+    // routing through Tor makes it.
+    local: s.useTor ? false : await isLocalReach(s.baseUrl),
     // Only when the admin has turned verification off: the page shows what
     // is being trusted rather than leaving it as a checkbox with no subject.
-    cert: s.tlsInsecure ? await inspectCertificate(s.baseUrl).catch(() => null) : null,
+    cert: s.tlsInsecure && !s.useTor ? await inspectCertificate(s.baseUrl).catch(() => null) : null,
     health,
     models,
     loaded,
@@ -178,7 +188,8 @@ aiRouter.delete('/presets/:id', requireAdmin, async (req, res) => {
 });
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
-  const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai']).optional(), baseUrl: z.string().url().max(300).refine(httpUrl, 'The base URL must start with http:// or https://').optional(), apiKey: z.string().max(500).optional(), tlsInsecure: z.boolean().optional(), model: z.string().min(1).max(120).optional(), embedModel: z.string().min(1).max(120).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+  const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai', 'anthropic']).optional(), baseUrl: z.string().url().max(300).refine(httpUrl, 'The base URL must start with http:// or https://').optional(), apiKey: z.string().max(500).optional(), tlsInsecure: z.boolean().optional(), useTor: z.boolean().optional(), model: z.string().min(1).max(120).optional(), embedModel: z.string().min(1).max(120).optional(),
+    embedProvider: z.enum(['same', 'ollama', 'openai']).optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
@@ -202,9 +213,16 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
     reindex = await invalidateVectorsFrom(next.embedModel).catch(() => 0);
     if (reindex) log.info('embedding model changed; queued messages for re-indexing', { from: before.embedModel, to: next.embedModel, messages: reindex });
   }
-  const { apiKey, ...safe } = next;
-  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : undefined })]);
-  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, reindex });
+  const { apiKey, embedApiKey, ...safe } = next;
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({
+    ...b,
+    // The audit row records THAT a key changed, never the key. Both of them:
+    // an audit log is long-lived, widely readable, and the last place a
+    // credential should end up.
+    apiKey: b.apiKey ? '(set)' : undefined,
+    embedApiKey: b.embedApiKey ? '(set)' : undefined,
+  })]);
+  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey), hasEmbedApiKey: Boolean(embedApiKey) }, reindex });
 });
 
 // Try a provider without saving it.
@@ -216,10 +234,14 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
 // answers from the form.
 aiRouter.post('/test', requireAdmin, async (req, res) => {
   const b = parse(z.object({
-    provider: z.enum(['ollama', 'openai']).optional(),
+    provider: z.enum(['ollama', 'openai', 'anthropic']).optional(),
     baseUrl: z.string().max(300),
     apiKey: z.string().max(500).optional(),
     tlsInsecure: z.boolean().optional(),
+    // Testable before it is saved, like every other field here. Without it an
+    // admin turning Tor on could only find out whether it worked by saving —
+    // and saving unloads the model the install was using.
+    useTor: z.boolean().optional(),
     model: z.string().max(120).optional(),
   }), req.body);
   const baseUrl = normalizeBaseUrl(b.baseUrl);
@@ -228,7 +250,7 @@ aiRouter.post('/test', requireAdmin, async (req, res) => {
   // A blank key means "keep the stored one", the same as the form says on
   // save — otherwise testing would report a 401 for a key that is fine.
   const candidate: AiSettings = { ...current, ...b, baseUrl, apiKey: b.apiKey || current.apiKey };
-  res.json({ result: await checkProvider(candidate), local: await isLocalReach(baseUrl) });
+  res.json({ result: await checkProvider(candidate), local: candidate.useTor ? false : await isLocalReach(baseUrl) });
 });
 
 // ---------- The transcriber (F9) ----------
