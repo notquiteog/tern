@@ -22,6 +22,8 @@ import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability } from './capabilities.js';
 import { badRequest } from '../errors.js';
+import { outboundFetch } from '../util/outbound.js';
+import { endpointHeaders, transportFor, type ModelEndpoint } from '../ai/endpoint.js';
 
 const log = logger('voice');
 
@@ -37,10 +39,39 @@ const log = logger('voice');
 export interface VoiceSettings {
   /** Off means the microphone buttons do not appear at all. */
   enabled: boolean;
+  /**
+   * The wire shape this transcriber speaks.
+   *
+   * One value today, and not a placeholder for a choice that is coming:
+   * whisper.cpp, speaches, faster-whisper and every hosted transcriber worth
+   * pointing at all serve OpenAI's `/v1/audio/transcriptions`. It is stored
+   * because a connection here is configured exactly like the language model's
+   * and the embedder's, and because a second shape should be a one-line change
+   * rather than a new settings layout.
+   */
+  provider: 'openai';
   /** Origin of something speaking OpenAI's /v1/audio/transcriptions shape. */
   baseUrl: string;
   /** Bearer token, for a remote transcriber behind a proxy that wants one. */
   apiKey: string;
+  /**
+   * Accept a certificate this machine cannot verify, for the transcriber only.
+   *
+   * It did not have one, and the gap was invisible: every call in this file
+   * used plain `fetch`, so an admin who ticked "trust this certificate" on the
+   * AI page found drafting worked and dictation did not — the setting was on
+   * the wrong connection, and there was no right one to put it on.
+   */
+  tlsInsecure: boolean;
+  /**
+   * Reach the transcriber through the local Tor proxy.
+   *
+   * Its own switch, separate from the language model's. Speech is the most
+   * identifying thing an install sends anywhere, and which wire carries it is
+   * not a decision to inherit from whatever the drafting model happened to
+   * need. Off by default, and pointless for the bundled container.
+   */
+  useTor: boolean;
   /** Empty means whatever the server was started with, which is the bundled case. */
   model: string;
   /** ISO code, or empty to let the model detect the language. */
@@ -52,8 +83,11 @@ const VOICE_DEFAULTS: VoiceSettings = {
   // container has dictation on without an admin having to find this page,
   // and an install that did not has it off and says so.
   enabled: Boolean(config.whisperUrl),
+  provider: 'openai',
   baseUrl: config.whisperUrl,
   apiKey: '',
+  tlsInsecure: false,
+  useTor: false,
   model: '',
   language: '',
 };
@@ -90,6 +124,27 @@ export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<
 }
 
 export function voiceDefaults(): VoiceSettings { return { ...VOICE_DEFAULTS }; }
+
+/**
+ * The transcriber as a connection, in the shape the shared transport wants.
+ *
+ * Every request in this file goes through it. Before it existed each call used
+ * plain `fetch`, which meant nine places that each independently did not honour
+ * the certificate rule and could not use a proxy — not a decision, just what
+ * nine separately written call sites converge on.
+ */
+export function sttEndpoint(v: VoiceSettings): ModelEndpoint {
+  return {
+    id: 'stt',
+    label: 'the transcriber',
+    provider: v.provider ?? 'openai',
+    baseUrl: v.baseUrl,
+    apiKey: v.apiKey,
+    tlsInsecure: Boolean(v.tlsInsecure),
+    useTor: Boolean(v.useTor),
+    inheritedFrom: null,
+  };
+}
 
 // ---------- What this particular transcriber can do ----------
 //
@@ -141,7 +196,7 @@ async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
   const headers = voiceAuthHeaders(cfg);
   let lists = false;
   try {
-    const res = await fetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) });
+    const res = await outboundFetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
     if (res.status === 401 || res.status === 403) return { ...none, error: `The transcriber refused the API key (HTTP ${res.status})` };
     lists = res.ok;
   } catch (e) {
@@ -152,7 +207,7 @@ async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
     // else, so a live root here is a working transcriber with exactly one
     // model — which the card then says, rather than showing an empty table.
     try {
-      const root = await fetch(`${cfg.baseUrl}/`, { headers, signal: AbortSignal.timeout(6000) });
+      const root = await outboundFetch(`${cfg.baseUrl}/`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
       if (root.status < 500) return { ...none, ok: true, kind: 'whisper.cpp' };
       return { ...none, error: `HTTP ${root.status}` };
     } catch (e) {
@@ -163,7 +218,7 @@ async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
   // model from one that only reports the models it was given.
   let registry = false;
   try {
-    const res = await fetch(`${cfg.baseUrl}/v1/registry?task=automatic-speech-recognition`, { headers, signal: AbortSignal.timeout(8000) });
+    const res = await outboundFetch(`${cfg.baseUrl}/v1/registry?task=automatic-speech-recognition`, { headers, signal: AbortSignal.timeout(8000) }, transportFor(sttEndpoint(cfg)));
     registry = res.ok;
   } catch { /* no registry: listed but not managed */ }
   return { ok: true, lists: true, registry, manages: registry, kind: registry ? 'speaches' : 'openai-shaped' };
@@ -195,11 +250,11 @@ function readModelList(j: any, installed: boolean): VoiceModel[] {
 }
 
 async function voiceJson(cfg: VoiceSettings, path: string, init: RequestInit = {}, timeoutMs = 10_000): Promise<any> {
-  const res = await fetch(`${cfg.baseUrl}${path}`, {
+  const res = await outboundFetch(`${cfg.baseUrl}${path}`, {
     ...init,
     headers: { ...voiceAuthHeaders(cfg), ...(init.headers ?? {}) },
     signal: init.signal ?? AbortSignal.timeout(timeoutMs),
-  });
+  }, transportFor(sttEndpoint(cfg)));
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     throw badRequest(`The transcriber answered HTTP ${res.status}${body ? `: ${body}` : ''}`);
@@ -266,11 +321,11 @@ export async function pullVoiceModel(id: string, signal?: AbortSignal): Promise<
   const cfg = await getVoiceSettings();
   const caps = await voiceCapabilities(cfg);
   if (!caps.manages) throw badRequest('That transcriber does not download models: it serves the ones it was started with');
-  const res = await fetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+  const res = await outboundFetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
     method: 'POST',
     headers: voiceAuthHeaders(cfg),
     signal: signal ?? AbortSignal.timeout(60 * 60 * 1000),
-  });
+  }, transportFor(sttEndpoint(cfg)));
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     if (res.status === 404) throw badRequest(`The transcriber does not know a model called "${id}"`);
@@ -289,11 +344,11 @@ export async function deleteVoiceModel(id: string): Promise<VoiceModel[]> {
   const cfg = await getVoiceSettings();
   const caps = await voiceCapabilities(cfg);
   if (!caps.manages) throw badRequest('That transcriber does not manage models from here');
-  const res = await fetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+  const res = await outboundFetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
     method: 'DELETE',
     headers: voiceAuthHeaders(cfg),
     signal: AbortSignal.timeout(60_000),
-  });
+  }, transportFor(sttEndpoint(cfg)));
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 200);
     if (res.status === 404) throw badRequest(`The transcriber has no model called "${id}"`);
@@ -338,7 +393,7 @@ export async function voiceHealth(s?: VoiceSettings): Promise<{ ok: boolean; err
   if (!cfg.baseUrl) return { ok: false, error: 'No transcriber address is set' };
   const headers = voiceAuthHeaders(cfg);
   try {
-    const res = await fetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) });
+    const res = await outboundFetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
     if (res.ok) {
       const j: any = await res.json().catch(() => null);
       const models = Array.isArray(j?.data) ? j.data.map((m: any) => String(m?.id ?? '')).filter(Boolean) : undefined;
@@ -347,7 +402,7 @@ export async function voiceHealth(s?: VoiceSettings): Promise<{ ok: boolean; err
     // 401/403 is a live server refusing the key, which is a different fault
     // from an address that goes nowhere, and worth saying so.
     if (res.status === 401 || res.status === 403) return { ok: false, error: `The transcriber refused the API key (HTTP ${res.status})` };
-    const root = await fetch(`${cfg.baseUrl}/`, { headers, signal: AbortSignal.timeout(6000) });
+    const root = await outboundFetch(`${cfg.baseUrl}/`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
     if (root.status < 500) return { ok: true };
     return { ok: false, error: `HTTP ${root.status}` };
   } catch (e) {
@@ -390,12 +445,12 @@ export async function transcribe(userId: number, audio: Buffer, contentType: str
     // remote server that hosts several needs to be told which.
     if (cfg.model) form.append('model', cfg.model);
 
-    const res = await fetch(`${cfg.baseUrl}/v1/audio/transcriptions`, {
+    const res = await outboundFetch(`${cfg.baseUrl}/v1/audio/transcriptions`, {
       method: 'POST',
       headers: voiceAuthHeaders(cfg),
       body: form,
       signal: opts.signal ?? AbortSignal.timeout(180_000),
-    });
+    }, transportFor(sttEndpoint(cfg)));
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw badRequest(`The transcriber answered HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);

@@ -128,15 +128,23 @@ Nothing leaves your server except the mail itself.
   holding and when it expires, with an **Unload** button, and deleting a
   model frees its memory first and reports a refusal rather than failing
   quietly.
-- **Reachable through Tor, as an opt-in toggle.** Off by default and pointless
+- **One connection per kind of model.** The server that writes, the server that
+  embeds and the server that transcribes each get their own API shape, address,
+  key, certificate rule and Tor switch — because they are routinely three
+  different machines, and a 4.5 GB VPS cannot hold a chat model and a whisper
+  model at once. Embeddings default to sharing the language model's connection
+  *entirely*, which is the common case; the transcriber shares nothing.
+- **Reachable through Tor, as an opt-in toggle, per connection.** Off by default and pointless
   for a model on this box; the case it is for is a model on somebody else's
   hardware, which otherwise logs this server's address with every request. It
   also makes an `.onion` model server reachable at all. It changes who learns
   where you are, not what is sent — the same prompt crosses either way, and the
   page still says plainly whether the model is local. With it on, nothing
-  resolves or connects to the model host outside the proxy: the certificate
+  resolves or connects to that host outside the proxy: the certificate
   inspector and the "is this local" probe both stand down, because a
-  diagnostic that leaks is still a leak.
+  diagnostic that leaks is still a leak. Each connection decides for itself —
+  drafting on a rented GPU over Tor while transcribing on the box next door is
+  the shape this exists for.
 - Any OpenAI-compatible endpoint works too, and so does Anthropic's Messages
   API for people who would rather rent the model than run one. Anthropic has
   no embeddings endpoint, so meaning search gets its own server setting there:

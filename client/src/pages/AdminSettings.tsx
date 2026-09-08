@@ -644,7 +644,7 @@ function AiVoiceCard() {
   async function test() {
     setTesting(true);
     try {
-      const r = await api.post<any>('/api/ai/voice/test', { baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model || undefined });
+      const r = await api.post<any>('/api/ai/voice/test', { baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model || undefined, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) });
       setTested({ ...r.health });
     } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
@@ -696,6 +696,27 @@ function AiVoiceCard() {
           <Input value={f.language ?? ''} onChange={(e) => setF({ ...f, language: e.target.value })} placeholder="auto" />
         </Field>
       </div>
+      {/* How this shop reaches the transcriber, which is its own decision and
+          not the language model's. Speech is the most identifying thing an
+          install sends anywhere, so the wire that carries it gets its own two
+          switches rather than inheriting whatever the drafting model needed. */}
+      <div className="mt-16">
+        {/^https:/i.test(f.baseUrl ?? '') && (
+          <div className="row">
+            <Toggle checked={Boolean(f.tlsInsecure)} onChange={(v) => { setF({ ...f, tlsInsecure: v }); setTested(null); }} />
+            <span className="small">Trust this transcriber&rsquo;s certificate even if it cannot be verified</span>
+          </div>
+        )}
+        <div className="row">
+          <Toggle checked={Boolean(f.useTor)} onChange={(v) => { setF({ ...f, useTor: v }); setTested(null); }} />
+          <span className="small">Reach the transcriber through Tor</span>
+        </div>
+        <p className="small muted">
+          {f.useTor
+            ? 'Recordings reach the transcriber through the local Tor proxy, so it sees an exit node rather than this machine. Slower, and pointless for the bundled container.'
+            : 'Separate from the language model\u2019s setting on purpose. Turn this on for a transcriber on somebody else\u2019s hardware, or for an .onion address; leave it off for the container next door.'}
+        </p>
+      </div>
       {f.baseUrl && data.local === false && (
         <Callout kind="warning">
           That address is not on this box. Every dictated clip will be uploaded to it, so it should be a
@@ -704,7 +725,7 @@ function AiVoiceCard() {
         </Callout>
       )}
       <div className="row mt-8 gap-8">
-        <Button variant="primary" onClick={() => save({ baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model, language: f.language })}>Save</Button>
+        <Button variant="primary" onClick={() => save({ baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model, language: f.language, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) })}>Save</Button>
         <Button variant="ghost" loading={testing} disabled={!f.baseUrl} onClick={test}>Test connection</Button>
         {data.settings.hasApiKey && <Button size="sm" variant="ghost" onClick={() => save({ apiKey: null })}>Clear key</Button>}
         {health && (
@@ -933,6 +954,25 @@ function AiAdminSettings() {
                 </>
               )}
             </div>
+            {/* A separate server is a separate decision about how to reach it.
+                While these did not exist the embedder silently used whatever
+                the drafting model needed, so pointing meaning search at a box
+                on the LAN sent it through Tor if the GPU was reached that
+                way. */}
+            {(f.embedProvider ?? 'same') !== 'same' && (
+              <div className="mt-16">
+                {/^https:/i.test(f.embedBaseUrl ?? '') && (
+                  <div className="row">
+                    <Toggle checked={Boolean(f.embedTlsInsecure)} onChange={(v) => setF({ ...f, embedTlsInsecure: v })} />
+                    <span className="small">Trust the embedding server&rsquo;s certificate even if it cannot be verified</span>
+                  </div>
+                )}
+                <div className="row">
+                  <Toggle checked={Boolean(f.embedUseTor)} onChange={(v) => setF({ ...f, embedUseTor: v })} />
+                  <span className="small">Reach the embedding server through Tor</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {/* Only asked about for an https address, because it is only https
@@ -982,7 +1022,7 @@ function AiAdminSettings() {
               string: blank means "leave the stored one alone", and sending ''
               would clear a working credential every time an admin saved an
               unrelated field. */}
-          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx, useTor: Boolean(f.useTor), embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined })}>Save settings</Button>
+          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx, useTor: Boolean(f.useTor), embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined, embedTlsInsecure: Boolean(f.embedTlsInsecure), embedUseTor: Boolean(f.embedUseTor) })}>Save settings</Button>
           <Button variant="ghost" loading={probing} disabled={!f.baseUrl} onClick={testProvider}>Test connection</Button>
         </div>
       </div>

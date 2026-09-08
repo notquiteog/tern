@@ -52,7 +52,9 @@ const base = `http://127.0.0.1:${modelPort}`;
 
 const { outboundFetch } = await import('./outbound.js');
 const { explainTorError, torProxyAddress, torTimeoutMs, TOR_MIN_TIMEOUT_MS } = await import('./tor.js');
-const { transportFor, aiDefaults } = await import('../ai/llm.js');
+const { transportFor, aiDefaults, llmEndpoint, embedEndpoint } = await import('../ai/llm.js');
+const { transportFor: endpointTransport } = await import('../ai/endpoint.js');
+const { voiceDefaults, sttEndpoint } = await import('../services/voice.js');
 
 test.after(() => { socks.close(); model.close(); });
 
@@ -114,4 +116,82 @@ test('a Tor timeout floor is applied, because a circuit is slower than a socket'
   assert.equal(torTimeoutMs(undefined), TOR_MIN_TIMEOUT_MS);
   assert.equal(torTimeoutMs(5_000), TOR_MIN_TIMEOUT_MS);
   assert.equal(torTimeoutMs(TOR_MIN_TIMEOUT_MS + 1_000), TOR_MIN_TIMEOUT_MS + 1_000);
+});
+
+
+// ── One connection per kind of model ───────────────────────────────────────
+//
+// The regression these guard is the one that motivated splitting them: the
+// transcriber used plain `fetch`, so it honoured neither the certificate rule
+// nor any proxy, and the embedder silently borrowed both from the drafting
+// model. Neither was decided; it is what separately written call sites
+// converge on.
+
+test('each kind of model carries its own proxy decision', () => {
+  const ai = { ...aiDefaults(), useTor: true, embedProvider: 'ollama' as const, embedBaseUrl: 'http://ollama:11434', embedUseTor: false };
+  assert.ok(endpointTransport(llmEndpoint(ai)).agent, 'the language model lost its proxy');
+  assert.equal(endpointTransport(embedEndpoint(ai)).agent, undefined,
+    'the embedder was dragged through Tor by the language model');
+
+  // And the other way, which was equally impossible before.
+  const flipped = { ...ai, useTor: false, embedUseTor: true };
+  assert.equal(endpointTransport(llmEndpoint(flipped)).agent, undefined);
+  assert.ok(endpointTransport(embedEndpoint(flipped)).agent, 'the embedder could not use Tor on its own');
+});
+
+test('the transcriber has a connection of its own, not the language model\'s', () => {
+  // It had an address and a key and nothing else — no shape, no certificate
+  // rule, no proxy — so an admin who ticked "trust this certificate" on the AI
+  // page found drafting worked and dictation did not.
+  const quiet = sttEndpoint({ ...voiceDefaults(), useTor: false, tlsInsecure: false });
+  assert.equal(endpointTransport(quiet).agent, undefined);
+  assert.equal(endpointTransport(quiet).insecure, false);
+
+  const hidden = sttEndpoint({ ...voiceDefaults(), useTor: true, tlsInsecure: true });
+  assert.ok(endpointTransport(hidden).agent, 'the transcriber cannot be routed through Tor');
+  assert.equal(endpointTransport(hidden).insecure, true);
+
+  // It is a separate settings row entirely, so no value of the AI settings can
+  // reach it. That is the property, not an implementation detail.
+  assert.equal(sttEndpoint(voiceDefaults()).id, 'stt');
+  assert.equal(sttEndpoint(voiceDefaults()).inheritedFrom, null);
+});
+
+test('an endpoint set to inherit takes the whole connection, not just the address', () => {
+  // Copying the URL and leaving the proxy behind is the bug in miniature.
+  const ai = { ...aiDefaults(), baseUrl: 'https://gpu.example:11434', apiKey: 'llm-key', useTor: true, tlsInsecure: true, embedProvider: 'same' as const };
+  const e = embedEndpoint(ai);
+  assert.equal(e.inheritedFrom, 'llm');
+  assert.equal(e.baseUrl, 'https://gpu.example:11434');
+  assert.equal(e.apiKey, 'llm-key');
+  assert.equal(e.useTor, true);
+  assert.equal(e.tlsInsecure, true);
+});
+
+test('each endpoint keeps its own credential', () => {
+  // A key belongs to one machine. Handing the drafting model's key to a
+  // transcriber somebody else runs would be a disclosure, not a convenience.
+  const ai = { ...aiDefaults(), apiKey: 'llm-key', embedProvider: 'openai' as const, embedBaseUrl: 'https://embed.example', embedApiKey: 'embed-key' };
+  assert.equal(llmEndpoint(ai).apiKey, 'llm-key');
+  assert.equal(embedEndpoint(ai).apiKey, 'embed-key');
+  assert.equal(sttEndpoint({ ...voiceDefaults(), apiKey: 'stt-key' }).apiKey, 'stt-key');
+});
+
+test('the old settings-shaped transport still means the language model', () => {
+  // `transportFor(settings)` is kept for the callers that legitimately hold
+  // the whole settings object. It must resolve to the language model's
+  // connection and nothing else, or a caller that looks unchanged silently
+  // starts using the wrong one.
+  // Compared by shape rather than by value: each call builds a fresh agent
+  // object, so deep equality would fail on two correct results.
+  for (const ai of [
+    { ...aiDefaults(), useTor: true, tlsInsecure: true },
+    { ...aiDefaults(), useTor: false, tlsInsecure: false },
+  ]) {
+    const viaSettings = transportFor(ai);
+    const viaEndpoint = endpointTransport(llmEndpoint(ai));
+    assert.equal(viaSettings.insecure, viaEndpoint.insecure);
+    assert.equal(Boolean(viaSettings.agent), Boolean(viaEndpoint.agent));
+    assert.equal(Boolean(viaSettings.agent), ai.useTor);
+  }
 });

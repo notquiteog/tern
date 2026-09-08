@@ -189,7 +189,7 @@ aiRouter.delete('/presets/:id', requireAdmin, async (req, res) => {
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
   const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai', 'anthropic']).optional(), baseUrl: z.string().url().max(300).refine(httpUrl, 'The base URL must start with http:// or https://').optional(), apiKey: z.string().max(500).optional(), tlsInsecure: z.boolean().optional(), useTor: z.boolean().optional(), model: z.string().min(1).max(120).optional(), embedModel: z.string().min(1).max(120).optional(),
-    embedProvider: z.enum(['same', 'ollama', 'openai']).optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+    embedProvider: z.enum(['same', 'ollama', 'openai']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
@@ -277,6 +277,12 @@ aiRouter.get('/voice', requireAdmin, async (_req, res) => {
 const voiceBody = z.object({
   enabled: z.boolean().optional(),
   baseUrl: z.string().url().max(300).or(z.literal('')).optional(),
+  // The rest of the transcriber's connection. It is configured exactly like
+  // the language model's and the embedder's — shape, address, key, certificate
+  // rule, Tor — because it is the same class of thing: an operator-chosen
+  // server that may be anywhere.
+  tlsInsecure: z.boolean().optional(),
+  useTor: z.boolean().optional(),
   // Blank leaves the stored key alone; clearing one is asking for it to be
   // cleared, which is what `null` says here.
   apiKey: z.string().max(500).nullable().optional(),
@@ -299,7 +305,11 @@ aiRouter.put('/voice', requireAdmin, async (req, res) => {
     req.user!.id,
     JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : b.apiKey === null ? '(cleared)' : undefined }),
   ]);
-  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, local: next.baseUrl ? await isLocalReach(next.baseUrl) : true, health: await voiceHealth(next) });
+  // `isLocalReach` resolves the address, which with Tor on would announce the
+  // transcriber's hostname to this machine's resolver — outside the proxy the
+  // admin chose. Skipped, and reported as non-local, which is what routing
+  // through Tor makes it.
+  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, local: next.useTor ? false : (next.baseUrl ? await isLocalReach(next.baseUrl) : true), health: await voiceHealth(next) });
 });
 
 // Try an address before saving it, so a wrong one is a message on the form
@@ -309,7 +319,7 @@ aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
   const current = await getVoiceSettings();
   const trial = { ...current, ...b, apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey) };
   if (!trial.baseUrl) throw badRequest('Give the transcriber address first');
-  res.json({ health: await voiceHealth(trial), local: await isLocalReach(trial.baseUrl) });
+  res.json({ health: await voiceHealth(trial), local: trial.useTor ? false : await isLocalReach(trial.baseUrl) });
 });
 
 // ---------- The transcriber's models ----------

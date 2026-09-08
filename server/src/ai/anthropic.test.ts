@@ -8,7 +8,7 @@
 // it makes drafting unavailable.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anthropicTakesSampling, embedTarget, toAnthropicMessages, aiDefaults, type AiSettings } from './llm.js';
+import { anthropicTakesSampling, embedEndpoint, toAnthropicMessages, aiDefaults, type AiSettings } from './llm.js';
 
 test('the system prompt is lifted out of the message list', () => {
   // Ollama and the OpenAI shape both take `{ role: 'system' }` as the first
@@ -66,9 +66,12 @@ test('temperature is withheld from the models that answer 400 to it', () => {
 test('embeddings default to the drafting server and move only when told', () => {
   const base: AiSettings = { ...aiDefaults(), baseUrl: 'http://ollama:11434', apiKey: 'main' };
   // `same` is what every install had before the embedding slot became
-  // separable, and it must stay byte-identical: a change here re-points every
-  // existing install's vectors at nothing.
-  assert.equal(embedTarget(base), base);
+  // separable, and it must still resolve to the language model's own
+  // connection: a change here re-points every existing install's vectors.
+  const inherited = embedEndpoint(base);
+  assert.equal(inherited.baseUrl, base.baseUrl);
+  assert.equal(inherited.apiKey, base.apiKey);
+  assert.equal(inherited.inheritedFrom, 'llm');
 
   const split: AiSettings = {
     ...base,
@@ -79,7 +82,7 @@ test('embeddings default to the drafting server and move only when told', () => 
     embedBaseUrl: 'http://ollama:11434/',
     embedApiKey: 'embed-key',
   };
-  const t = embedTarget(split);
+  const t = embedEndpoint(split);
   assert.equal(t.provider, 'ollama');
   // Normalised on the way out as well as on the way in: a trailing slash makes
   // every call `//api/embed`, which 404s.

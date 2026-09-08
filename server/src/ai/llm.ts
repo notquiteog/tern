@@ -13,7 +13,11 @@ import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
 import { logger } from '../log.js';
 import { explainOutboundError, inspectCertificate, normalizeBaseUrl, outboundFetch, type CertInfo, type TlsTrust } from '../util/outbound.js';
-import { explainTorError, torAgent, torProxyAddress } from '../util/tor.js';
+import { explainTorError, torProxyAddress } from '../util/tor.js';
+import {
+  endpointHeaders, notConfigured, transportFor as endpointTransport,
+  type ModelEndpoint,
+} from './endpoint.js';
 
 const log = logger('ai');
 
@@ -97,6 +101,14 @@ export interface AiSettings {
   embedProvider: EmbedProvider;
   embedBaseUrl: string;
   embedApiKey: string;
+  // Its own certificate rule and its own proxy, not the language model's.
+  // While these did not exist, an embedder on a separate box inherited both
+  // from whatever the drafting server happened to need — so pointing meaning
+  // search at a machine on the LAN silently sent it through Tor if the GPU was
+  // reached that way. `same` still inherits, but now it inherits deliberately
+  // and inherits everything.
+  embedTlsInsecure: boolean;
+  embedUseTor: boolean;
   // Whether several people may be answered at once. Off serialises every
   // generation on this install, which is the right setting for a small box:
   // each slot Ollama serves in parallel costs another context window of KV
@@ -169,6 +181,8 @@ const BASE_DEFAULTS: AiSettings = {
   embedProvider: 'same',
   embedBaseUrl: '',
   embedApiKey: '',
+  embedTlsInsecure: false,
+  embedUseTor: false,
   concurrency: true,
 };
 
@@ -244,14 +258,51 @@ export async function providerHeaders(s?: AiSettings): Promise<Record<string, st
 // change and an install should not adopt one the day it ships.
 const ANTHROPIC_VERSION = '2023-06-01';
 
-// Which server an embedding request goes to.
+// ---------- The connections ----------
 //
-// Returns settings of the same shape, so every call below — the URL, the
-// headers, the TLS decision — stays one code path rather than a second one
-// that has to remember the same rules. `same` returns the settings untouched.
-export function embedTarget(s: AiSettings): AiSettings {
-  if (s.embedProvider === 'same') return s;
-  return { ...s, provider: s.embedProvider, baseUrl: normalizeBaseUrl(s.embedBaseUrl), apiKey: s.embedApiKey };
+// The stored settings stay flat — one JSON row, and an install upgrading must
+// not lose its configuration — while everything that opens a socket reads a
+// `ModelEndpoint`. So the shape on disk is stable and the shape at the point
+// of use is uniform, which is the pair that matters: a caller cannot reach for
+// the wrong server's key or the wrong server's proxy, because it never has
+// more than one endpoint in its hand.
+
+/** The server that writes. */
+export function llmEndpoint(s: AiSettings): ModelEndpoint {
+  return {
+    id: 'llm',
+    label: 'the language model',
+    provider: s.provider,
+    baseUrl: s.baseUrl,
+    apiKey: s.apiKey,
+    tlsInsecure: Boolean(s.tlsInsecure),
+    useTor: Boolean(s.useTor),
+    inheritedFrom: null,
+  };
+}
+
+/**
+ * The server that embeds.
+ *
+ * `same` returns the language model's connection ENTIRELY — address, key,
+ * certificate rule and Tor switch. Inheriting only the address is the bug this
+ * whole file was restructured to prevent, so inheritance takes everything or
+ * nothing.
+ */
+export function embedEndpoint(s: AiSettings): ModelEndpoint {
+  if (s.embedProvider === 'same') {
+    return { ...llmEndpoint(s), id: 'embed', label: 'embeddings', inheritedFrom: 'llm' };
+  }
+  return {
+    id: 'embed',
+    label: 'embeddings',
+    provider: s.embedProvider,
+    baseUrl: normalizeBaseUrl(s.embedBaseUrl),
+    apiKey: s.embedApiKey,
+    tlsInsecure: Boolean(s.embedTlsInsecure),
+    useTor: Boolean(s.embedUseTor),
+    inheritedFrom: null,
+  };
 }
 
 // Models that still accept `temperature`.
@@ -304,16 +355,13 @@ export function toAnthropicMessages(messages: ChatMessage[]): { system: string; 
 // they have completely different fixes. `explainTorError` recognises only the
 // proxy's own failures and returns null otherwise, so a model server refusing
 // a key still gets the far better explanation outbound.ts has for it.
-export function reachError(s: AiSettings, e: unknown): string {
+export function reachError(s: { useTor: boolean; baseUrl: string }, e: unknown): string {
   if (s.useTor) { const tor = explainTorError(e); if (tor) return tor; }
   return explainOutboundError(e, s.baseUrl);
 }
 
 export function transportFor(s: AiSettings): TlsTrust {
-  return {
-    insecure: Boolean(s.tlsInsecure),
-    ...(s.useTor ? { agent: torAgent() } : {}),
-  };
+  return endpointTransport(llmEndpoint(s));
 }
 
 // Ollama's keep_alive is either a duration string ("10m", "1h") or a number
@@ -807,11 +855,13 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   await assertCapability(consent.userId, consent.capability);
   const s = await getAiSettings();
   if (!s.enabled) throw new Error('The model is turned off in Admin → AI model');
-  // Embeddings may come from a different server than drafting does. Everything
-  // below reads `t`, and nothing reads `s.baseUrl` or `s.apiKey`, so an
-  // install drafting on Anthropic and embedding on the Ollama next door does
-  // not take a wrong turn here.
-  const t = embedTarget(s);
+  // Embeddings have their own connection — address, key, certificate rule and
+  // Tor switch — which by default inherits the language model's whole
+  // connection rather than merely its URL. Everything below reads `t`, and
+  // nothing reads `s.baseUrl` or `s.apiKey`, so an install drafting on
+  // Anthropic over Tor and embedding on the Ollama next door does not take a
+  // wrong turn here.
+  const t = embedEndpoint(s);
   const model = s.embedModel || DEFAULTS.embedModel;
   const input = texts.map((x) => String(x ?? '').slice(0, 8000)).filter(Boolean);
   if (!input.length) return { vectors: [], model, dims: 0 };
@@ -821,17 +871,19 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   if (t.provider === 'anthropic') {
     throw new Error('Anthropic has no embeddings endpoint. Point "Where embeddings come from" at an Ollama or OpenAI-compatible server in Admin → AI model.');
   }
-  if (!t.baseUrl) throw new Error('No address is set for the embedding server');
+  if (!t.baseUrl) throw new Error(t.inheritedFrom
+    ? 'No address is set for the language model, which embeddings are set to share.'
+    : notConfigured(t));
 
   const session = beginSession();
   try {
     if (t.provider === 'openai') {
       const res = await outboundFetch(`${t.baseUrl}/v1/embeddings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await providerHeaders(t)) },
+        headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
         body: JSON.stringify({ model, input }),
         signal,
-      }, transportFor(t)).catch((e) => { throw new Error(reachError(t, e)); });
+      }, endpointTransport(t)).catch((e) => { throw new Error(reachError(t, e)); });
       if (!res.ok) throw new Error(`Embedding endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
       const j: any = await res.json();
       const vectors = (j.data ?? []).map((d: any) => (Array.isArray(d.embedding) ? d.embedding : []));
@@ -839,10 +891,10 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
     }
     const res = await outboundFetch(`${t.baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(await providerHeaders(t)) },
+      headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
       body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
       signal,
-    }, transportFor(t)).catch((e) => { throw new Error(reachError(t, e)); });
+    }, endpointTransport(t)).catch((e) => { throw new Error(reachError(t, e)); });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       if (res.status === 404) throw new Error(`The embedding model "${model}" is not downloaded. Pull it in Admin → AI model.`);
