@@ -55,13 +55,25 @@ export function useDictation(onText: (text: string) => void) {
   const start = useCallback(async () => {
     const mimeType = pickMimeType();
     if (!mimeType) { toast.error('This browser cannot record audio'); return; }
+    // Browsers hide mediaDevices entirely outside a secure context, so on a
+    // plain-HTTP install this is undefined rather than a refusal. Saying so
+    // is kinder than "no microphone", which sends people to their hardware.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error(window.isSecureContext
+        ? 'This browser cannot record audio'
+        : 'Dictation needs a secure connection. Serve Tern over HTTPS, or use localhost.');
+      return;
+    }
     let media: MediaStream;
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch (e) {
-      toast.error((e as Error).name === 'NotAllowedError'
+      const name = (e as Error).name;
+      toast.error(name === 'NotAllowedError'
         ? 'The microphone was not allowed. Check the permission for this site.'
-        : 'No microphone is available.');
+        : name === 'NotFoundError' || name === 'OverconstrainedError'
+          ? 'No microphone is available.'
+          : 'The microphone could not be started.');
       return;
     }
     stream.current = media;

@@ -55,7 +55,12 @@ export function createApp(): express.Express {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    // microphone=(self) rather than () because dictation asks for it from
+    // our own page; an empty allowlist blocks even the top-level document,
+    // so getUserMedia is refused before the browser ever offers the prompt.
+    // Everything else stays off, and self is only ever this origin because
+    // frame-ancestors and X-Frame-Options mean we are never embedded.
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=(), usb=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     res.setHeader('Content-Security-Policy', APP_CSP);
