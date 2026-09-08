@@ -174,7 +174,15 @@ polish, shorten, expand, subject).
 
 - **Provider**: Ollama (bundled) or any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional API key.
 - **Model**: pull curated models with one click or type any name from
-  ollama.com/library. The page shows the RAM-based recommendation.
+  ollama.com/library. The page shows the RAM-based recommendation. The list of
+  what is installed is read from the model server every few seconds rather
+  than cached, which matters most when the model server is somebody else's —
+  a model pulled from the perch console on the GPU box, or removed there with
+  `ollama rm`, shows up here within a poll. When the server cannot be reached
+  the card says so; an empty table and an unreachable server are no longer the
+  same screen. A deletion is only reported as done once that server's own list
+  agrees, so a delete a proxy accepted but did not apply is an error rather
+  than a row that quietly comes back on the next refresh.
 - **Temperature** and **context window**: 0.7 and 8192 by default. The
   conversation given to the model is sized to the context window: a long
   thread keeps its newest messages and its opening ones, where the dates and
@@ -247,6 +255,22 @@ polish, shorten, expand, subject).
   looks: every expiry costs the next person a cold load of the whole model.
 - **GPU**: re-run the installer and answer yes, or add `compose.gpu.yml` to
   `COMPOSE_FILE` in `.env`.
+
+### Downloads
+
+A pull is a job on the server, not the request that asked for it. Closing the
+page, reloading, switching tab or letting a laptop sleep leaves it running,
+and coming back shows it where it is; the only thing that stops one is the
+**Cancel** button beside it. That is not a nicety on a slow line — a 17 GB
+model is a long download to lose to a screen lock, and losing it left no
+evidence beyond a model that never appeared.
+
+The bar is the whole download. Ollama reports progress one layer at a time,
+so a bar drawn from those numbers restarts from zero at each layer and reaches
+"100%" several times; this one sums every layer the stream has mentioned and
+adds the transferred bytes, a smoothed rate and an estimate. While nothing has
+been sized yet — during `pulling manifest` — it shows the phase and no
+percentage rather than an invented zero.
 
 ### Several people at once
 
@@ -613,6 +637,33 @@ done — `./bin/tern logs whisper` shows the progress. Deleting the
 box beside a chat model; `small` is 500 MB and better on accents and names).
 Change it and restart the container to switch. Without the container the
 Dictation switch says so rather than failing at the microphone.
+
+#### What the Dictation card offers depends on the transcriber
+
+"Something speaking OpenAI's transcription shape" covers two quite different
+servers, so the card asks which one it is talking to instead of assuming, and
+shows the controls the answer justifies.
+
+The bundled whisper.cpp holds **one** model, fixed when the container starts,
+and has no model API at all — `/v1/models` is a 404 there. The card says so
+and leaves the model box as free text, because there is nothing to list.
+
+speaches (and faster-whisper-server before it) hosts many: it lists what it
+has at `/v1/models`, publishes everything it could fetch at `/v1/registry`,
+and downloads and removes through `POST` and `DELETE` on `/v1/models/{id}`.
+Against one of those the card becomes a live table — the model box becomes a
+list of what is actually there, with **Download** for anything in the registry
+and **Delete** for anything installed. Both are checked against the
+transcriber's own list afterwards rather than against the status code.
+
+A download here is a job on the server in exactly the way a model pull is, so
+it survives the page. What it cannot have is a percentage: speaches downloads
+in one blocking call and reports nothing until it finishes, so the card shows
+a moving stripe, the elapsed time and a line saying why there is no number,
+which is more use than a bar that invents one.
+
+A hosted transcription API usually lists its models and lets you manage none
+of them. That case gets the list without the buttons.
 
 #### A transcriber on another machine
 

@@ -124,9 +124,17 @@ export function Tabs<T extends string>({ value, tabs, onChange }: { value: T; ta
   return <div className="tabs">{tabs.map((t) => <button key={t.value} type="button" className={cls(t.value === value && 'active')} onClick={() => onChange(t.value)}>{t.label}</button>)}</div>;
 }
 
-export function Progress({ value, max, warnAt = 0.8 }: { value: number; max: number; warnAt?: number }) {
+// Two different things wear this bar, and full means the opposite in each.
+//
+// On a meter — memory, disk, a quota — approaching the end is a warning and
+// reaching it is a problem, which is what `warn` and `full` colour. On a
+// download, reaching the end is the good outcome, and a bar that turns red
+// the moment the model finishes reads as a failure. `tone="fill"` is that
+// second case: it fills and stays the accent colour.
+export function Progress({ value, max, warnAt = 0.8, tone = 'meter' }: { value: number; max: number; warnAt?: number; tone?: 'meter' | 'fill' }) {
   const r = max ? Math.min(1, value / max) : 0;
-  return <div className={cls('progress', r >= 1 && 'full', r >= warnAt && r < 1 && 'warn')}><div style={{ width: `${r * 100}%` }} /></div>;
+  const meter = tone === 'meter';
+  return <div className={cls('progress', meter && r >= 1 && 'full', meter && r >= warnAt && r < 1 && 'warn')}><div style={{ width: `${r * 100}%` }} /></div>;
 }
 
 // A side panel with its own dimmer.

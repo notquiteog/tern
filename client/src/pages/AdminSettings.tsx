@@ -458,6 +458,12 @@ interface PullView {
 function useDownloads(kind: 'model' | 'voice', polled: PullView[] | undefined, onSettled: () => void) {
   const toast = useToast();
   const [live, setLive] = useState<Record<string, PullView>>({});
+  // Dismissing is this page's opinion, not the server's: the record stays
+  // there for a minute and a half so a browser that was closed during the
+  // download can still be told how it went. Without remembering the dismissal
+  // here, the next poll — three seconds later — would put the bar straight
+  // back, which reads as a button that does not work.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const settle = useRef(onSettled);
   settle.current = onSettled;
 
@@ -467,10 +473,13 @@ function useDownloads(kind: 'model' | 'voice', polled: PullView[] | undefined, o
   const merged: Record<string, PullView> = {};
   for (const p of polled ?? []) merged[p.name] = p;
   for (const [name, p] of Object.entries(live)) merged[name] = p;
+  for (const name of dismissed) delete merged[name];
   const running = Object.values(merged).filter((p) => p.state === 'running');
 
   const start = async (name: string) => {
     if (merged[name]?.state === 'running') return;
+    // Starting the same name again is asking to see it again.
+    setDismissed((d) => { if (!d.has(name)) return d; const next = new Set(d); next.delete(name); return next; });
     setLive((m) => ({ ...m, [name]: { id: `${kind}:${name}`, kind, name, state: 'running', status: 'starting', completed: 0, total: 0, pct: null, bytesPerSec: null, etaSeconds: null, startedAt: Date.now(), endedAt: null } }));
     const path = kind === 'model' ? '/api/ai/models/pull' : '/api/ai/voice/models/pull';
     const body = kind === 'model' ? { name } : { id: name };
@@ -501,10 +510,11 @@ function useDownloads(kind: 'model' | 'voice', polled: PullView[] | undefined, o
     } catch (e) { toast.error(e); } finally { settle.current(); }
   };
 
-  // A finished bar is worth reading for a moment and then gone. The server
-  // keeps the record for a minute and a half; this drops it from the page
-  // sooner, and only for jobs that ended.
-  const dismiss = (name: string) => setLive((m) => { const { [name]: _gone, ...rest } = m; return rest; });
+  // A finished bar is worth reading for a moment and then gone.
+  const dismiss = (name: string) => {
+    setLive((m) => { const { [name]: _gone, ...rest } = m; return rest; });
+    setDismissed((d) => new Set(d).add(name));
+  };
 
   return { pulls: Object.values(merged).sort((a, b) => a.startedAt - b.startedAt), running, start, cancel, dismiss, isPulling: (n: string) => merged[n]?.state === 'running' };
 }
@@ -568,7 +578,7 @@ function PullRow({ pull, onCancel, onDismiss }: { pull: PullView; onCancel: () =
       </div>
       {pull.pct === null && pull.state === 'running'
         ? <div className="progress-indeterminate" aria-label={`Downloading ${pull.name}`} />
-        : <Progress value={pull.state === 'done' ? 100 : (pull.pct ?? 0)} max={100} />}
+        : <Progress value={pull.state === 'done' ? 100 : (pull.pct ?? 0)} max={100} tone="fill" />}
       {pull.pct === null && pull.state === 'running' && (
         <p className="small faint mt-8">This server downloads in one call and reports nothing until it has finished, so there is no percentage to show. It is still running, and leaving this page will not stop it.</p>
       )}
@@ -1005,7 +1015,7 @@ function AiAdminSettings() {
               <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'write' })}><Trash2 size={14} /></IconButton>
             </> : <Button size="sm" icon={<Download size={13} />} loading={downloads.isPulling(m.name)} disabled={downloads.isPulling(m.name) || Boolean(liveError)} onClick={() => downloads.start(m.name)}>Pull</Button> },
           ]} /></div>
-          <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel || downloads.isPulling(customModel)} onClick={() => { void downloads.start(customModel.trim()); setCustomModel(''); }}>Pull</Button></div>
+          <div className="row mt-16"><Input className="input-sm" placeholder="any model from ollama.com/library, e.g. mistral:7b" value={customModel} onChange={(e) => setCustomModel(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customModel.trim() || downloads.isPulling(customModel.trim())} onClick={() => { void downloads.start(customModel.trim()); setCustomModel(''); }}>Pull</Button></div>
           <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.name}?`} confirmLabel="Delete model"
             message={<>The files are removed from the <code>ollama</code> volume and can only come back by downloading them again.{del?.loaded && ' It is in memory now and will be unloaded first.'}{del?.inUse && (del.kind === 'embed'
               ? <><br /><br /><b>This is the model meaning search is set to use.</b> Search falls back to matching words until you pick another one, and the vectors already stored stay unusable until something is indexed again.</>
@@ -1038,7 +1048,7 @@ function AiAdminSettings() {
               <IconButton label="Delete" className="btn-sm" disabled={busy === m.name} onClick={() => setDel({ name: m.name, inUse: m.active, loaded: Boolean(m.loaded), kind: 'embed' })}><Trash2 size={14} /></IconButton>
             </> : <Button size="sm" icon={<Download size={13} />} loading={downloads.isPulling(m.name)} disabled={downloads.isPulling(m.name) || Boolean(liveError)} onClick={() => downloads.start(m.name)}>Pull</Button> },
           ]} /></div>
-          <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed || downloads.isPulling(customEmbed)} onClick={() => { void downloads.start(customEmbed.trim()); setCustomEmbed(''); }}>Pull</Button></div>
+          <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed.trim() || downloads.isPulling(customEmbed.trim())} onClick={() => { void downloads.start(customEmbed.trim()); setCustomEmbed(''); }}>Pull</Button></div>
         </div>
       )}
       <AiVoiceCard />

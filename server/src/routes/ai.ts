@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, HttpError, notFound } from '../errors.js';
 import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
@@ -337,7 +337,7 @@ aiRouter.post('/voice/models/pull/cancel', requireAdmin, async (req, res) => {
 // travels in the query string rather than the path.
 aiRouter.delete('/voice/models', requireAdmin, async (req, res) => {
   const { id } = parse(voiceModelBody, { id: String(req.query.id ?? '') });
-  const installed = await deleteVoiceModel(id);
+  const installed = await relaying(() => deleteVoiceModel(id));
   // Deleting the model the install was set to use leaves the setting naming
   // something that is not there, which would fail at the microphone. It is
   // cleared, which means "whatever the server defaults to" — the same as a
@@ -363,6 +363,23 @@ aiRouter.get('/models', requireAdmin, async (_req, res) => {
 });
 
 const modelName = z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/);
+
+/**
+ * The model server's own reasons, kept.
+ *
+ * The catch-all in app.ts answers "Something went wrong on the server" and
+ * puts the message in the log, which is right for a bug here and wrong for
+ * every failure in this section. "That server has no model called X", "it is
+ * still there after the delete was accepted" and perch's "model management is
+ * switched off on this perch" are the whole answer, and an admin who is shown
+ * the generic line instead has a button that does nothing and nowhere to look.
+ */
+async function relaying<T>(fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); } catch (e) {
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(502, (e as Error)?.message ?? String(e), 'model_server');
+  }
+}
 
 // Downloads run as jobs, so closing the page does not cancel one.
 //
@@ -428,7 +445,7 @@ async function streamPull(res: any, kind: 'model' | 'voice', name: string): Prom
 async function handleDelete(req: any, res: any): Promise<void> {
   const raw = String(req.query.name ?? req.params.name ?? '');
   const { name } = parse(z.object({ name: modelName }), { name: raw });
-  const models = await deleteModel(name);
+  const models = await relaying(() => deleteModel(name));
   const loaded = await loadedModels().catch(() => []);
   res.json({ ok: true, deleted: name, models, loaded });
 }
@@ -446,7 +463,7 @@ aiRouter.post('/models/unload', requireAdmin, async (req, res) => {
   const { name } = parse(z.object({ name: z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/) }), req.body);
   const s = await getAiSettings();
   if (s.provider !== 'ollama') throw badRequest('Only an Ollama model can be unloaded from here');
-  const unloaded = await unloadModel(s.baseUrl, name);
+  const unloaded = await relaying(() => unloadModel(s.baseUrl, name));
   res.json({ unloaded });
 });
 
