@@ -637,7 +637,9 @@ export async function personalize(acc: AccountRow, step: StepRow, contact: any, 
   const recipient = { name: name.full || undefined, email: contact.email };
   // Sequence and responder mail is written minutes or hours before it is
   // sent, so it queues behind whoever is drafting in a browser right now.
-  const body = finalizeOutput(await chat({ messages, maxTokens: Math.max(600, settings.maxTokens), stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
+  const body = finalizeOutput(await chat({ messages, // 0 is uncapped and must stay uncapped: Math.max(600, 0) would quietly
+      // reimpose a ceiling on the one path the operator cannot see.
+      maxTokens: settings.maxTokens > 0 ? Math.max(600, settings.maxTokens) : 0, stop: modeTuning('personalize').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.campaigns' } }), 'personalize', { recipient, senderName: acc.name, senderEmail: acc.email });
   let subject = rendered.subject;
   if (!subject.trim()) {
     const st = modeTuning('subject');

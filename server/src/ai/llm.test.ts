@@ -3,7 +3,7 @@
 // answers with nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions, predictTokens } from './llm.js';
+import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions, predictTokens, openAiMaxTokens, anthropicMaxTokens } from './llm.js';
 
 test('a duration keeps its unit and travels as a string', () => {
   for (const v of ['10m', '1h', '30s', '500ms']) assert.equal(keepAliveValue(v), v);
@@ -111,6 +111,7 @@ test('the reply and reasoning budget are clamped to what the window can hold', (
   // thinking budget on an 8,192-token window cannot possibly be honoured.
   const big = predictTokens({ numCtx: 8192, promptChars: 20_000, replyTokens: 700, thinkingTokens: 16_000 });
   assert.equal(big.clamped, true);
+  assert.ok(big.numPredict !== undefined, 'a clamped result must carry a number');
   assert.ok(big.numPredict < 16_700, `asked for 16,700 and got ${big.numPredict}`);
   // 20,000 chars is ~6,250 tokens of prompt by the conservative estimate, so
   // roughly 1,800 remain.
@@ -128,5 +129,67 @@ test('the reply and reasoning budget are clamped to what the window can hold', (
   // than a negative number.
   const full = predictTokens({ numCtx: 4096, promptChars: 40_000, replyTokens: 700, thinkingTokens: 16_000 });
   assert.equal(full.clamped, true);
-  assert.ok(full.numPredict > 0);
+  assert.ok(full.numPredict !== undefined && full.numPredict > 0);
+});
+
+test('uncapped means the parameter is not sent at all', () => {
+  // The default is now 0 for both, meaning "no ceiling". That has to reach the
+  // wire as a MISSING `num_predict`, not as a large one: a big number is still
+  // a ceiling, it is merely a less visible one, and it would be the wrong
+  // ceiling on the next model. `undefined` is what the Ollama path spreads
+  // away, so this is the assertion that keeps the promise honest.
+  assert.deepEqual(
+    predictTokens({ numCtx: 32_768, promptChars: 4_000, replyTokens: 0, thinkingTokens: 0 }),
+    { clamped: false },
+  );
+  // Uncapped does not become capped just because the prompt is enormous.
+  // There is no budget to exceed, so there is nothing to clamp — the context
+  // window is the server's business and it enforces that itself.
+  assert.deepEqual(
+    predictTokens({ numCtx: 4_096, promptChars: 200_000, replyTokens: 0, thinkingTokens: 0 }),
+    { clamped: false },
+  );
+});
+
+test('the reply ceiling is what decides whether anything is sent', () => {
+  // `num_predict` bounds reasoning and answer TOGETHER, so a thinking budget
+  // cannot be enforced through it while the reply is unbounded — an uncapped
+  // reply is an uncapped total, whatever the thinking budget says.
+  //
+  // This is the case that caught a real mistake: written as "send nothing only
+  // when BOTH are 0", an uncapped reply with a thinking budget asked for the
+  // entire remaining window plus the budget, which never fits, so every such
+  // request clamped and logged a warning about a budget nobody had set.
+  assert.deepEqual(
+    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 0, thinkingTokens: 4_000 }),
+    { clamped: false },
+  );
+
+  // A reply ceiling that IS set still gets its number, and the thinking budget
+  // is still added on top so reasoning does not eat the answer's allowance.
+  assert.deepEqual(
+    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 0 }),
+    { numPredict: 700, clamped: false },
+  );
+  assert.deepEqual(
+    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 4_000 }),
+    { numPredict: 4_700, clamped: false },
+  );
+});
+
+test('each API says "no ceiling" in its own way, and none of them says it with a big number', () => {
+  // Three APIs, three spellings. The shared mistake to avoid is substituting a
+  // large constant, which is still a ceiling and is wrong on any model whose
+  // real limit differs.
+  assert.deepEqual(openAiMaxTokens(0, 0), {}, 'OpenAI: the key must be absent');
+  assert.deepEqual(openAiMaxTokens(0, 16_000), {}, 'an uncapped reply is an uncapped total');
+  assert.deepEqual(openAiMaxTokens(700, 4_000), { max_tokens: 4_700 });
+
+  // Anthropic requires the field, so uncapped becomes the model's own limit —
+  // read from the Models API, never guessed, because a number above the real
+  // ceiling is a 400 and a broken adapter rather than a shorter answer.
+  assert.equal(anthropicMaxTokens(0, 0, 64_000), 64_000);
+  assert.equal(anthropicMaxTokens(0, 16_000, 64_000), 64_000);
+  assert.equal(anthropicMaxTokens(700, 4_000, 64_000), 4_700);
+  assert.equal(anthropicMaxTokens(100_000, 0, 64_000), 64_000, 'never ask for more than the model takes');
 });

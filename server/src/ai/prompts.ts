@@ -175,7 +175,17 @@ const OPENING_SHARE = 0.45;
 // Roughly 3.2 characters per token, minus room for the prompt scaffolding and
 // whatever the model is about to write.
 export function threadBudgetChars(numCtx: number, maxTokens: number): number {
-  const reserve = Math.max(400, maxTokens) + 600; // generation + instructions, in tokens
+  // How much of the window to keep back for the answer and the instructions.
+  //
+  // `maxTokens` of 0 means the generation is uncapped (see llm.ts DEFAULTS),
+  // and there is then no number to reserve against — so this uses an estimate
+  // of what a long reply costs. That estimate is NOT a ceiling and is never
+  // sent anywhere: it only decides how much thread to include, and being
+  // wrong about it makes the thread slightly longer or shorter rather than
+  // truncating anything the model produces.
+  const UNCAPPED_REPLY_ESTIMATE = 1_500;
+  const generation = maxTokens > 0 ? Math.max(400, maxTokens) : UNCAPPED_REPLY_ESTIMATE;
+  const reserve = generation + 600; // generation + instructions, in tokens
   return Math.max(2_400, Math.min(THREAD_CHARS_DEFAULT, Math.round((numCtx - reserve) * 3.2)));
 }
 

@@ -167,7 +167,25 @@ const BASE_DEFAULTS: AiSettings = {
   // It costs nothing to set generously — it is a ceiling, not an allocation,
   // and only tokens actually generated are paid for. What it must not exceed
   // is the context window, which `predictTokens` below enforces.
-  thinkingBudget: 16000,
+  //
+  // **0 now, meaning no ceiling at all**, which is where that measurement was
+  // pointing the whole time: the honest reading of "16,000 truncates none" is
+  // that the ceiling was never the thing doing the work. The distribution has
+  // a long tail — 3,223 to 12,479 tokens across six identical runs — and a
+  // fixed number is a bet that the tail stops where it was last observed to
+  // stop. It does not, on a harder thread or a different model.
+  //
+  // It matters more now than when this was written, because a frontier model
+  // with reasoning enabled is an explicitly supported configuration rather
+  // than an edge case, and those deliberate for far longer than any local
+  // model measured here. A budget sized to gemma4:12b silently truncates the
+  // configuration the ceiling is supposed to serve.
+  //
+  // Note the interaction that made this a real bug rather than a tidy-up:
+  // reply and reasoning share one `num_predict` on Ollama, so a thinking model
+  // given only the email's budget spends it all working out loud and returns
+  // nothing at all. Uncapping both removes the interaction.
+  thinkingBudget: 0,
   systemPrompt: '',
   topP: 0.9,
   topK: 40,
@@ -176,12 +194,23 @@ const BASE_DEFAULTS: AiSettings = {
   repeatLastN: 256,
   presencePenalty: 0,
   frequencyPenalty: 0,
-  // The ceiling on the reply itself, separate from the reasoning budget. 700
-  // was tight: a "long" draft plus a sign-off runs close to it, and a
-  // summary of a 50-message thread closer still. It is a ceiling rather than
-  // a target — the prompt is what decides length — so a generous one costs
-  // nothing and stops the occasional answer being cut mid-sentence.
-  maxTokens: 1500,
+  // The ceiling on the reply itself, separate from the reasoning budget.
+  //
+  // **0 means no ceiling, and it is the default.** This was 1500, raised from
+  // 700 because a "long" draft plus a sign-off ran close to it. Both numbers
+  // were the same mistake at different sizes: the prompt is what decides how
+  // long an answer should be, and a ceiling on top of it can only ever cut a
+  // good answer short. Nothing was gained by guessing where to put it.
+  //
+  // Uncapped is expressed by NOT SENDING the parameter, not by sending a large
+  // number — a big sentinel is still a ceiling, just a less visible one, and
+  // it would be wrong on the next model with a different limit. Each adapter
+  // omits its own field; the one exception is Anthropic, where `max_tokens` is
+  // required by the API and the model's own maximum is sent instead.
+  //
+  // An operator who wants a hard ceiling can still set one, and it is then
+  // honoured exactly as before.
+  maxTokens: 0,
   wipeAfterUse: true,
   wipeIdleSeconds: 90,
   embedModel: config.aiEmbedModel,
@@ -509,6 +538,96 @@ export async function modelContextLimit(baseUrl: string, model: string): Promise
 
 export function forgetModelCapabilities(): void { described.clear(); }
 
+// ---------- "As much as it takes", per API ----------
+//
+// `maxTokens` and `thinkingBudget` of 0 mean no ceiling (see DEFAULTS). The
+// three APIs express that differently, and getting it wrong is not a
+// no-op on any of them:
+//
+// * **Ollama** — omit `num_predict`. Handled in predictTokens.
+// * **OpenAI-compatible** — omit `max_tokens`. Real OpenAI answers 400 to an
+//   unknown parameter but is perfectly happy with a missing optional one, and
+//   omitting it means "up to the model's limit", which is exactly the
+//   intention.
+// * **Anthropic** — `max_tokens` is REQUIRED. There is no omitting it, so
+//   uncapped has to be expressed as the model's own maximum.
+//
+// The Anthropic number is deliberately not a constant. Output ceilings differ
+// per model and change with each generation, so a hardcoded 128,000 is a 400
+// (`max_tokens: greater than the maximum`) on the first model that does not
+// have it — which is a broken adapter, not a degraded one. The Models API
+// reports the real figure per model, so it is asked and remembered, exactly as
+// `modelContextLimit` does for the context window.
+
+/** Output ceilings, remembered per base URL and model. */
+const outputLimits = new Map<string, number>();
+
+// Only used when the Models API cannot be reached or does not report a
+// ceiling. Conservative on purpose: every current Anthropic model accepts at
+// least this, so a wrong guess costs a shorter answer rather than a 400. The
+// live answer is preferred whenever there is one.
+const ANTHROPIC_FALLBACK_MAX_OUTPUT = 8192;
+
+/**
+ * The model's own output ceiling, from `GET /v1/models/{id}`.
+ *
+ * `max_tokens` on that response is the output cap and `max_input_tokens` is
+ * the context window — two different fields, and reading the wrong one would
+ * ask for an output eight times the real ceiling.
+ */
+export async function anthropicOutputLimit(baseUrl: string, model: string, headers: Record<string, string>, trust: TlsTrust): Promise<number> {
+  const key = `${normalizeBaseUrl(baseUrl)}|${model}`;
+  const known = outputLimits.get(key);
+  if (known !== undefined) return known;
+  let limit = ANTHROPIC_FALLBACK_MAX_OUTPUT;
+  try {
+    // The endpoint's own transport — its proxy rule and certificate trust —
+    // exactly as every other call to this server does. A capability lookup is
+    // still a call to the model server, and one written without it would
+    // succeed by going direct.
+    const res = await outboundFetch(`${baseUrl}/v1/models/${encodeURIComponent(model)}`, { headers, signal: AbortSignal.timeout(8000) }, trust);
+    if (res.ok) {
+      const body = await res.json() as { max_tokens?: unknown };
+      if (typeof body.max_tokens === 'number' && body.max_tokens > 0) limit = body.max_tokens;
+      else log.debug('the models API did not report an output ceiling; using the fallback', { model });
+    }
+  } catch (err) {
+    // A model list that cannot be fetched is not a reason to fail the
+    // generation — it is a reason to be conservative about its length.
+    log.debug('could not read the model output ceiling; using the fallback', { model, err: String(err) });
+  }
+  outputLimits.set(key, limit);
+  return limit;
+}
+
+export function forgetOutputLimits(): void { outputLimits.clear(); }
+
+/**
+ * `max_tokens` for Anthropic, which requires one.
+ *
+ * `limit` is what the model itself allows. When both ceilings are off, that is
+ * the answer; when either is set, the sum is, bounded by what the model takes.
+ */
+export function anthropicMaxTokens(reply: number, thinking: number, limit: number): number {
+  // Same rule as the other two — this bounds the whole response, so an
+  // uncapped reply is an uncapped total, which here means the model's own
+  // ceiling because the field cannot be left out.
+  if (reply <= 0) return limit;
+  return Math.min(reply + Math.max(0, thinking), limit);
+}
+
+/**
+ * `max_tokens` for an OpenAI-compatible endpoint — an object to spread, so
+ * that "uncapped" is the absence of the key rather than a value standing in
+ * for it.
+ */
+export function openAiMaxTokens(reply: number, thinking: number): { max_tokens?: number } {
+  // As with `num_predict`, this bounds the whole completion, so an uncapped
+  // reply is an uncapped total and the key is simply absent.
+  if (reply <= 0) return {};
+  return { max_tokens: reply + Math.max(0, thinking) };
+}
+
 // One model's answers, dropped. Deleting a model and pulling it again gives a
 // different build under the same name, so the remembered capabilities have to
 // go with it — otherwise a model that has just been replaced is still
@@ -554,13 +673,30 @@ export function samplingOptions(s: AiSettings, temperature?: number): Record<str
 // So the ceiling is computed rather than sent blind: the window, minus a
 // conservative estimate of the prompt, minus a little slack. When that leaves
 // less than the reply needs there is nothing useful to do but say so.
-export function predictTokens(opts: { numCtx: number; promptChars: number; replyTokens: number; thinkingTokens: number }): { numPredict: number; clamped: boolean } {
+export function predictTokens(opts: { numCtx: number; promptChars: number; replyTokens: number; thinkingTokens: number }): { numPredict?: number; clamped: boolean } {
+  // Uncapped: send nothing and let the model stop when it is finished. There
+  // is no arithmetic to do, because there is no budget to fit — the context
+  // window is the only limit, and the server enforces that itself.
+  //
+  // The condition is the REPLY ceiling alone, not both, and that is a fact
+  // about `num_predict` rather than a simplification: it bounds the SUM of
+  // reasoning and answer, so there is no way to cap thinking through it while
+  // leaving the reply unbounded. An uncapped reply IS an uncapped total. The
+  // thinking budget still does its job in the capped case, where it exists to
+  // stop reasoning eating the answer's allowance.
+  //
+  // Writing this as "both must be 0" produced a result that clamped every
+  // time: `wanted` became the whole remaining window plus the thinking budget,
+  // which by construction never fits, so an uncapped reply logged a warning
+  // about not fitting a budget nobody had set.
+  if (opts.replyTokens <= 0) return { clamped: false };
+
   // 3.2 characters per token deliberately over-estimates the prompt on
   // English prose (measured nearer 3.9), which is the safe direction.
   const promptTokens = Math.ceil(opts.promptChars / 3.2);
   const room = opts.numCtx - promptTokens - 128;
   const wanted = opts.replyTokens + Math.max(0, opts.thinkingTokens);
-  if (room <= 0) return { numPredict: opts.replyTokens, clamped: true };
+  if (room <= 0) return { numPredict: Math.max(256, opts.replyTokens), clamped: true };
   return room < wanted ? { numPredict: Math.max(256, room), clamped: true } : { numPredict: wanted, clamped: false };
 }
 
@@ -655,7 +791,8 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       keep_alive: keepAliveValue(s.keepAlive),
       options: {
         num_ctx: ctx,
-        num_predict: predict.numPredict,
+        // Omitted entirely when uncapped — see predictTokens and DEFAULTS.
+        ...(predict.numPredict !== undefined ? { num_predict: predict.numPredict } : {}),
         ...samplingOptions(s, opts.temperature),
         ...(opts.stop?.length ? { stop: opts.stop } : {}),
         ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
@@ -711,18 +848,26 @@ async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions)
   const reply = opts.maxTokens ?? s.maxTokens;
   const think = !opts.noThink && s.allowThinking;
   const { system, messages } = toAnthropicMessages(opts.messages);
+  const headers = { 'Content-Type': 'application/json', ...(await providerHeaders(s)) };
+  // Asked once per model and remembered: this API will not take a missing
+  // `max_tokens`, so "no ceiling" has to become the model's real ceiling.
+  const outputLimit = await anthropicOutputLimit(s.baseUrl, model, headers, transportFor(s));
   const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+    headers,
     body: JSON.stringify({
       model,
       messages,
       ...(system ? { system } : {}),
       stream: true,
-      // Required — there is no "as much as it takes" on this API. As on the
-      // other two providers, reasoning gets its own allowance on top rather
-      // than eating the email's.
-      max_tokens: think ? reply + Math.max(0, s.thinkingBudget) : reply,
+      // Required — there is no "as much as it takes" on this API, so this is
+      // the one adapter that cannot express "uncapped" by omission. It sends
+      // the model's own maximum instead, which is the nearest true statement.
+      //
+      // As on the other two providers, reasoning gets its own allowance on top
+      // rather than eating the email's — but when either is uncapped there is
+      // no sum to compute and the model's ceiling is what applies.
+      max_tokens: anthropicMaxTokens(reply, think ? s.thinkingBudget : 0, outputLimit),
       // `budget_tokens` is a 400 on the current models; depth is `adaptive`
       // plus an effort level now. `display: 'summarized'` is what makes the
       // working-out non-empty — without it the composer's thinking panel
@@ -803,8 +948,11 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
       model, messages: opts.messages, stream: true,
       temperature: opts.temperature ?? s.temperature,
       // As with Ollama, reasoning is spent out of the same ceiling as the
-      // answer, so it gets its own allowance rather than eating the email.
-      max_tokens: !opts.noThink && s.allowThinking ? reply + Math.max(0, s.thinkingBudget) : reply,
+      // answer, so it gets its own allowance rather than eating the email —
+      // and omitted entirely when either is uncapped, which is this API's own
+      // way of saying "up to the model's limit". Sending a large number here
+      // instead would be a guess that is wrong on every model but one.
+      ...(openAiMaxTokens(reply, !opts.noThink && s.allowThinking ? s.thinkingBudget : 0)),
       top_p: s.topP,
       // Not an OpenAI parameter, but vLLM, llama.cpp and LM Studio all take
       // it; sent only when set so a stricter endpoint never sees it.

@@ -195,6 +195,24 @@ polish, shorten, expand, subject).
   thread keeps its newest messages and its opening ones, where the dates and
   the figures were agreed, and drops the middle, saying how many went. A
   smaller window costs less memory and drops more.
+- **Reply length** and **thinking budget** (both **unlimited by default**):
+  ceilings on the answer and on the working-out. Neither is set out of the
+  box, and that is deliberate — the prompt is what decides how long an answer
+  should be, so a ceiling on top of it can only ever cut a good answer short.
+  A frontier model with reasoning enabled is a supported configuration here,
+  and those deliberate for far longer than any local model, so a budget sized
+  to a 12B would silently truncate exactly the setup it was meant to serve.
+
+  Unlimited means the parameter is **not sent**, rather than sent as a large
+  number — a big number is still a ceiling and would be the wrong one on the
+  next model. The single exception is Anthropic, whose API requires
+  `max_tokens`; there Tern asks that API what the model's own maximum is and
+  sends that.
+
+  Set either to a number if you want a hard ceiling — for a hosted provider
+  billed by the token, that is a real reason to. What neither can exceed is
+  the context window, which Tern computes and enforces with the model's actual
+  limit.
 - **Let reasoning models think** (off by default): qwen3 and deepseek-r1
   work an answer out before writing it. The reasoning never reaches a draft
   and is paid for out of its own **thinking budget** on top of the reply

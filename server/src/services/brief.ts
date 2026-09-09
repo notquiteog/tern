@@ -186,7 +186,11 @@ export async function generateBrief(userId: number, opts: { tz?: string } = {}):
     assertFreshConversation(messages);
     try {
       summary = tidyParagraph(await chat({
-        messages, maxTokens: 220, temperature: 0.3, noThink: true,
+        // No ceiling: the prompt asks for a short paragraph and that is what
+        // decides the length. A 220-token cap did not make it shorter, it
+        // made the occasional one stop mid-sentence — a truncated summary in
+        // a fixed UI slot, which is the failure the cap was meant to prevent.
+        messages, temperature: 0.3, noThink: true,
         owner: String(userId),
         consent: { userId, capability: 'brief' },
       }));

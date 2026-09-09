@@ -161,10 +161,19 @@ const TUNING_SHAPE = {
   repeatLastN: z.number().int().min(-1).max(8192).optional(),
   presencePenalty: z.number().min(-2).max(2).optional(),
   frequencyPenalty: z.number().min(-2).max(2).optional(),
-  maxTokens: z.number().int().min(64).max(4096).optional(),
+  // 0 means no ceiling, which is the default — so the floor is 0, not 64.
+  // The upper bound is gone too: it was 4096 while the setting's own default
+  // was 1500 and the thinking budget's was 16000, so a caller asking for the
+  // configured budget was rejected by the validator that was meant to protect
+  // it. What a generation may cost is the operator's decision; what it must
+  // fit in is the context window, which predictTokens enforces with the real
+  // number rather than a guess made here.
+  maxTokens: z.number().int().min(0).optional(),
   allowThinking: z.boolean().optional(),
   thinkEffort: z.enum(['low', 'medium', 'high']).optional(),
-  thinkingBudget: z.number().int().min(0).max(8192).optional(),
+  // Same, and this one was a live inconsistency: the default was 16000 and
+  // this rejected anything above 8192.
+  thinkingBudget: z.number().int().min(0).optional(),
 };
 const presetBody = z.object({
   name: z.string().min(1).max(60),
