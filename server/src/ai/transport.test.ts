@@ -260,25 +260,51 @@ test('nothing outside the bound files builds a request to a model server', () =>
 test('every exemption says why, in words', () => {
   // An exemption with no reason is one nobody can review, and the next person
   // to read it will assume it was load-bearing.
-  const thin = everyCall()
-    .filter((c) => EXEMPT.test(c.leading))
+  const exempted = everyCall().filter((c) => EXEMPT.test(c.leading));
+  // The positive control, and it is not decoration. Without it this passes
+  // when `EXEMPT` stops matching, when `leading` stops finding the comment
+  // block, and when nothing was scanned at all — in every one of those cases
+  // the list below is empty, and an empty list is what "clean" looks like. Any
+  // assertion whose expected result is absence is indistinguishable from not
+  // running unless something in the same test proves it ran.
+  assert.ok(exempted.length >= 1, 'no exemptions found at all — the exemption scan has stopped working, and this check would report clean on that');
+
+  const thin = exempted
     .filter((c) => (/transport-exempt:([\s\S]*)/.exec(c.leading)?.[1] ?? '').replace(/\/\/|\s+/g, ' ').trim().length < 40)
     .map((c) => `${c.file}:${c.line}`);
   assert.deepEqual(thin, [], `an exemption has no usable reason on it: ${thin.join(', ')}`);
 });
 
-test('a call named in prose or quoted in a string is not a call', () => {
+test('prose and strings are not calls, and real calls beside them still are', () => {
   // The false-positive class the text scan had, asserted rather than assumed.
+  //
+  // The decoys and the real calls share one fixture ON PURPOSE, and the
+  // assertion names exactly which lines come back. Testing the decoys alone
+  // would be an assertion that a list is empty — which is also what happens if
+  // the file was never written, or if the walk stopped recognising calls
+  // entirely. Absence cannot tell those apart from success. Together neither
+  // half can pass by absence: if the scan never read the file the real calls
+  // are missing, and if a decoy trips there is an extra one.
+  //
+  // The second decoy matters most here: it is a template literal containing a
+  // correctly written call, so a scan that read strings would see a PASSING
+  // call and stay quiet about it — a false negative rather than a false
+  // positive, which is the worse direction.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tern-guard-'));
   const file = path.join(dir, 'sample.ts');
   try {
     fs.writeFileSync(file, [
-      '// `fetch` cannot take an agent, so outboundFetch(url, init) exists.',
-      'const doc = `call outboundFetch(u, i, transportFor(s)) to reach it`;',
-      "const name = 'fetch(';",
-      'export const x = doc + name;',
+      '// `fetch` cannot take an agent, so outboundFetch(url, init) exists.',        // 1
+      'const doc = `call outboundFetch(u, i, transportFor(s)) to reach it`;',        // 2
+      "const name = 'fetch(';",                                                       // 3
+      'export async function real(u: string) { return fetch(u); }',                  // 4
+      'export async function realToo(u: string) { return outboundFetch(u, {}); }',   // 5
     ].join('\n'));
-    assert.deepEqual(callsIn(file), [], 'prose or a string literal was read as a call');
+    assert.deepEqual(
+      callsIn(file).map((c) => `${c.line}:${c.callee}`),
+      ['4:fetch', '5:outboundFetch'],
+      'the decoys on lines 1-3 must not be read as calls, and the real ones on 4-5 must be',
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
