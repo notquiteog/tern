@@ -635,12 +635,20 @@ the download — which is why the card shows both.
 | `qwen3-embedding:8b` | 4.7 GB | ~6.2 GB | 8B · 32,768 tok | The best open-weight retrieval model here and the widest at 4096. Only worth it with room on the card beside the writing model. |
 
 **How much of a message goes into one vector** is decided by the model's own
-window rather than by a constant, so a wide-window embedder is actually sent
-more text than a 512-token one — up to a ceiling of about 8,000 characters,
-which is Tern's budget rather than the model's. Past a certain length one
-vector standing for one message stops meaning anything in particular, so the
-ceiling is deliberate; what it replaced was a flat 2,000 characters for every
-model, which made the window column above decorative.
+window, and Tern adds no ceiling of its own — so a 32k-window embedder is sent
+up to about 65,000 characters and an ordinary message is never truncated at
+all.
+
+It took two goes to get there. A flat 2,000 characters for every model made the
+window column above decorative; a ceiling of 8,000 replaced it, and that was
+invisible until a 32k-window model became the floor and clipped it to a
+fourteenth of what it could hold.
+
+The cost of embedding a very long message whole is that its vector is an
+average of everything in it, so long mail is findable but less precisely. The
+ceiling was never a fix for that — it addressed dilution by throwing the tail
+away, losing the precision *and* the content. Chunking, several vectors per
+message, is the real answer and is not built yet.
 
 The Qwen3 and Gemini models are also given the task instruction their training
 expects — `Instruct: …` in front of a **search**, and deliberately not in

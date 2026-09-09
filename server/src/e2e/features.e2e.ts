@@ -308,10 +308,15 @@ const embeddersGroup = group('embedders', async () => {
       }
     });
 
-    await test('the message reaching a 32k-window model is not cut at 2,000 characters', async () => {
-      // The budget that was a constant. `embedInputChars` is what makes the
-      // catalogue's `contextTokens` mean something, and this is the check that
-      // it reached the wire rather than only the settings page.
+    await test('a long message reaches a 32k-window model whole, past both old caps', async () => {
+      // Two caps have stood here, and this asserts past both of them.
+      //
+      // The first was a flat 2,000 characters for every model, which made the
+      // catalogue's `contextTokens` decorative. The second was Tern's own
+      // ceiling of 8,000, which was invisible while the catalogue topped out
+      // at an 8,192-token model and became a clip to about 7% of the window
+      // the moment a 32k model was the floor. Both dropped the tail of a long
+      // message silently, which is the failure the budget exists to remove.
       ok(embedInputChars('qwen3-embedding:4b') > embedInputChars('all-minilm'), 'the wide model gets no more text');
       const long = 'jetty '.repeat(3000);
       await put(f, { subject: 'A very long thread', body: long, from: SENDERS.ana });
@@ -320,7 +325,11 @@ const embeddersGroup = group('embedders', async () => {
       const sent = embedSeen.flatMap((c) => c.input).find((t) => t.includes('A very long thread'));
       ok(sent, 'the long message was never sent to the embedder');
       ok(sent!.length > 2000, `only ${sent!.length} characters were sent, which is the old flat cap`);
-      ok(sent!.length <= embedInputChars('qwen3-embedding:4b'), 'more was sent than the budget allows');
+      ok(sent!.length > 8000, `only ${sent!.length} characters were sent, which is the old ceiling of Tern's own`);
+      // Nothing was dropped at all: the whole body reached the model, which is
+      // the property, not merely "more than before".
+      ok(sent!.length >= long.length, `the message is ${long.length} characters and only ${sent!.length} were sent`);
+      ok(sent!.length <= embedInputChars('qwen3-embedding:4b'), 'more was sent than the model’s own window allows');
     });
 
     await test('a search carries the instruction the model expects and the mailbox does not', async () => {

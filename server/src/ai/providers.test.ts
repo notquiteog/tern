@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  EMBED_CATALOGUE, MAX_EMBED_CHARS, MIN_EMBED_CHARS, PROVIDER_PRESETS,
+  CHARS_PER_TOKEN, EMBED_CATALOGUE, MIN_EMBED_CHARS, PROVIDER_PRESETS,
   embedInputChars, embedModelInfo, embedModelsForShape, presetsForSlot,
 } from './providers.js';
 import { embeddingText } from './llm.js';
@@ -62,33 +62,51 @@ test('a host that cannot draw is not offered for drawing', () => {
   assert.ok(presetsForSlot('video').length >= 1, 'no host to start from for video');
 });
 
-test('a wider input window buys more of the message, up to a stated ceiling', () => {
+test('the whole of a model’s window is used, and nothing caps it but the window', () => {
   // `contextTokens` was written down, shown in the models table, and read by
   // nothing: every model got a flat 2,000 characters, so an install that
   // pulled a 2.5 GB embedder for its 32k window was paying for a window it
-  // was never sent. This is the check that the number now means something.
-  const minilm = embedInputChars('all-minilm');
-  const qwen = embedInputChars('qwen3-embedding:4b');
-  assert.ok(qwen > minilm, `a 32k-window model (${qwen}) gets no more than a 512-token one (${minilm})`);
-
-  // The floor is what every install already had. Narrowing it would mean an
-  // upgrade quietly indexed LESS of each message than the version before it,
-  // which is a regression nobody would see until a search stopped finding
-  // something.
+  // was never sent. Then a ceiling of Tern's own replaced the flat number and
+  // reintroduced the same failure at 8,000 characters — harmless while the
+  // catalogue topped out at 8,192 tokens, and a cap to 7% of the window once
+  // a 32k model became the floor.
+  //
+  // So the property is now exact rather than bounded: the budget IS the
+  // window, and the only thing that may raise it is the floor.
   for (const m of EMBED_CATALOGUE) {
     const chars = embedInputChars(m.name);
-    assert.ok(chars >= MIN_EMBED_CHARS, `${m.name}: ${chars} is below what every install already indexed`);
-    assert.ok(chars <= MAX_EMBED_CHARS, `${m.name}: ${chars} is above the stated ceiling`);
+    const window = Math.round(m.contextTokens * CHARS_PER_TOKEN);
+    assert.equal(chars, Math.max(MIN_EMBED_CHARS, window),
+      `${m.name}: ${chars} characters for a ${m.contextTokens}-token window`);
+    assert.ok(chars >= MIN_EMBED_CHARS, `${m.name}: below what every install already indexed`);
   }
-  // An unknown model — a host's own name for something, or a fine-tune — gets
-  // the floor rather than the ceiling. Guessing generously at a window nobody
-  // has written down would have the far end truncate silently.
+
+  // And the case that motivated removing the ceiling: the documented floor
+  // model must get most of its window, not a fixed slice of it.
+  const qwen = embedInputChars('qwen3-embedding:4b');
+  assert.ok(qwen > 60_000, `the 32k-window floor model gets only ${qwen} characters`);
+  assert.ok(qwen > 8 * embedInputChars('all-minilm'), 'a 32k window buys barely more than a 512-token one');
+
+  // An unknown model — a host's own name for something, or a fine-tune —
+  // reports no window, so it gets the floor. Guessing generously at a window
+  // nobody has written down is how a batch gets refused by the far end.
   assert.equal(embedInputChars('somebody-elses-fine-tune'), MIN_EMBED_CHARS);
   assert.equal(embedInputChars(''), MIN_EMBED_CHARS);
   // And it follows the aliases, so the same weights get the same budget
   // whether they were pulled locally or reached over the network.
   assert.equal(embedInputChars('Qwen/Qwen3-Embedding-4B'), qwen);
   assert.equal(embedInputChars('qwen3-embedding:4b:latest'), qwen);
+});
+
+test('the token estimate stays pessimistic, because it is now the only bound', () => {
+  // With no ceiling above it, whatever this ratio produces is the promise made
+  // to the far end — and Ollama truncates quietly while OpenAI, Gemini and
+  // Voyage refuse input over the window. So it must under-estimate: an
+  // English-prose ratio (around four) applied to a message in a script that
+  // tokenises at one character per token would send four times the window and
+  // fail the whole batch that message was in.
+  assert.ok(CHARS_PER_TOKEN <= 2, `${CHARS_PER_TOKEN} chars/token is optimistic enough to overrun a strict window`);
+  assert.ok(CHARS_PER_TOKEN >= 1, `${CHARS_PER_TOKEN} chars/token wastes most of every window`);
 });
 
 test('the two embedding-only shapes are never offered for drafting, and Anthropic never for embeddings', () => {

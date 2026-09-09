@@ -202,9 +202,28 @@ if [ "$AI_ENABLED" = 1 ]; then
   # and 384 dimensions, which is enough for "find the thread about the
   # price"; nomic-embed-text is 274 MB and noticeably better, and is the
   # default once the box has room to hold it beside the chat model.
-  if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 6) }'; then EMBED_DEFAULT="nomic-embed-text"; else EMBED_DEFAULT="all-minilm"; fi
+  # The embedding model, sized to the box like the chat model above — but
+  # against the FLOOR rather than against what fits. qwen3-embedding:4b is what
+  # meaning search is built and tested against; below it, retrieval is worst on
+  # exactly the wording the feature exists to catch, and that is a failure
+  # nobody sees as a failure.
+  #
+  # It loads BESIDE the chat model rather than instead of it, so it is sized
+  # from what is left over, not from the whole box.
+  if awk -v g="$TOTAL_GIB" -v f="$FLOOR_GIB" 'BEGIN { exit !(g >= f + 4) }'; then EMBED_DEFAULT="qwen3-embedding:4b"
+  elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 6) }'; then EMBED_DEFAULT="nomic-embed-text"
+  else EMBED_DEFAULT="all-minilm"; fi
   AI_EMBED_MODEL="${AI_EMBED_MODEL:-$EMBED_DEFAULT}"
   note "Meaning search will use $AI_EMBED_MODEL. Nobody's mail is read until they turn the feature on for themselves."
+  if [ "$AI_EMBED_MODEL" != "qwen3-embedding:4b" ]; then
+    note "That is below the embedding floor (qwen3-embedding:4b, which wants about"
+    note "3.5 GB beside the chat model). Meaning search will work and will retrieve"
+    note "less well on wording that shares no words with the message you are after."
+  fi
+  # Said once, here, because it is the one model choice that is not free to
+  # revisit: vectors made by one embedder are not comparable with another's, so
+  # changing it re-indexes the whole mailbox.
+  note "Changing this later rebuilds the index; ordinary text search keeps working meanwhile."
   # Dictation. Separate question because it is a separate container and the
   # only thing on the list that costs the base install real memory.
   if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g >= 4) }'; then
@@ -223,7 +242,9 @@ fi
 VOICE_ENABLED="${VOICE_ENABLED:-0}"
 WHISPER_MODEL="${WHISPER_MODEL:-base}"
 WHISPER_MEM_LIMIT="${WHISPER_MEM_LIMIT:-768m}"
-AI_EMBED_MODEL="${AI_EMBED_MODEL:-all-minilm}"
+# Matches config.ts's default. A box that never answered the AI questions still
+# gets the floor rather than the smallest thing that runs.
+AI_EMBED_MODEL="${AI_EMBED_MODEL:-qwen3-embedding:4b}"
 # Memory limits scale with the box so a 4.5 GB VPS never swaps itself to death.
 if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_MEM_LIMIT="2300m"; APP_MEM_LIMIT="640m"; STALWART_MEM_LIMIT="512m";
 elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_MEM_LIMIT="4500m"; APP_MEM_LIMIT="768m"; STALWART_MEM_LIMIT="768m";
@@ -476,7 +497,7 @@ if [ "$AI_ENABLED" = 1 ]; then
   if compose exec -T ollama ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$AI_EMBED_MODEL\(:latest\)\?"; then
     ok "embedding model $AI_EMBED_MODEL already present"
   else
-    say "  Downloading $AI_EMBED_MODEL for meaning search (46-274 MB)…"
+    say "  Downloading $AI_EMBED_MODEL for meaning search (46 MB to 2.5 GB)…"
     if compose exec -T ollama ollama pull "$AI_EMBED_MODEL"; then ok "embedding model ready"; else warn "Embedding model download failed; meaning search will say so until it is pulled: ./bin/tern pull-model $AI_EMBED_MODEL"; fi
   fi
 fi

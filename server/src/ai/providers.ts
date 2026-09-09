@@ -389,34 +389,75 @@ export function embedModelInfo(name: string): EmbedCatalogueEntry | null {
  * ignored it, which is the worst arrangement — the cost of the big model was
  * real and the benefit was not.
  *
- * ── Why there is still a ceiling ────────────────────────────────────────────
+ * ── Why there is no ceiling of Tern's own ───────────────────────────────────
  *
- * Because "the model's whole window" is not the right answer either. One
- * vector is one point, and a point standing for 32,000 tokens of quoted
- * threads, footers and signatures stands for nothing in particular; retrieval
- * gets worse, not better, past a certain length. The ceiling is Tern's own
- * budget for what one message's vector should mean, and the floor is what
- * every install already had — so no mailbox indexes LESS than it did before,
- * and a wide-window model now earns four times the text a narrow one gets.
+ * There was one, at 8,000 characters, and it was wrong twice over.
+ *
+ * It was wrong in effect before it was wrong in principle. When the catalogue
+ * was all-minilm at 512 tokens and nomic at 8,192, nothing could reach 8,000
+ * characters and the bound never fired. The floor moving to a 32k-window model
+ * turned a bound that had never bitten into a cap that clipped that model to
+ * about 7% of its window — and it clipped it by dropping the tail of every
+ * long message silently, which is the exact failure this budget exists to
+ * remove, arriving through the bound instead of through the estimate.
+ *
+ * And it was wrong in principle, because a number Tern picked is not a fact
+ * about anything. The only real limit is the model's own window: past it the
+ * far end truncates or refuses, and short of it there is nothing for Tern to
+ * have an opinion about. So the budget is the window, the floor stays (see
+ * below), and there is no constant in between.
+ *
+ * ── What is genuinely lost, and what would fix it properly ──────────────────
+ *
+ * One vector is one point. A point standing for 30,000 tokens of quoted
+ * thread, footer and signature is an average of everything in it, and averages
+ * retrieve worse than the parts they are made of — so a very long message is
+ * now embedded whole and found less precisely than a short one. That is a real
+ * cost and it is not what the ceiling was defending, because the ceiling
+ * addressed it by throwing the tail away, which loses the same precision AND
+ * loses the content.
+ *
+ * The fix for dilution is chunking: embed a long message as several vectors
+ * rather than one, so nothing is dropped and no vector is an average. That
+ * needs `email_vectors` to stop being one row per message — `email_id` is its
+ * primary key — so it is a migration and a change to every query that reads
+ * it, and it is deliberately not smuggled in here. Until then: nothing is
+ * truncated, and long mail is findable but blunter.
+ *
+ * ── The floor still does real work ──────────────────────────────────────────
+ *
+ * A model Tern does not recognise reports no window at all, and a couple of
+ * the small ones report 512 tokens. The floor is what every install already
+ * indexed, so no mailbox indexes LESS than it did before this existed, and an
+ * unknown model gets a working budget rather than nothing.
  */
 export const MIN_EMBED_CHARS = 2000;
-export const MAX_EMBED_CHARS = 8000;
 
 /**
  * Characters per token, for turning a model's window into a character budget.
  *
- * Deliberately pessimistic. English prose runs about four characters to the
- * token; accented and non-Latin text runs closer to two, and a mailbox is not
- * required to be in English. Under-estimating costs a little of the window;
- * over-estimating sends more than the model can hold and has it silently
- * truncate the tail, which is the same bug this budget exists to remove.
+ * Deliberately pessimistic, and MORE so now that it is the only bound there
+ * is. While a constant ceiling sat above it the ratio only had to be roughly
+ * right; with the ceiling gone, whatever this produces is the promise made to
+ * the far end, and the two ends disagree about what a token is.
+ *
+ * Two chars per token is the worst realistic case rather than the average:
+ * English prose runs nearer four, but accented text runs about two and CJK
+ * can run under one character per token, and a mailbox is not required to be
+ * in English. Getting it wrong in the generous direction is not a rounding
+ * error — Ollama truncates quietly (Tern sends `truncate: true`), but OpenAI,
+ * Gemini and Voyage all REFUSE input over the window, so an optimistic ratio
+ * turns one long message in another script into a hard failure for the whole
+ * batch it was in. Being pessimistic costs part of the window on English mail;
+ * being optimistic costs the index.
  */
-export const CHARS_PER_TOKEN = 3.5;
+export const CHARS_PER_TOKEN = 2;
 
 export function embedInputChars(model: string): number {
   const info = embedModelInfo(model);
   if (!info) return MIN_EMBED_CHARS;
-  return Math.max(MIN_EMBED_CHARS, Math.min(MAX_EMBED_CHARS, Math.round(info.contextTokens * CHARS_PER_TOKEN)));
+  // The model's window, floored. No ceiling of Tern's own: see above.
+  return Math.max(MIN_EMBED_CHARS, Math.round(info.contextTokens * CHARS_PER_TOKEN));
 }
 
 /** The embedders Tern knows for one shape — the fallback where there is no live list. */

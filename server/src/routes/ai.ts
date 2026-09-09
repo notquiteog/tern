@@ -356,6 +356,18 @@ aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
 // reads `ai/media.ts`, which owns the connections; nothing here builds a
 // request to a model server.
 
+/**
+ * The largest prompt this server will carry to an image or video host.
+ *
+ * Deliberately far above anything a person types, and it is not the model's
+ * limit — the model's limit belongs to the model, every host publishes a
+ * different one, and the host is the thing that knows. This exists so that an
+ * unbounded string cannot be posted at a route; it is a body-size check
+ * wearing a character count, and it should never be the reason a generation
+ * fails.
+ */
+const PROMPT_BODY_LIMIT = 32_000;
+
 function mediaView(m: MediaSettings) {
   // Both keys stripped, not just the first. `videoApiKey` is a credential for
   // somebody's model server exactly as `apiKey` is, and a rest-spread that
@@ -516,7 +528,13 @@ aiRouter.post('/media/image', requireCapability('ai.media'), powGuard('ai'),
   rateLimit({ name: 'ai-image', perMinute: 8, message: 'Too many pictures at once; wait a moment' }),
   async (req, res) => {
     const b = parse(z.object({
-      prompt: z.string().min(2).max(4000),
+      // Not a cap on the prompt, a bound on the request body. 4,000 was one —
+      // it is exactly dall-e-3's own limit, borrowed from one host and applied
+      // to all of them, so `gpt-image-1`, which takes around 32,000, was
+      // refused here before it ever saw the request. Every host enforces its
+      // own limit and they disagree; a validator that guesses which one is in
+      // front of it turns a host's generous allowance into Tern's refusal.
+      prompt: z.string().min(2).max(PROMPT_BODY_LIMIT),
       size: z.string().max(20).refine(isValidSize, 'A size looks like 1024x1024').optional(),
     }), req.body);
     const media = await generateImage(b.prompt, { userId: req.user!.id, capability: 'ai.media' }, { size: b.size });
@@ -532,7 +550,7 @@ aiRouter.post('/media/video', requireCapability('ai.media'), powGuard('ai'),
   rateLimit({ name: 'ai-video', perMinute: 3, message: 'Too many videos at once; wait a moment' }),
   async (req, res) => {
     const b = parse(z.object({
-      prompt: z.string().min(2).max(4000),
+      prompt: z.string().min(2).max(PROMPT_BODY_LIMIT),
       seconds: z.number().int().min(1).max(60).optional(),
       size: z.string().max(20).refine(isValidSize, 'A size looks like 1280x720').optional(),
     }), req.body);

@@ -36,6 +36,7 @@ import path from 'node:path';
 import url from 'node:url';
 
 import { MODEL_TIERS, EMBED_MODELS, FLOOR_CHAT, FLOOR_EMBED, belowFloor } from './models.js';
+import { aiDefaults } from './llm.js';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -163,6 +164,21 @@ test('nothing claims a wider embedder costs more disk, because it does not', () 
       `${rel} says a wider embedding model costs more storage. It does not — every `
       + `vector is projected to EMBED_DIMS before storage:\n${found.join('\n')}`);
   }
+});
+
+test('a new install gets the floor embedder, not the smallest thing that runs', () => {
+  // The default is the whole point of a floor: what an install silently gets
+  // when nobody chooses. It was `all-minilm` — 384 wide, a 512-token window —
+  // picked when the target included a 4.5 GB VPS.
+  //
+  // Two copies, because the installer writes .env before any TypeScript runs.
+  assert.equal(aiDefaults().embedModel, FLOOR_EMBED);
+  const sh = readReal('install.sh');
+  assert.match(sh, new RegExp(`AI_EMBED_MODEL="\\$\\{AI_EMBED_MODEL:-${FLOOR_EMBED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}"`),
+    'install.sh\'s fallback embedder has drifted from the configured default');
+  // And the installer must still pull whatever it chose, or the default is a
+  // setting pointing at a model that is not there.
+  assert.match(sh, /ollama pull "\$AI_EMBED_MODEL"/);
 });
 
 test('the floor is documented as a warning rather than a wall', () => {

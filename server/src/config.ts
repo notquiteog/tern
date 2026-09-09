@@ -87,7 +87,21 @@ export const config = {
   // The small model that turns a message into a vector for meaning search.
   // A separate setting because it is a different, much smaller model from
   // the one that writes, and an install may want one without the other.
-  aiEmbedModel: env('AI_EMBED_MODEL', 'all-minilm'),
+  // The floor meaning search is built and tested against — see
+  // ai/models.ts FLOOR_EMBED and docs/SETUP.md.
+  //
+  // This was `all-minilm`: 384 wide, a 512-token window, and chosen when the
+  // target included a 4.5 GB VPS. It retrieves worst on exactly the case the
+  // feature exists for, wording that shares no words with what is being
+  // searched. Costs no more disk than the small one either — every vector is
+  // stored at the same width whatever produced it.
+  //
+  // Moving this is only safe because `reconcileEmbedModel` notices a changed
+  // embedder however it changed. Without it, an install that had never saved
+  // AI settings would switch model on restart, re-index nothing, and have
+  // meaning search return nothing for ever after: rows made by the old model
+  // are excluded by name, and nothing would have queued the rebuild.
+  aiEmbedModel: env('AI_EMBED_MODEL', 'qwen3-embedding:4b'),
   aiEnabled: bool('AI_ENABLED', true),
   // What Ollama itself was started with. The app cannot change these — they
   // are read when the container starts — but it has to know them: the number
