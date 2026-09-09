@@ -23,7 +23,7 @@
 import type { ApiShape } from './endpoint.js';
 
 /** Which kind of model a host can serve, in Tern's own words for the slots. */
-export type Slot = 'llm' | 'embed' | 'stt';
+export type Slot = 'llm' | 'embed' | 'stt' | 'image' | 'video';
 
 export interface ProviderPreset {
   id: string;
@@ -49,7 +49,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'http://127.0.0.1:11434',
     slots: ['llm', 'embed'],
     key: 'none',
-    note: 'Models on hardware you control, on this box or another. No key unless you have put a proxy in front of it.',
+    // No `image`, and not an omission: Ollama runs vision models that READ a
+    // picture and has no endpoint that draws one. Offering it for pictures
+    // would be a choice that cannot work, which is the same rule that keeps
+    // Anthropic off the embedding list.
+    note: 'Models on hardware you control, on this box or another. No key unless you have put a proxy in front of it. It reads pictures but does not draw them, so it is not offered for those.',
   },
   {
     id: 'perch',
@@ -62,16 +66,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'http://127.0.0.1:11434',
     slots: ['llm', 'embed'],
     key: 'required',
-    note: 'Your own GPU box behind an authenticated endpoint. The address is wherever the tunnel comes out — usually still loopback on this machine — and the key is a perch token.',
+    note: 'Your own GPU box behind an authenticated endpoint. The address is wherever the tunnel comes out — usually still loopback on this machine — and the key is a perch token. For pictures, point the image connection at whatever that box serves them on and choose the shape it speaks.',
   },
   {
     id: 'openai',
     label: 'OpenAI',
     shape: 'openai',
     baseUrl: 'https://api.openai.com/v1',
-    slots: ['llm', 'embed', 'stt'],
+    slots: ['llm', 'embed', 'stt', 'image', 'video'],
     key: 'required',
-    note: 'Chat, embeddings and Whisper transcription from one key.',
+    note: 'Chat, embeddings, Whisper transcription, pictures and video from one key — the only host here that serves all five.',
   },
   {
     id: 'anthropic',
@@ -104,31 +108,44 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     note: 'One key for hundreds of models from every vendor. Model IDs carry a vendor prefix — "openai/gpt-5", "qwen/qwen3-embedding-8b".',
   },
   {
+    // The same company twice, because it is genuinely two endpoints. Drafting
+    // and embedding go to `/v1/...` in the ordinary way; pictures come back
+    // out of `/v1/chat/completions` as a data URL, which is a different reply
+    // to parse and cannot be reached by picking the entry above.
+    id: 'openrouter-images',
+    label: 'OpenRouter (pictures)',
+    shape: 'openai-chat',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    slots: ['image'],
+    key: 'required',
+    note: 'Pictures through chat completions, which is how OpenRouter serves them. Model IDs carry a vendor prefix, and it has to be one that returns images.',
+  },
+  {
     id: 'together',
     label: 'Together AI',
     shape: 'openai',
     baseUrl: 'https://api.together.xyz/v1',
-    slots: ['llm', 'embed'],
+    slots: ['llm', 'embed', 'image'],
     key: 'required',
-    note: 'Open-weight models hosted, including the Qwen3 embedders at their full width.',
+    note: 'Open-weight models hosted, including the Qwen3 embedders at their full width, and open image models on the same key.',
   },
   {
     id: 'fireworks',
     label: 'Fireworks AI',
     shape: 'openai',
     baseUrl: 'https://api.fireworks.ai/inference/v1',
-    slots: ['llm', 'embed'],
+    slots: ['llm', 'embed', 'image'],
     key: 'required',
-    note: 'Open-weight models hosted. Model IDs are paths — "accounts/fireworks/models/...".',
+    note: 'Open-weight models hosted, pictures included. Model IDs are paths — "accounts/fireworks/models/...".',
   },
   {
     id: 'nanogpt',
     label: 'NanoGPT',
     shape: 'openai',
     baseUrl: 'https://nano-gpt.com/api/v1',
-    slots: ['llm', 'embed'],
+    slots: ['llm', 'embed', 'image', 'video'],
     key: 'required',
-    note: 'Pay per request rather than per month, and it takes cryptocurrency — worth knowing for an install that would rather not put a card on file to draft email.',
+    note: 'Pay per request rather than per month, and it takes cryptocurrency — worth knowing for an install that would rather not put a card on file to draft email, and the one host here where that pairs sensibly with reaching it over Tor.',
   },
   {
     id: 'google',
@@ -141,6 +158,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     slots: ['llm'],
     key: 'required',
     note: 'Gemini for drafting, through Google’s OpenAI-compatible endpoint. Gemini embeddings are a different API — choose "Google (Gemini embeddings)" for those.',
+  },
+  {
+    // Gemini draws through the compatibility layer too, and by the same
+    // chat-completions route OpenRouter uses, so it is a separate entry for
+    // the same reason: one address, two reply shapes.
+    id: 'google-images',
+    label: 'Google (Gemini pictures)',
+    shape: 'openai-chat',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    slots: ['image'],
+    key: 'required',
+    note: 'Gemini’s image models through the OpenAI-compatible endpoint, which answers with the picture inside the chat reply.',
   },
   {
     id: 'gemini',
@@ -185,10 +214,13 @@ export function presetsForSlot(slot: Slot): ProviderPreset[] {
  *
  * ── Changing one is not free ────────────────────────────────────────────────
  *
- * Vectors made by one model are not comparable with another's. Existing rows
- * stay at the old width and are simply never matched again — `semanticSearch`
- * filters on `dims` — so meaning search degrades to whatever has been
- * re-indexed until the pass catches up.
+ * Vectors made by one model are not comparable with another's, and the stored
+ * width does not say which model made them: every row is projected down to
+ * `EMBED_DIMS` regardless, so a 384-wide model and a 2560-wide one both leave
+ * 256-byte rows behind. `semanticSearch` therefore scopes the scan by the
+ * model NAME on the row. Rows from a previous model are left alone and never
+ * matched, and the background pass rebuilds them — so meaning search narrows
+ * to what has been re-indexed rather than quietly scoring the rest as noise.
  */
 export interface EmbedCatalogueEntry {
   name: string;
@@ -217,7 +249,7 @@ export const EMBED_CATALOGUE: EmbedCatalogueEntry[] = [
     shapes: ['ollama'],
     dims: 768,
     contextTokens: 8192,
-    note: 'Better search quality and a much longer input window, so a whole message embeds as one vector rather than just its opening.',
+    note: 'Better search quality, and a long enough window that Tern sends it the whole of an ordinary message rather than just its opening.',
   },
   {
     name: 'embeddinggemma',
@@ -226,6 +258,42 @@ export const EMBED_CATALOGUE: EmbedCatalogueEntry[] = [
     dims: 768,
     contextTokens: 2048,
     note: 'Larger again, and Matryoshka-trained so it survives truncation. Worth it on a big mailbox where the others feel imprecise.',
+  },
+  {
+    name: 'qwen3-embedding:0.6b',
+    label: 'Qwen3-Embedding-0.6B',
+    shapes: ['ollama', 'openai'],
+    alternateNames: ['Qwen/Qwen3-Embedding-0.6B', 'qwen/qwen3-embedding-0.6b'],
+    dims: 1024,
+    contextTokens: 32768,
+    note: 'The Qwen3 family’s smallest, and the one that makes the family reachable on a box without a card: the same 32k window and the same query instruction as its siblings, in 1024-wide vectors that cost a fifth of the 8B’s index.',
+  },
+  {
+    name: 'bge-m3',
+    label: 'BGE-M3',
+    shapes: ['ollama', 'openai'],
+    alternateNames: ['BAAI/bge-m3', 'baai/bge-m3'],
+    dims: 1024,
+    contextTokens: 8192,
+    note: 'Multilingual retrieval over a hundred languages, and a long window for its size. The usual choice for a mailbox that is not mostly English but has no GPU to give Qwen3.',
+  },
+  {
+    name: 'mxbai-embed-large',
+    label: 'mxbai-embed-large',
+    shapes: ['ollama'],
+    alternateNames: ['mixedbread-ai/mxbai-embed-large-v1'],
+    dims: 1024,
+    contextTokens: 512,
+    note: 'Strong English retrieval in a small download. The 512-token window is the catch: only the opening of a long message reaches the vector.',
+  },
+  {
+    name: 'snowflake-arctic-embed2',
+    label: 'Snowflake Arctic Embed 2',
+    shapes: ['ollama'],
+    alternateNames: ['Snowflake/snowflake-arctic-embed-l-v2.0'],
+    dims: 1024,
+    contextTokens: 8192,
+    note: 'Multilingual, and Matryoshka-trained so it survives truncation. A good middle between the tiny defaults and the Qwen3 pair.',
   },
   {
     name: 'qwen3-embedding:4b',
@@ -295,6 +363,50 @@ export function embedModelInfo(name: string): EmbedCatalogueEntry | null {
   const bare = raw.replace(/:latest$/, '').toLowerCase();
   return EMBED_CATALOGUE.find((m) => m.name.toLowerCase() === bare
     || (m.alternateNames ?? []).some((a) => a.toLowerCase() === bare)) ?? null;
+}
+
+/**
+ * How much of one message goes into a vector, in characters, for a given
+ * embedder.
+ *
+ * ── Why this is not one number ──────────────────────────────────────────────
+ *
+ * It was, and the number was 2,000, and that is what made the widths above
+ * decorative. `contextTokens` was written down, shown in the models table, and
+ * read by nothing: an install that pulled a 2.5 GB Qwen3 embedder for its 32k
+ * window got exactly the same 2,000 characters per message as all-minilm's
+ * 512-token one. The catalogue said the window mattered while the indexer
+ * ignored it, which is the worst arrangement — the cost of the big model was
+ * real and the benefit was not.
+ *
+ * ── Why there is still a ceiling ────────────────────────────────────────────
+ *
+ * Because "the model's whole window" is not the right answer either. One
+ * vector is one point, and a point standing for 32,000 tokens of quoted
+ * threads, footers and signatures stands for nothing in particular; retrieval
+ * gets worse, not better, past a certain length. The ceiling is Tern's own
+ * budget for what one message's vector should mean, and the floor is what
+ * every install already had — so no mailbox indexes LESS than it did before,
+ * and a wide-window model now earns four times the text a narrow one gets.
+ */
+export const MIN_EMBED_CHARS = 2000;
+export const MAX_EMBED_CHARS = 8000;
+
+/**
+ * Characters per token, for turning a model's window into a character budget.
+ *
+ * Deliberately pessimistic. English prose runs about four characters to the
+ * token; accented and non-Latin text runs closer to two, and a mailbox is not
+ * required to be in English. Under-estimating costs a little of the window;
+ * over-estimating sends more than the model can hold and has it silently
+ * truncate the tail, which is the same bug this budget exists to remove.
+ */
+export const CHARS_PER_TOKEN = 3.5;
+
+export function embedInputChars(model: string): number {
+  const info = embedModelInfo(model);
+  if (!info) return MIN_EMBED_CHARS;
+  return Math.max(MIN_EMBED_CHARS, Math.min(MAX_EMBED_CHARS, Math.round(info.contextTokens * CHARS_PER_TOKEN)));
 }
 
 /** The embedders Tern knows for one shape — the fallback where there is no live list. */

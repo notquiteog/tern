@@ -1,10 +1,12 @@
 // One kind of model, one connection.
 //
-// Tern talks to three kinds of model server — the one that writes, the one
-// that embeds, and the one that hears — and they are routinely three different
-// machines. A 4.5 GB VPS cannot hold a chat model and a whisper model at once,
-// so the usual shape is a chat model on a rented GPU, an embedder on the
-// bundled Ollama, and a transcriber on a box on the LAN.
+// Tern talks to several kinds of model server — the one that writes, the one
+// that embeds, the one that hears, and the ones that draw and film — and they
+// are routinely that many different machines. A 4.5 GB VPS cannot hold a chat
+// model and a whisper model at once, let alone a diffusion model, so the usual
+// shape is a chat model on a rented GPU, an embedder on the bundled Ollama, a
+// transcriber on a box on the LAN, and pictures bought by the request from
+// somebody who already owns the hardware for them.
 //
 // ── Why this type exists ────────────────────────────────────────────────────
 //
@@ -41,13 +43,23 @@ import { torAgent } from '../util/tor.js';
  * field on top — `input_type` — that tells the model whether it is embedding a
  * question or a document, which Tern already knows and which measurably
  * changes what comes back.
+ *
+ * `openai-chat` is the odd one, and it is a shape rather than a quirk because
+ * image generation genuinely arrived twice. OpenAI put it on its own path,
+ * `/v1/images/generations`, and Together, Fireworks, NanoGPT and every local
+ * server copied that. OpenRouter and Google's compatibility layer put it on
+ * `/v1/chat/completions` instead, asked for with `modalities` and answered
+ * with a data URL inside the assistant's message. Same company's shape, same
+ * bearer token, different endpoint and different reply — so a host that draws
+ * pictures has to be told which of the two it is, and there is no way to
+ * infer it from the address.
  */
-export type ApiShape = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'voyage';
+export type ApiShape = 'ollama' | 'openai' | 'openai-chat' | 'anthropic' | 'gemini' | 'voyage';
 
 /** Everything needed to reach one model server, and nothing about the model. */
 export interface ModelEndpoint {
   /** Which kind of model this is, for error text an admin has to act on. */
-  id: 'llm' | 'embed' | 'stt';
+  id: 'llm' | 'embed' | 'stt' | 'image' | 'video';
   /** A human name for the same, so a message can say what is unreachable. */
   label: string;
   provider: ApiShape;

@@ -55,6 +55,7 @@ const { explainTorError, torProxyAddress, torTimeoutMs, TOR_MIN_TIMEOUT_MS } = a
 const { transportFor, aiDefaults, llmEndpoint, embedEndpoint } = await import('../ai/llm.js');
 const { transportFor: endpointTransport } = await import('../ai/endpoint.js');
 const { voiceDefaults, sttEndpoint } = await import('../services/voice.js');
+const { mediaDefaults, imageEndpoint, videoEndpoint } = await import('../ai/media.js');
 
 test.after(() => { socks.close(); model.close(); });
 
@@ -157,6 +158,44 @@ test('the transcriber has a connection of its own, not the language model\'s', (
   assert.equal(sttEndpoint(voiceDefaults()).inheritedFrom, null);
 });
 
+test('the image and video hosts each carry their own proxy decision', async () => {
+  // The newest pair of connections, and the ones with the strongest case for
+  // the switch: an image host is somebody else's hardware by definition —
+  // there is no bundled one — and a prompt is a sentence somebody typed about
+  // what they want a picture of. Whether that arrives from this server's own
+  // address is not a decision to inherit from whatever the drafting model
+  // happened to need.
+  const drawn = { ...mediaDefaults(), baseUrl: base, imageModel: 'x', useTor: true };
+  assert.ok(endpointTransport(imageEndpoint(drawn)).agent, 'the image host lost its proxy');
+
+  // And it is genuinely the socket, not just the flag. The two paths this
+  // pair actually calls are asserted, because a shape added later that builds
+  // its own request would answer perfectly well and travel directly.
+  for (const path of ['/v1/images/generations', '/v1/videos']) {
+    connects.length = 0; hits.length = 0;
+    const res = await outboundFetch(`${base}${path}`, { method: 'POST', body: '{}' },
+      endpointTransport(imageEndpoint(drawn)));
+    await res.text();
+    assert.equal(hits[0], path);
+    assert.ok(connects.length > 0, `${path} did NOT go through the Tor proxy`);
+  }
+
+  // Split connections, each with its own answer. An install drawing on a
+  // rented GPU it would rather not hand its address to, while filming on a
+  // machine in the same rack, wants exactly one of these on.
+  const split = {
+    ...mediaDefaults(), baseUrl: 'https://draw.example', useTor: true,
+    videoProvider: 'openai' as const, videoBaseUrl: 'http://film.lan:8080', videoUseTor: false,
+  };
+  assert.ok(endpointTransport(imageEndpoint(split)).agent, 'the image host lost its proxy');
+  assert.equal(endpointTransport(videoEndpoint(split)).agent, undefined,
+    'the video host was dragged through Tor by the image host');
+
+  const flipped = { ...split, useTor: false, videoUseTor: true };
+  assert.equal(endpointTransport(imageEndpoint(flipped)).agent, undefined);
+  assert.ok(endpointTransport(videoEndpoint(flipped)).agent, 'the video host could not use Tor on its own');
+});
+
 test('an endpoint set to inherit takes the whole connection, not just the address', () => {
   // Copying the URL and leaving the proxy behind is the bug in miniature.
   const ai = { ...aiDefaults(), baseUrl: 'https://gpu.example:11434', apiKey: 'llm-key', useTor: true, tlsInsecure: true, embedProvider: 'same' as const };
@@ -166,6 +205,19 @@ test('an endpoint set to inherit takes the whole connection, not just the addres
   assert.equal(e.apiKey, 'llm-key');
   assert.equal(e.useTor, true);
   assert.equal(e.tlsInsecure, true);
+
+  // Video inherits the image connection by the same rule and for the same
+  // reason. `same` has to mean the whole thing or it means the bug.
+  const media = {
+    ...mediaDefaults(), baseUrl: 'https://draw.example', apiKey: 'image-key',
+    useTor: true, tlsInsecure: true, videoProvider: 'same' as const,
+  };
+  const v = videoEndpoint(media);
+  assert.equal(v.inheritedFrom, 'image');
+  assert.equal(v.baseUrl, 'https://draw.example');
+  assert.equal(v.apiKey, 'image-key');
+  assert.equal(v.useTor, true);
+  assert.equal(v.tlsInsecure, true);
 });
 
 test('each endpoint keeps its own credential', () => {
@@ -175,6 +227,13 @@ test('each endpoint keeps its own credential', () => {
   assert.equal(llmEndpoint(ai).apiKey, 'llm-key');
   assert.equal(embedEndpoint(ai).apiKey, 'embed-key');
   assert.equal(sttEndpoint({ ...voiceDefaults(), apiKey: 'stt-key' }).apiKey, 'stt-key');
+
+  const media = {
+    ...mediaDefaults(), apiKey: 'image-key',
+    videoProvider: 'openai' as const, videoBaseUrl: 'https://film.example', videoApiKey: 'video-key',
+  };
+  assert.equal(imageEndpoint(media).apiKey, 'image-key');
+  assert.equal(videoEndpoint(media).apiKey, 'video-key');
 });
 
 test('the old settings-shaped transport still means the language model', () => {

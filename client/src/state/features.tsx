@@ -11,7 +11,7 @@ import { api } from '../api';
 import { useAuth } from './auth';
 
 export type Capability =
-  | 'ai.compose' | 'ai.summaries' | 'ai.responders' | 'ai.campaigns' | 'ai.playground'
+  | 'ai.compose' | 'ai.summaries' | 'ai.responders' | 'ai.campaigns' | 'ai.playground' | 'ai.media'
   | 'semantic' | 'triage' | 'guard' | 'attachments' | 'commitments'
   | 'nlrules' | 'brief' | 'voice' | 'calendar' | 'links' | 'import';
 

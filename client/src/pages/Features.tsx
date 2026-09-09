@@ -27,7 +27,7 @@ import { useToast } from '../state/toast';
 const ORDER: string[] = [
   'guard', 'links', 'triage', 'semantic', 'attachments',
   'brief', 'commitments', 'calendar', 'nlrules', 'voice', 'import',
-  'ai.compose', 'ai.summaries', 'ai.responders', 'ai.campaigns', 'ai.playground',
+  'ai.compose', 'ai.summaries', 'ai.media', 'ai.responders', 'ai.campaigns', 'ai.playground',
 ];
 
 export default function FeaturesPage() {

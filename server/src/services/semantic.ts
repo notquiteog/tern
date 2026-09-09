@@ -19,7 +19,8 @@
 // another's rotation anyway.
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
-import { embed } from '../ai/llm.js';
+import { embed, getAiSettings } from '../ai/llm.js';
+import { embedInputChars } from '../ai/providers.js';
 import { dataKey } from './vault.js';
 import { fromBuffer, project, rotationFor, similarity, toBuffer, type Rotation } from './embeddings.js';
 import { openEmails } from './mailVault.js';
@@ -38,17 +39,23 @@ export const INDEX_BATCH = 12;
 // meaning per token, then the body with quoted replies stripped — a thread
 // where every message re-quotes the last one would otherwise embed the same
 // paragraph twenty times and every message in it would look identical.
-export function embeddableText(m: { subject?: string | null; body_text?: string | null; body_html?: string | null; preview?: string | null }): string {
+//
+// How MUCH of it is the embedder's business rather than a constant: see
+// `embedInputChars`. This was a flat 2,000 characters for every model, which
+// meant an install that had pulled a 32k-window embedder was paying for a
+// window it was never sent. The budget is passed in rather than looked up here
+// so one index pass uses one number for every message in it, whatever the
+// settings do mid-pass.
+export function embeddableText(m: { subject?: string | null; body_text?: string | null; body_html?: string | null; preview?: string | null }, maxChars = 2000): string {
   const body = (m.body_text || htmlToText(m.body_html || '') || m.preview || '')
     .replace(/^\s*>.*$/gm, '')
     .replace(/^\s*On .{0,120}wrote:\s*$/gim, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   const subject = String(m.subject ?? '').trim();
-  // Two thousand characters is about what a small embedding model can hold
-  // without truncation, and the top of an email is where its subject matter
-  // lives.
-  return `${subject}\n\n${body}`.slice(0, 2000).trim();
+  // The top of an email is where its subject matter lives, so what falls off
+  // the end is the least of it whatever the budget turns out to be.
+  return `${subject}\n\n${body}`.slice(0, Math.max(200, maxChars)).trim();
 }
 
 const rotations = new Map<string, Rotation>();
@@ -88,7 +95,8 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   if (!rows.length) return { done: 0, remaining: 0 };
 
   const opened = await openEmails(userId, 'semantic', rows);
-  const texts = opened.map((m) => embeddableText(m));
+  const budget = embedInputChars((await getAiSettings()).embedModel);
+  const texts = opened.map((m) => embeddableText(m, budget));
   // A message with nothing in it still gets marked, or the pass would find
   // it again for ever.
   const usable = texts.map((t, i) => ({ t, i })).filter((x) => x.t.length > 8);
@@ -158,19 +166,35 @@ export async function semanticSearch(
 ): Promise<SemanticHit[]> {
   const query_ = String(text ?? '').trim();
   if (!query_ || !accountIds.length) return [];
-  const { vectors, dims } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
+  const { vectors, dims, model } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
   if (!vectors[0]?.length || !dims) return [];
   const rot = await rotationFor_(userId, dims);
   const needle = project(rot, vectors[0]);
 
+  // Scoped to the model that made the needle, and that is the load-bearing
+  // clause rather than a tidiness one.
+  //
+  // `v.dims` cannot do this job and used to be relied on to. Every vector is
+  // projected down to EMBED_DIMS before it is stored, so an all-minilm row and
+  // a Qwen3-Embedding-4B row are both 256 bytes wide and `dims` matches both.
+  // A rotation, meanwhile, is derived per model WIDTH, so those two rows live
+  // in different spaces: scoring one against the other's needle produces
+  // noise, not similarity. Over a big mailbox some of that noise clears 0.28
+  // and comes back as a confident result about an unrelated message — the
+  // worst kind of wrong, because nothing about it looks broken.
+  //
+  // The window in which it happens is not hypothetical either: changing the
+  // embedder queues every message for re-indexing, and on a CPU-only box that
+  // pass runs overnight. Every search until it finishes is scanning a table
+  // that is mostly the old model's work.
   const rows = await query<{ email_id: number; account_id: number; thread_id: string; vec: Buffer }>(
     `SELECT v.email_id, v.account_id, e.thread_id, v.vec
        FROM email_vectors v
        JOIN emails e ON e.id = v.email_id
        JOIN accounts a ON a.id = v.account_id
-      WHERE a.user_id = $1 AND v.account_id = ANY($2) AND v.dims = $3
-        AND ($4::text[] IS NULL OR e.mailbox_ids && $4::text[])`,
-    [userId, accountIds, needle.length, opts.mailboxIds?.length ? opts.mailboxIds : null],
+      WHERE a.user_id = $1 AND v.account_id = ANY($2) AND v.dims = $3 AND v.model = $4
+        AND ($5::text[] IS NULL OR e.mailbox_ids && $5::text[])`,
+    [userId, accountIds, needle.length, model, opts.mailboxIds?.length ? opts.mailboxIds : null],
   );
 
   const minScore = opts.minScore ?? 0.28;
@@ -186,19 +210,21 @@ export async function semanticSearch(
 // "More like this": the same scan, with a message that is already indexed as
 // the needle. No model call at all, so it is free and instant.
 export async function similarTo(userId: number, emailId: number, limit = 10): Promise<SemanticHit[]> {
-  const seed = await one<{ vec: Buffer; dims: number; account_id: number }>(
-    `SELECT v.vec, v.dims, v.account_id FROM email_vectors v
+  const seed = await one<{ vec: Buffer; dims: number; model: string; account_id: number }>(
+    `SELECT v.vec, v.dims, v.model, v.account_id FROM email_vectors v
        JOIN accounts a ON a.id=v.account_id
       WHERE v.email_id=$1 AND a.user_id=$2`,
     [emailId, userId],
   );
   if (!seed) return [];
   const needle = fromBuffer(seed.vec);
+  // The seed's own model, for the reason spelled out in `semanticSearch`: the
+  // stored width is the same for all of them and the geometry is not.
   const rows = await query<{ email_id: number; account_id: number; thread_id: string; vec: Buffer }>(
     `SELECT v.email_id, v.account_id, e.thread_id, v.vec
        FROM email_vectors v JOIN emails e ON e.id=v.email_id JOIN accounts a ON a.id=v.account_id
-      WHERE a.user_id=$1 AND v.dims=$2 AND v.email_id <> $3`,
-    [userId, seed.dims, emailId],
+      WHERE a.user_id=$1 AND v.dims=$2 AND v.model=$3 AND v.email_id <> $4`,
+    [userId, seed.dims, seed.model, emailId],
   );
   return rows
     .map((r) => ({ emailId: r.email_id, accountId: r.account_id, threadId: r.thread_id, score: similarity(needle, fromBuffer(r.vec)) }))

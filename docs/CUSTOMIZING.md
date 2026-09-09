@@ -609,8 +609,26 @@ the download — which is why the card shows both.
 | `all-minilm` | 46 MB | ~286 MB | 23M · 512 tok | The default below 6 GB. Loads beside the writing model without competing for room. |
 | `nomic-embed-text` | 274 MB | ~572 MB | 137M · 8,192 tok | Better quality and a much longer window, so a whole message embeds as one vector instead of just its opening. |
 | `embeddinggemma` | 621 MB | ~1.0 GB | 300M · 2,048 tok | Larger again. Worth it only if you search a big mailbox and find the others imprecise. |
-| `qwen3-embedding:4b` | 2.5 GB | ~3.4 GB | 4B · 32,768 tok | Strong multilingual retrieval, 2560-wide vectors, and a window long enough that nothing is truncated. Wants a graphics card. |
+| `qwen3-embedding:0.6b` | 640 MB | ~1.1 GB | 0.6B · 32,768 tok | The Qwen3 family without a graphics card: the same long window and the same query instruction, in 1024-wide vectors. |
+| `mxbai-embed-large` | 670 MB | ~1.1 GB | 335M · 512 tok | Strong English retrieval in a small download, 1024 wide. The short window is the catch: only the opening of a long message reaches the vector. |
+| `bge-m3` | 1.2 GB | ~1.6 GB | 567M · 8,192 tok | Multilingual retrieval over a hundred languages, 1024 wide. The usual choice for a mailbox that is not mostly English but has no card to give Qwen3. |
+| `snowflake-arctic-embed2` | 1.2 GB | ~1.6 GB | 568M · 8,192 tok | Multilingual and Matryoshka-trained, 1024 wide. A middle between the tiny defaults and the Qwen3 pair. |
+| `qwen3-embedding:4b` | 2.5 GB | ~3.4 GB | 4B · 32,768 tok | Strong multilingual retrieval, 2560-wide vectors, and a window wide enough that Tern sends it the whole of any ordinary message. Wants a graphics card. |
 | `qwen3-embedding:8b` | 4.7 GB | ~6.2 GB | 8B · 32,768 tok | The best open-weight retrieval model here and the widest at 4096. Only worth it with room on the card beside the writing model. |
+
+**How much of a message goes into one vector** is decided by the model's own
+window rather than by a constant, so a wide-window embedder is actually sent
+more text than a 512-token one — up to a ceiling of about 8,000 characters,
+which is Tern's budget rather than the model's. Past a certain length one
+vector standing for one message stops meaning anything in particular, so the
+ceiling is deliberate; what it replaced was a flat 2,000 characters for every
+model, which made the window column above decorative.
+
+The Qwen3 and Gemini models are also given the task instruction their training
+expects — `Instruct: …` in front of a **search**, and deliberately not in
+front of a stored message, because prefixing both would put the same words in
+every vector in the mailbox. Voyage is told the same thing as a real request
+field instead.
 
 ### Embedding somewhere other than the writing model
 
@@ -659,11 +677,70 @@ writing list, so it cannot be picked as the drafting model by mistake.
 one made by another — the cosine distance between an `all-minilm` vector and a
 `nomic-embed-text` one is noise, not similarity — so switching queues every
 message already indexed to be embedded again, and the page says how many. Old
-vectors are not deleted: search keeps answering from them while the background
-pass rebuilds, which is a better failure than an empty index for the length of
-a rebuild. On a large mailbox that pass takes a while; it shares the
-twenty-second enrichment tick with everything else, so it will not monopolise
-the model.
+vectors are not deleted, because a message that has been re-embedded should be
+findable immediately rather than at the end of the pass; they are simply not
+scored. A search only compares against vectors made by the model that is
+currently set, so during a rebuild meaning search narrows to what has been
+rebuilt and then widens back out, rather than returning noise from the old
+geometry with a plausible-looking score on it. On a large mailbox that pass
+takes a while; it shares the twenty-second enrichment tick with everything
+else, so it will not monopolise the model.
+
+### Pictures and video
+
+**Admin → AI model → Pictures and video.** Off, with nowhere to send a prompt,
+until an address is set — and a member still has to turn **Pictures and video**
+on under Settings → Features before the button appears for them.
+
+This is the one model connection with no local option. There is no bundled
+image server and there is not going to be one: the smallest useful diffusion
+model is larger than everything else Tern ships put together, and none of them
+run on the 4.5 GB box the rest of this is sized for. So the host is somebody
+else's hardware unless you own a GPU box, **every prompt your people type goes
+to it**, and the card and the composer both say so rather than leaving it to
+be inferred from an address only an admin can see. Nothing from anybody's
+mailbox is sent — only the sentence they wrote.
+
+Two shapes, because image generation genuinely arrived twice:
+
+| Shape | Endpoint | Hosts |
+|---|---|---|
+| `/v1/images/generations` | a path of its own | OpenAI, Together AI, Fireworks, NanoGPT, and a local ComfyUI, SwarmUI or LocalAI behind their OpenAI shims |
+| `/v1/chat/completions` | the picture comes back inside the chat reply, as a data URL | OpenRouter, Google's compatibility layer |
+
+They cannot be told apart from the address — OpenRouter serves both on the
+same origin — so the card asks which one the host speaks. **Ollama is
+deliberately not offered**: it runs vision models that *read* a picture and
+has no endpoint that draws one, so an option for it would be an option that
+cannot work, the same judgement that keeps Anthropic off the embedding list.
+
+**Video** is a second connection, defaulting to sharing the image one whole —
+address, key, certificate rule and Tor switch. It is asked for over
+`/v1/videos`, which is a job rather than a request: the host takes the prompt,
+hands back an id, and is asked later how it went. Closing the composer, or
+reloading the page, does not lose a generation; only pressing **Stop** does.
+A generation does not survive a restart of the Tern server itself, so the
+host's own id for it is shown, which is what you would need to collect one by
+hand.
+
+Each connection has **its own Tor switch and its own certificate rule**, like
+every other model connection here — and this is the one where the switch earns
+its keep most obviously, since a host that is billing somebody learns this
+server's address from every request otherwise.
+
+What comes back is filed exactly as a photo somebody dragged in: the same
+`uploads` row, the same metadata scrub — several hosts write the prompt into
+the picture's own EXIF, and that is stripped before it can travel with the
+message — the same `cid:` inline part, and the same delete when it is
+discarded. The file type is read from the bytes rather than from the host's
+label, because the label is what decides whether the composer can show it at
+all.
+
+Generations are reachable only from a composer with a person in front of it.
+**A responder or a sequence step cannot make one**: the hard filter in front
+of every automated send reads text and can say whether a draft still contains
+a merge field, and nothing reads a picture and says whether it is fit to put
+in front of a stranger.
 
 ### Dictation
 

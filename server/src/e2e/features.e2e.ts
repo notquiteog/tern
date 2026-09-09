@@ -19,6 +19,8 @@ import { grant, revoke, setFeatureFlag } from '../services/capabilities.js';
 import { eraseCapabilityData } from '../services/capabilityData.js';
 import { openEmails, sealEmail } from '../services/mailVault.js';
 import { indexBatch, indexPending, semanticSearch } from '../services/semantic.js';
+import { EMBED_DIMS } from '../services/embeddings.js';
+import { EMBED_CATALOGUE, embedInputChars } from '../ai/providers.js';
 import { guardBatch } from '../services/guard.js';
 import { retrain, scorePending } from '../services/triage.js';
 import { getAiSettings, saveAiSettings } from '../ai/llm.js';
@@ -205,6 +207,195 @@ const semanticGroup = group('semantic', async () => {
     const leaked = await semanticSearch(f.userId, [other.accountId], 'hike up the hill', { limit: 5, minScore: 0 });
     eq(leaked.length, 0, 'a search reached another account');
   });
+});
+
+// ---------- Every embedder, not just the one the dev box has pulled ----------
+//
+// `semantic` above is the feature working; this is the feature working
+// against the models an install would actually choose. They need different
+// machinery, because the interesting ones cannot be run here: Qwen3-Embedding
+// -4B is a 2.5 GB pull that wants a graphics card, the 8B wants a bigger one,
+// and OpenAI's and Voyage's do not run anywhere at all. So the model server is
+// a stub, and what is under test is everything on this side of it — the
+// character budget, the query instruction, the keyed projection at that
+// model's width, and which rows a search is allowed to score.
+//
+// The stub embeds a bag of hashed words, L2-normalised. That is not a
+// language model and does not pretend to be: texts sharing words come back
+// close and texts sharing none come back far, which is exactly the property
+// the pipeline is being checked against. What it does faithfully reproduce is
+// the WIDTH, which is the thing that varies between the models here and the
+// thing every stage downstream is sized by.
+const embedSeen: { model: string; input: string[] }[] = [];
+
+function stubVector(text: string, dims: number): number[] {
+  const v = new Array<number>(dims).fill(0);
+  // The task instruction is conditioned ON, not matched on. A real
+  // instruction-tuned retrieval model reads "Instruct: …" as a description of
+  // the job and embeds the query after it; a bag of words would instead treat
+  // twenty words about searching email as twenty more terms to match, and
+  // every query would look alike. Stripping it here is what makes the stub a
+  // stand-in for the model rather than a different thing entirely — and the
+  // test above already asserts, separately, that the prefix reaches the wire.
+  const body = text.replace(/^Instruct: [\s\S]*?\nQuery: /, '');
+  for (const word of body.toLowerCase().match(/[a-z0-9']+/g) ?? []) {
+    let h = 2166136261;
+    for (let i = 0; i < word.length; i++) { h ^= word.charCodeAt(i); h = Math.imul(h, 16777619); }
+    v[Math.abs(h) % dims] += 1;
+  }
+  const len = Math.hypot(...v) || 1;
+  return v.map((x) => x / len);
+}
+
+async function startStubEmbedder(dimsFor: (model: string) => number): Promise<{ url: string; close: () => Promise<void> }> {
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const b = JSON.parse(body || '{}');
+      const input: string[] = Array.isArray(b.input) ? b.input : [b.input];
+      embedSeen.push({ model: b.model, input });
+      const dims = dimsFor(b.model);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: input.map((t, index) => ({ index, embedding: stubVector(t, dims) })),
+      }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as any).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+// The widths that matter, from the catalogue rather than written out again.
+const WIDTHS: Record<string, number> = Object.fromEntries(EMBED_CATALOGUE.map((m) => [m.name, m.dims]));
+
+const embeddersGroup = group('embedders', async () => {
+  const stub = await startStubEmbedder((m) => WIDTHS[m] ?? 768);
+  const before = await getAiSettings();
+  const useModel = (name: string) => saveAiSettings({
+    enabled: true, embedProvider: 'openai', embedBaseUrl: stub.url, embedApiKey: 'stub', embedModel: name,
+  });
+
+  try {
+    const f = await makeMailbox();
+    await grant(f.userId, 'semantic');
+    await put(f, { subject: 'Re: pricing for the Q3 engagement', body: 'We agreed on 4,200 euros a month for six months, invoiced on the first.', from: SENDERS.ana });
+    await put(f, { subject: 'Office move', body: 'The team is relocating to the third floor on the 14th.', from: SENDERS.facilities });
+    await put(f, { subject: 'Weekend plans', body: 'Fancy a walk up the hill on Saturday if the weather holds?', from: SENDERS.sam });
+
+    // ── Qwen3-Embedding-4B, the model this was all checked against ──────────
+    await useModel('qwen3-embedding:4b');
+    embedSeen.length = 0;
+
+    await test('a 2560-wide model indexes a whole mailbox', async () => {
+      for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+      eq(await indexPending(f.userId), 0, 'messages left unindexed');
+      const rows = await query<{ dims: number; model: string; vec: Buffer }>(
+        'SELECT dims, model, vec FROM email_vectors WHERE account_id=$1', [f.accountId]);
+      eq(rows.length, 3, 'wrong number of vectors');
+      for (const r of rows) {
+        eq(r.model, 'qwen3-embedding:4b', 'the row does not name the model that made it');
+        // The STORED width, which is the projection's and not the model's:
+        // 2560 in, 256 out. The whole reason a search cannot tell models apart
+        // by this column.
+        eq(r.dims, EMBED_DIMS, 'unexpected stored width');
+        eq(r.vec.length, EMBED_DIMS, 'the bytes disagree with the column');
+      }
+    });
+
+    await test('the message reaching a 32k-window model is not cut at 2,000 characters', async () => {
+      // The budget that was a constant. `embedInputChars` is what makes the
+      // catalogue's `contextTokens` mean something, and this is the check that
+      // it reached the wire rather than only the settings page.
+      ok(embedInputChars('qwen3-embedding:4b') > embedInputChars('all-minilm'), 'the wide model gets no more text');
+      const long = 'jetty '.repeat(3000);
+      await put(f, { subject: 'A very long thread', body: long, from: SENDERS.ana });
+      embedSeen.length = 0;
+      for (let i = 0; i < 3 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+      const sent = embedSeen.flatMap((c) => c.input).find((t) => t.includes('A very long thread'));
+      ok(sent, 'the long message was never sent to the embedder');
+      ok(sent!.length > 2000, `only ${sent!.length} characters were sent, which is the old flat cap`);
+      ok(sent!.length <= embedInputChars('qwen3-embedding:4b'), 'more was sent than the budget allows');
+    });
+
+    await test('a search carries the instruction the model expects and the mailbox does not', async () => {
+      embedSeen.length = 0;
+      await semanticSearch(f.userId, [f.accountId], 'what did we agree the monthly price would be', { limit: 3, minScore: 0 });
+      const query = embedSeen.at(-1)?.input?.[0] ?? '';
+      ok(/^Instruct: /.test(query), `the query went out without its instruction: ${query.slice(0, 60)}`);
+      // And the documents did not get one, which is the half that is easy to
+      // break: prefixing both puts the same words in every vector in the
+      // mailbox and flattens the distinction the prefix exists to sharpen.
+      const documents = embedSeen.slice(0, -1).flatMap((c) => c.input);
+      ok(documents.every((d) => !d.startsWith('Instruct: ')), 'a stored message was embedded as though it were a search');
+    });
+
+    await test('a question finds the message it is about', async () => {
+      const hits = await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 3, minScore: 0 });
+      ok(hits.length, 'no hits at all');
+      const rows = await query<any>('SELECT id, subject FROM emails WHERE id=$1', [hits[0].emailId]);
+      const opened = await openEmails(f.userId, 'owner', rows);
+      ok(/pricing/i.test(String(opened[0]?.subject ?? '')), `top hit was "${opened[0]?.subject}"`);
+    });
+
+    // ── Switching models: the window every install passes through ───────────
+    await test('vectors from the previous model are never scored against the new one', async () => {
+      // The bug this guards. Every model's rows are stored at the same width,
+      // so `WHERE dims = ?` matches all of them; their rotations are derived
+      // from the model's own width, so their geometry is unrelated. Changing
+      // the embedder queues a rebuild that takes hours on a real mailbox, and
+      // every search until it finishes is scanning a table that is mostly the
+      // old model's work — scored as noise, some of which clears the
+      // threshold and comes back looking like an answer.
+      const stale = await query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM email_vectors WHERE account_id=$1 AND model='qwen3-embedding:4b'`, [f.accountId]);
+      ok(stale[0].n > 0, 'nothing was indexed under the old model, so this proves nothing');
+
+      await useModel('all-minilm');
+      // Deliberately WITHOUT re-indexing: this is the state an install is in
+      // for as long as the rebuild takes.
+      const hits = await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 10, minScore: 0 });
+      eq(hits.length, 0, 'a search scored vectors made by a different model');
+
+      // ...and once the rebuild has happened, the same question works again.
+      await query('UPDATE emails SET embedded=false WHERE account_id=$1', [f.accountId]);
+      for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+      const after = await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 3, minScore: 0 });
+      ok(after.length, 'the rebuilt index finds nothing');
+      const rows = await query<any>('SELECT id, subject FROM emails WHERE id=$1', [after[0].emailId]);
+      const opened = await openEmails(f.userId, 'owner', rows);
+      ok(/pricing/i.test(String(opened[0]?.subject ?? '')), `top hit after the rebuild was "${opened[0]?.subject}"`);
+    });
+
+    // ── And the rest of the catalogue, at its own width ─────────────────────
+    await test('every embedder in the catalogue indexes and searches at its own width', async () => {
+      for (const m of EMBED_CATALOGUE) {
+        await useModel(m.name);
+        await query('UPDATE emails SET embedded=false WHERE account_id=$1', [f.accountId]);
+        for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+        eq(await indexPending(f.userId), 0, `${m.name}: messages left unindexed`);
+        const rows = await query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM email_vectors WHERE account_id=$1 AND model=$2', [f.accountId, m.name]);
+        ok(rows[0].n >= 3, `${m.name}: only ${rows[0].n} vectors written`);
+        const hits = await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 3, minScore: 0 });
+        ok(hits.length, `${m.name}: a search found nothing`);
+        const found = await query<any>('SELECT id, subject FROM emails WHERE id=$1', [hits[0].emailId]);
+        const opened = await openEmails(f.userId, 'owner', found);
+        ok(/pricing/i.test(String(opened[0]?.subject ?? '')), `${m.name}: top hit was "${opened[0]?.subject}"`);
+      }
+    });
+  } finally {
+    await stub.close();
+    await saveAiSettings({
+      embedProvider: before.embedProvider, embedBaseUrl: before.embedBaseUrl,
+      embedApiKey: before.embedApiKey, embedModel: before.embedModel,
+    });
+  }
 });
 
 const guardGroup = group('guard', async () => {
@@ -729,7 +920,7 @@ async function main() {
   await saveAiSettings({ enabled: true, embedModel: process.env.E2E_EMBED_MODEL ?? 'all-minilm' });
 
   const t0 = Date.now();
-  for (const g of [gateGroup, semanticGroup, guardGroup, triageGroup, attachmentsGroup, calendarGroup, importGroup, briefGroup, retentionGroup, plaintextGroup]) {
+  for (const g of [gateGroup, semanticGroup, embeddersGroup, guardGroup, triageGroup, attachmentsGroup, calendarGroup, importGroup, briefGroup, retentionGroup, plaintextGroup]) {
     try { await g(); } catch (e) { console.log(`  GROUP FAILED: ${(e as Error).message}`); results.push({ group: current, name: '(group)', ok: false, detail: (e as Error).message }); }
   }
 

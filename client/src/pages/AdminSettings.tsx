@@ -1231,7 +1231,205 @@ function AiAdminSettings() {
         </div>
       )}
       <AiVoiceCard />
+      <AiMediaCard />
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
+    </div>
+  );
+}
+
+// Admin → AI model → Pictures and video.
+//
+// Two connections on one card, because they are one decision made twice: the
+// host that draws and the host that films are usually the same company and
+// occasionally not, and video defaults to sharing the image connection whole
+// rather than being configured twice by an admin who has one account.
+//
+// The card leads with where the prompts go, and that is not decoration. Every
+// other model in this app can be a container on this box, and the pages say
+// so where it is true. There is no bundled image server, so this one is
+// somebody else's hardware by default — which is a perfectly reasonable thing
+// to choose and a bad thing to discover later.
+function AiMediaCard() {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const { data, refetch } = useQuery({ queryKey: ['ai-media'], queryFn: () => api.get<any>('/api/ai/media') });
+  const [f, setF] = useState<any>(null);
+  const [key, setKey] = useState('');
+  const [videoKey, setVideoKey] = useState('');
+  const [testing, setTesting] = useState('');
+  const [tested, setTested] = useState<Record<string, any>>({});
+  useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
+  if (!data || !f) return null;
+
+  const sharing = f.videoProvider === 'same';
+
+  async function save(patch: any) {
+    try {
+      const r = await api.put<any>('/api/ai/media', patch);
+      setF({ ...r.settings });
+      setKey(''); setVideoKey(''); setTested({});
+      refetch();
+      // The composer asks once and keeps the answer for five minutes, so a
+      // change here would otherwise take that long to reach a page that is
+      // already open.
+      qc.invalidateQueries({ queryKey: ['media-status'] });
+      toast.success('Saved');
+    } catch (e) { toast.error(e); }
+  }
+
+  async function test(which: 'image' | 'video') {
+    setTesting(which);
+    try {
+      const body = which === 'image'
+        ? { which, provider: f.provider, baseUrl: f.baseUrl, apiKey: key || undefined, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) }
+        : { which, videoProvider: f.videoProvider, videoBaseUrl: f.videoBaseUrl, videoApiKey: videoKey || undefined, videoTlsInsecure: Boolean(f.videoTlsInsecure), videoUseTor: Boolean(f.videoUseTor) };
+      const r = await api.post<any>('/api/ai/media/test', body);
+      setTested((t) => ({ ...t, [which]: r.health }));
+    } catch (e) { toast.error(e); } finally { setTesting(''); }
+  }
+
+  const health = (which: 'image' | 'video') => tested[which] ?? data.health?.[which];
+  const Health = ({ which }: { which: 'image' | 'video' }) => {
+    const h = health(which);
+    if (!h) return null;
+    return h.ok
+      ? <Badge kind="success">reachable{h.models?.length ? ` · ${h.models.length} models` : ''}</Badge>
+      : <Badge kind="warning">{h.error ?? 'not reachable'}</Badge>;
+  };
+
+  return (
+    <div className="card mb-16">
+      <div className="card-title">
+        <h2>Pictures and video</h2>
+        <div className="row">
+          <Toggle checked={Boolean(f.images)} disabled={!f.baseUrl || !f.imageModel} onChange={(v) => { setF({ ...f, images: v }); void save({ images: v }); }} />
+          <span className="small">{f.baseUrl ? (f.imageModel ? 'Pictures' : 'No model named') : 'No image host'}</span>
+        </div>
+      </div>
+      <p className="muted small">
+        Makes a picture — or a few seconds of video — from a sentence somebody types in the composer,
+        filed as an attachment like any other. Off until an address is set, and a member still has to
+        turn it on under Settings &rarr; Features before the button appears for them.
+      </p>
+      <Callout kind={data.local?.image === true ? 'info' : 'warning'}>
+        {data.local?.image === true
+          ? <>That address is on this box, so prompts stay here.</>
+          : <>There is no bundled image model and nothing on this list runs on a 4.5 GB VPS, so this is
+            somebody else&rsquo;s hardware: <b>every prompt your people type goes to it</b>, along with this
+            server&rsquo;s address unless you route the connection through Tor below. Nothing from anyone&rsquo;s
+            mailbox is sent — only the sentence they wrote.</>}
+      </Callout>
+
+      <h3 className="mt-16">The host that draws</h3>
+      <ProviderPresets presets={data.presets?.image ?? []} slot="image" shape={f.provider} baseUrl={f.baseUrl}
+        onPick={(p: any) => { setF({ ...f, provider: p.shape, baseUrl: p.baseUrl }); setTested({}); }} />
+      <div className="form-row">
+        <Field label="API shape" hint="Where the picture comes back from. Most hosts serve it on a path of its own; OpenRouter and Google answer with it inside a chat reply instead, and the two cannot be told apart from the address.">
+          <Select value={f.provider} onChange={(e) => { setF({ ...f, provider: e.target.value }); setTested({}); }}>
+            <option value="openai">/v1/images/generations (OpenAI, Together, Fireworks, NanoGPT, local servers)</option>
+            <option value="openai-chat">/v1/chat/completions (OpenRouter, Google)</option>
+          </Select>
+        </Field>
+        <Field label="Address" hint="Anything speaking one of those two shapes. Clearing this turns pictures off.">
+          <Input value={f.baseUrl ?? ''} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setTested({}); }} placeholder="https://api.openai.com/v1" />
+        </Field>
+        <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : 'Whatever that host wants as a bearer token.'}>
+          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={data.settings.hasApiKey ? '••••••••' : ''} />
+        </Field>
+        <Field label="Model" hint="Exactly as that host names it — “gpt-image-1”, “black-forest-labs/FLUX.1-schnell”, an “accounts/…/models/…” path on Fireworks.">
+          <Input value={f.imageModel ?? ''} onChange={(e) => setF({ ...f, imageModel: e.target.value })} placeholder="gpt-image-1" />
+        </Field>
+        <Field label="Default size" hint="What the composer asks for unless somebody types something else. Empty means whatever the host defaults to; not every model accepts every size.">
+          <Input value={f.imageSize ?? ''} onChange={(e) => setF({ ...f, imageSize: e.target.value })} placeholder="1024x1024" />
+        </Field>
+      </div>
+      <div className="mt-8">
+        {/^https:/i.test(f.baseUrl ?? '') && (
+          <div className="row">
+            <Toggle checked={Boolean(f.tlsInsecure)} onChange={(v) => { setF({ ...f, tlsInsecure: v }); setTested({}); }} />
+            <span className="small">Trust this host&rsquo;s certificate even if it cannot be verified</span>
+          </div>
+        )}
+        {/* Its own switch, like every other model connection. An image host is
+            somebody else's machine by definition, so this is the connection
+            where it earns its keep most obviously. */}
+        <div className="row">
+          <Toggle checked={Boolean(f.useTor)} onChange={(v) => { setF({ ...f, useTor: v }); setTested({}); }} />
+          <span className="small">Reach the image host through Tor</span>
+        </div>
+        <p className="small muted">
+          {f.useTor
+            ? 'Prompts reach the image host through the local Tor proxy, so it sees an exit node rather than this machine. Slower, and pointless for a host on this box.'
+            : 'Separate from the language model’s setting on purpose. Turn this on for a host you would rather not hand this server’s address to — which, since it is billing somebody, is most of them.'}
+        </p>
+      </div>
+      <div className="row mt-8 gap-8">
+        <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: key || undefined, imageModel: f.imageModel, imageSize: f.imageSize, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) })}>Save</Button>
+        <Button variant="ghost" loading={testing === 'image'} disabled={!f.baseUrl} onClick={() => test('image')}>Test connection</Button>
+        {data.settings.hasApiKey && <Button size="sm" variant="ghost" onClick={() => save({ apiKey: null })}>Clear key</Button>}
+        <Health which="image" />
+      </div>
+
+      <h3 className="mt-24">The host that films</h3>
+      <div className="row">
+        <Toggle checked={Boolean(f.videos)} disabled={!(sharing ? f.baseUrl : f.videoBaseUrl) || !f.videoModel} onChange={(v) => { setF({ ...f, videos: v }); void save({ videos: v }); }} />
+        <span className="small">Offer video as well as pictures</span>
+      </div>
+      <p className="small muted">
+        Far fewer hosts serve this, and a few seconds of it costs many times a picture. It is asked for
+        as a job and collected when it is ready, so closing the composer does not lose one.
+      </p>
+      <div className="row mt-8">
+        <Toggle checked={sharing} onChange={(v) => { setF({ ...f, videoProvider: v ? 'same' : 'openai' }); setTested({}); }} />
+        <span className="small">Use the same connection as pictures</span>
+      </div>
+      {!sharing && (
+        <>
+          <ProviderPresets presets={data.presets?.video ?? []} slot="video" shape="openai" baseUrl={f.videoBaseUrl}
+            onPick={(p: any) => { setF({ ...f, videoBaseUrl: p.baseUrl }); setTested({}); }} />
+          <div className="form-row">
+            <Field label="Address" hint="Something serving /v1/videos. Clearing this turns video off.">
+              <Input value={f.videoBaseUrl ?? ''} onChange={(e) => { setF({ ...f, videoBaseUrl: e.target.value }); setTested({}); }} placeholder="https://api.openai.com/v1" />
+            </Field>
+            <Field label="API key" hint={data.settings.hasVideoApiKey ? 'A key is stored; leave blank to keep it.' : 'This host’s own key, not the image host’s.'}>
+              <Input type="password" value={videoKey} onChange={(e) => setVideoKey(e.target.value)} placeholder={data.settings.hasVideoApiKey ? '••••••••' : ''} />
+            </Field>
+          </div>
+          <div className="mt-8">
+            {/^https:/i.test(f.videoBaseUrl ?? '') && (
+              <div className="row">
+                <Toggle checked={Boolean(f.videoTlsInsecure)} onChange={(v) => { setF({ ...f, videoTlsInsecure: v }); setTested({}); }} />
+                <span className="small">Trust this host&rsquo;s certificate even if it cannot be verified</span>
+              </div>
+            )}
+            <div className="row">
+              <Toggle checked={Boolean(f.videoUseTor)} onChange={(v) => { setF({ ...f, videoUseTor: v }); setTested({}); }} />
+              <span className="small">Reach the video host through Tor</span>
+            </div>
+          </div>
+        </>
+      )}
+      <div className="form-row mt-8">
+        <Field label="Model" hint="Exactly as that host names it.">
+          <Input value={f.videoModel ?? ''} onChange={(e) => setF({ ...f, videoModel: e.target.value })} placeholder="sora-2" />
+        </Field>
+        <Field label="Seconds" hint="How long a clip the composer asks for. Hosts accept only certain lengths; 4 to 12 is the usual range.">
+          <Input type="number" min={1} max={60} value={f.videoSeconds ?? 4} onChange={(e) => setF({ ...f, videoSeconds: Number(e.target.value) || 4 })} style={{ maxWidth: 120 }} />
+        </Field>
+        <Field label="Default size" hint="Empty means whatever the host defaults to.">
+          <Input value={f.videoSize ?? ''} onChange={(e) => setF({ ...f, videoSize: e.target.value })} placeholder="1280x720" />
+        </Field>
+      </div>
+      <div className="row mt-8 gap-8">
+        <Button variant="primary" onClick={() => save({
+          videoProvider: f.videoProvider, videoBaseUrl: f.videoBaseUrl, videoApiKey: videoKey || undefined,
+          videoModel: f.videoModel, videoSeconds: Number(f.videoSeconds) || 4, videoSize: f.videoSize,
+          videoTlsInsecure: Boolean(f.videoTlsInsecure), videoUseTor: Boolean(f.videoUseTor),
+        })}>Save</Button>
+        {!sharing && <Button variant="ghost" loading={testing === 'video'} disabled={!f.videoBaseUrl} onClick={() => test('video')}>Test connection</Button>}
+        {data.settings.hasVideoApiKey && <Button size="sm" variant="ghost" onClick={() => save({ videoApiKey: null })}>Clear key</Button>}
+        {!sharing && <Health which="video" />}
+      </div>
     </div>
   );
 }

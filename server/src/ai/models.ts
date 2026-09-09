@@ -141,8 +141,24 @@ export const EMBED_MODELS: EmbedModel[] = [
   // model's width, so the 8B builds an index over five times the size of an
   // all-minilm one over the same mailbox.
   {
+    name: 'qwen3-embedding:0.6b', sizeBytes: 0.64e9, needsBytes: 1.1e9, params: '0.6B', contextTokens: 32768,
+    note: 'The Qwen3 family without a graphics card: the same long window and the same query instruction as its siblings, in 1024-wide vectors.',
+  },
+  {
+    name: 'mxbai-embed-large', sizeBytes: 0.67e9, needsBytes: 1.1e9, params: '335M', contextTokens: 512,
+    note: 'Strong English retrieval in a small download, 1024 wide. The 512-token window is the catch: only the opening of a long message reaches the vector.',
+  },
+  {
+    name: 'bge-m3', sizeBytes: 1.2e9, needsBytes: 1.6e9, params: '567M', contextTokens: 8192,
+    note: 'Multilingual retrieval over a hundred languages, 1024 wide. The usual choice for a mailbox that is not mostly English but has no card to give Qwen3.',
+  },
+  {
+    name: 'snowflake-arctic-embed2', sizeBytes: 1.2e9, needsBytes: 1.6e9, params: '568M', contextTokens: 8192,
+    note: 'Multilingual and Matryoshka-trained, 1024 wide. A middle between the tiny defaults and the Qwen3 pair.',
+  },
+  {
     name: 'qwen3-embedding:4b', sizeBytes: 2.5e9, needsBytes: 3.4e9, params: '4B', contextTokens: 32768,
-    note: 'Strong multilingual retrieval, 2560-wide vectors, and a 32k input window so nothing is truncated. Wants a GPU; on CPU the first index pass over a real mailbox is an overnight job.',
+    note: 'Strong multilingual retrieval, 2560-wide vectors, and a window wide enough that Tern sends it the whole of any ordinary message. Wants a GPU; on CPU the first index pass over a real mailbox is an overnight job.',
   },
   {
     name: 'qwen3-embedding:8b', sizeBytes: 4.7e9, needsBytes: 6.2e9, params: '8B', contextTokens: 32768,

@@ -6,7 +6,10 @@
 // nothing. The cases here name the failure each one prevents.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EMBED_CATALOGUE, PROVIDER_PRESETS, embedModelInfo, embedModelsForShape, presetsForSlot } from './providers.js';
+import {
+  EMBED_CATALOGUE, MAX_EMBED_CHARS, MIN_EMBED_CHARS, PROVIDER_PRESETS,
+  embedInputChars, embedModelInfo, embedModelsForShape, presetsForSlot,
+} from './providers.js';
 import { embeddingText } from './llm.js';
 import { endpointHeaders, type ModelEndpoint } from './endpoint.js';
 import { EMBED_MODELS } from './models.js';
@@ -21,12 +24,71 @@ test('every preset names a shape its slot can actually use', () => {
   // button that produces a save error, which is worse than no button.
   const llmShapes = new Set(['ollama', 'openai', 'anthropic']);
   const embedShapes = new Set(['ollama', 'openai', 'gemini', 'voyage']);
+  // Pictures come back either from a path of their own or out of a chat
+  // reply; video only ever from the path shape.
+  const imageShapes = new Set(['openai', 'openai-chat']);
+  const videoShapes = new Set(['openai']);
   for (const p of PROVIDER_PRESETS) {
     assert.doesNotThrow(() => new URL(p.baseUrl), `${p.id}: unusable base URL`);
     assert.ok(p.note.length > 20, `${p.id}: needs a sentence saying what it is`);
     if (p.slots.includes('llm')) assert.ok(llmShapes.has(p.shape), `${p.id} offers ${p.shape} for drafting`);
     if (p.slots.includes('embed')) assert.ok(embedShapes.has(p.shape), `${p.id} offers ${p.shape} for embeddings`);
+    if (p.slots.includes('image')) assert.ok(imageShapes.has(p.shape), `${p.id} offers ${p.shape} for pictures`);
+    if (p.slots.includes('video')) assert.ok(videoShapes.has(p.shape), `${p.id} offers ${p.shape} for video`);
   }
+});
+
+test('a host that cannot draw is not offered for drawing', () => {
+  // The same rule that keeps Anthropic off the embedding list, pointing at
+  // the newest slot. Ollama runs vision models that READ a picture and has no
+  // endpoint that draws one, so offering it here would be a choice that
+  // produces a save followed by a button that always fails.
+  const ollama = PROVIDER_PRESETS.filter((p) => p.shape === 'ollama');
+  assert.ok(ollama.length > 0, 'no Ollama-shaped host at all — this check would report clean on that');
+  for (const p of ollama) {
+    assert.ok(!p.slots.includes('image'), `${p.id} offers Ollama for pictures`);
+    assert.ok(!p.slots.includes('video'), `${p.id} offers Ollama for video`);
+  }
+  // And the chat-completions shape exists only to draw: it is a picture
+  // endpoint wearing a chat endpoint's clothes, and choosing it for drafting
+  // would send a draft into an image parser.
+  const chat = PROVIDER_PRESETS.filter((p) => p.shape === 'openai-chat');
+  assert.ok(chat.length > 0, 'the chat-completions image shape is offered nowhere');
+  for (const p of chat) assert.deepEqual(p.slots, ['image'], `${p.id} offers openai-chat outside pictures`);
+
+  // Somewhere to start for both new slots, so an admin opening either card
+  // finds a host rather than an empty URL box and a guess.
+  assert.ok(presetsForSlot('image').length >= 3, 'fewer than three hosts to start from for pictures');
+  assert.ok(presetsForSlot('video').length >= 1, 'no host to start from for video');
+});
+
+test('a wider input window buys more of the message, up to a stated ceiling', () => {
+  // `contextTokens` was written down, shown in the models table, and read by
+  // nothing: every model got a flat 2,000 characters, so an install that
+  // pulled a 2.5 GB embedder for its 32k window was paying for a window it
+  // was never sent. This is the check that the number now means something.
+  const minilm = embedInputChars('all-minilm');
+  const qwen = embedInputChars('qwen3-embedding:4b');
+  assert.ok(qwen > minilm, `a 32k-window model (${qwen}) gets no more than a 512-token one (${minilm})`);
+
+  // The floor is what every install already had. Narrowing it would mean an
+  // upgrade quietly indexed LESS of each message than the version before it,
+  // which is a regression nobody would see until a search stopped finding
+  // something.
+  for (const m of EMBED_CATALOGUE) {
+    const chars = embedInputChars(m.name);
+    assert.ok(chars >= MIN_EMBED_CHARS, `${m.name}: ${chars} is below what every install already indexed`);
+    assert.ok(chars <= MAX_EMBED_CHARS, `${m.name}: ${chars} is above the stated ceiling`);
+  }
+  // An unknown model — a host's own name for something, or a fine-tune — gets
+  // the floor rather than the ceiling. Guessing generously at a window nobody
+  // has written down would have the far end truncate silently.
+  assert.equal(embedInputChars('somebody-elses-fine-tune'), MIN_EMBED_CHARS);
+  assert.equal(embedInputChars(''), MIN_EMBED_CHARS);
+  // And it follows the aliases, so the same weights get the same budget
+  // whether they were pulled locally or reached over the network.
+  assert.equal(embedInputChars('Qwen/Qwen3-Embedding-4B'), qwen);
+  assert.equal(embedInputChars('qwen3-embedding:4b:latest'), qwen);
 });
 
 test('the two embedding-only shapes are never offered for drafting, and Anthropic never for embeddings', () => {
@@ -62,6 +124,12 @@ test('an embedder is recognised under every name its hosts give it', () => {
   assert.equal(embedModelInfo('Qwen/Qwen3-Embedding-8B')?.dims, 4096);
   assert.equal(embedModelInfo('qwen/qwen3-embedding-8b')?.dims, 4096);
   assert.equal(embedModelInfo('qwen3-embedding:4b')?.dims, 2560);
+  assert.equal(embedModelInfo('qwen3-embedding:0.6b')?.dims, 1024);
+  assert.equal(embedModelInfo('Qwen/Qwen3-Embedding-0.6B')?.dims, 1024);
+  assert.equal(embedModelInfo('bge-m3')?.dims, 1024);
+  assert.equal(embedModelInfo('BAAI/bge-m3')?.dims, 1024);
+  assert.equal(embedModelInfo('mxbai-embed-large')?.dims, 1024);
+  assert.equal(embedModelInfo('snowflake-arctic-embed2')?.dims, 1024);
   assert.equal(embedModelInfo('text-embedding-3-large')?.dims, 3072);
   assert.equal(embedModelInfo('gemini-embedding-2')?.dims, 3072);
   assert.equal(embedModelInfo('voyage-3-large')?.dims, 1024);
@@ -104,6 +172,18 @@ test('a search carries a task instruction and the mailbox it is searched against
   for (const model of ['qwen3-embedding:8b', 'Qwen/Qwen3-Embedding-4B', 'gemini-embedding-2']) {
     assert.match(embeddingText('invoices from March', model, 'query'), /^Instruct: .+\nQuery: invoices from March$/, model);
     assert.equal(embeddingText('Re: your invoice', model, 'document'), 'Re: your invoice', model);
+  }
+  // Every name the Qwen3 family goes by, from the catalogue rather than from a
+  // list written out here — a model added with an alias the prefix does not
+  // match would be a whole family of embedders quietly searched without the
+  // instruction they are trained to expect.
+  const qwen = EMBED_CATALOGUE.filter((m) => /qwen3/i.test(m.name));
+  assert.ok(qwen.length >= 3, 'the Qwen3 embedders are no longer in the catalogue');
+  for (const m of qwen) {
+    for (const name of [m.name, ...(m.alternateNames ?? [])]) {
+      assert.match(embeddingText('invoices', name, 'query'), /^Instruct: /, name);
+      assert.equal(embeddingText('invoices', name, 'document'), 'invoices', name);
+    }
   }
   // gemini-embedding-001 DOES take a task-type parameter, so it must not be
   // given the instruction in words as well.

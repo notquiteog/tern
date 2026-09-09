@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EMBED_DIMS, fromBuffer, project, rotationFor, similarity, toBuffer, walshHadamard } from './embeddings.js';
+import { EMBED_CATALOGUE } from '../ai/providers.js';
 
 const DEK = Buffer.alloc(32, 7);
 const OTHER = Buffer.alloc(32, 11);
@@ -149,4 +150,92 @@ test('an empty vector stores as zeros and matches nothing', () => {
   const q = project(rot, new Float64Array(768));
   assert.ok([...q].every((x) => x === 0));
   assert.equal(similarity(q, project(rot, fakeEmbedding(1))), 0);
+});
+
+// ---------- Every embedder Tern offers, not just the default ----------
+//
+// The projection was only ever exercised at 768, which is the width of the
+// two small Ollama models and of nothing else in the catalogue. Everything
+// worth pointing meaning search at is somewhere between 384 and 4096 —
+// Qwen3-Embedding-4B is 2560, the 8B is 4096, OpenAI's large is 3072 — and
+// each of those pads to a different power of two and keeps a different subset
+// of coordinates. A width that failed would fail silently: `project` would
+// throw during a background index pass, or worse, return something that
+// scores plausibly and ranks wrongly.
+
+test('every embedder in the catalogue has a usable rotation', () => {
+  assert.ok(EMBED_CATALOGUE.length >= 8, 'the catalogue is empty — this check would report clean on that');
+  for (const m of EMBED_CATALOGUE) {
+    const rot = rotationFor(DEK, m.dims);
+    assert.ok(rot.padded >= m.dims, `${m.name}: padded to ${rot.padded}, below its own ${m.dims}`);
+    assert.equal(rot.padded & (rot.padded - 1), 0, `${m.name}: padded width is not a power of two`);
+    assert.equal(rot.dims, Math.min(EMBED_DIMS, rot.padded), `${m.name}: unexpected stored width`);
+    const q = project(rot, fakeEmbedding(5, m.dims));
+    assert.equal(q.length, rot.dims, `${m.name}: stored the wrong number of coordinates`);
+    assert.ok(Math.abs(similarity(q, q) - 1) < 0.02, `${m.name}: a vector is not maximally similar to itself`);
+  }
+});
+
+test('ranking survives the projection at every catalogue width', () => {
+  // The property the whole feature rests on, checked per model rather than
+  // once at 768.
+  //
+  // Two claims, and the second is the one that matters. The absolute error is
+  // bounded — the projection estimates an inner product from 256 coordinates,
+  // so its standard deviation is around 1/16 whatever came in, and 0.15 is a
+  // little over two of those. But search does not read an absolute number: it
+  // sorts. So the ordering is asserted outright, because a projection that
+  // was accurate to a hundredth and reordered two results would be useless,
+  // and one that is out by a tenth and never reorders is fine.
+  const TOLERANCE = 0.15;
+  for (const m of EMBED_CATALOGUE) {
+    const rot = rotationFor(DEK, m.dims);
+    const base = fakeEmbedding(3, m.dims);
+    const far = fakeEmbedding(99, m.dims);
+    const scores: number[] = [];
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const other = blend(base, far, t);
+      const before = unitCosine(base, other);
+      const after = similarity(project(rot, base), project(rot, other));
+      assert.ok(
+        Math.abs(before - after) < TOLERANCE,
+        `${m.name} (${m.dims}) at t=${t}: cosine ${before.toFixed(3)} became ${after.toFixed(3)}`,
+      );
+      scores.push(after);
+    }
+    for (let i = 1; i < scores.length; i++) {
+      assert.ok(scores[i] < scores[i - 1],
+        `${m.name} (${m.dims}): a less related vector scored higher (${scores[i - 1].toFixed(3)} then ${scores[i].toFixed(3)})`);
+    }
+    // And the two ends stay on the right sides of the threshold meaning
+    // search actually uses, which is what "it still works" means in practice.
+    assert.ok(scores[0] > 0.9, `${m.name}: an identical vector scored only ${scores[0].toFixed(3)}`);
+    assert.ok(scores[scores.length - 1] < 0.28, `${m.name}: an unrelated vector scored ${scores[scores.length - 1].toFixed(3)}, above the search threshold`);
+  }
+});
+
+test('the stored width says nothing about which model made the row', () => {
+  // The reason `semanticSearch` scopes its scan by model NAME and not by
+  // `dims`, written down as a test because the comment that said otherwise
+  // was wrong for a year.
+  //
+  // Every vector is projected to EMBED_DIMS regardless of what came in, so an
+  // all-minilm row and a Qwen3-Embedding-4B row are both 256 bytes wide and a
+  // `WHERE dims = ?` clause matches both. Their rotations are derived from
+  // their INPUT widths, so they live in different spaces: scoring one against
+  // the other's needle is noise. Over a large mailbox some of that noise
+  // clears the score threshold and comes back as a confident result about an
+  // unrelated message.
+  const widths = [...new Set(EMBED_CATALOGUE.map((m) => m.dims))];
+  assert.ok(widths.length >= 4, 'the catalogue no longer has a spread of widths to check');
+  const stored = widths.map((d) => project(rotationFor(DEK, d), fakeEmbedding(17, d)).length);
+  assert.equal(new Set(stored).size, 1, `stored widths differ across models (${stored.join(', ')}) — this test’s premise has changed`);
+  assert.equal(stored[0], EMBED_DIMS);
+
+  // And the geometry really is unrelated, which is what makes matching across
+  // them wrong rather than merely untidy.
+  const small = project(rotationFor(DEK, 384), fakeEmbedding(17, 384));
+  const large = project(rotationFor(DEK, 2560), fakeEmbedding(17, 2560));
+  assert.ok(Math.abs(similarity(small, large)) < 0.25,
+    'the same seed under two model widths correlates, which would make the mixing harmless — it is not');
 });

@@ -11,7 +11,18 @@ test('the models for meaning search are a separate list from the ones that write
   // model — a model that cannot generate a word.
   const writing = new Set(CURATED_MODELS.map((m) => m.name));
   for (const e of EMBED_MODELS) assert.equal(writing.has(e.name), false, e.name);
-  assert.deepEqual(EMBED_MODELS.map((m) => m.name), ['all-minilm', 'nomic-embed-text', 'embeddinggemma', 'qwen3-embedding:4b', 'qwen3-embedding:8b']);
+  assert.deepEqual(EMBED_MODELS.map((m) => m.name), [
+    'all-minilm', 'nomic-embed-text', 'embeddinggemma', 'qwen3-embedding:0.6b',
+    'mxbai-embed-large', 'bge-m3', 'snowflake-arctic-embed2',
+    'qwen3-embedding:4b', 'qwen3-embedding:8b',
+  ]);
+  // And in that order for a reason: the table is drawn in list order and the
+  // decision an admin is making is "what fits on this box", so the cheapest
+  // thing that could work has to be at the top. A model appended to the end
+  // because that is where the cursor was would put a 4.7 GB pull above a
+  // 670 MB one.
+  const sizes = EMBED_MODELS.map((m) => m.sizeBytes);
+  assert.deepEqual(sizes, [...sizes].sort((a, b) => a - b), 'the embedders are not ordered by download size');
 });
 
 test('an embedding model is recognised whether or not Ollama tagged it', () => {

@@ -79,13 +79,21 @@ test('every mailbox read names its reader', () => {
 
 test('every generation carries a consent', () => {
   const offenders: string[] = [];
+  let seen = 0;
   for (const { file, text } of sources()) {
-    if (file === 'ai/llm.ts') continue; // the definition itself
-    // Each call to chat/chatStream/embed, from the opening paren to the
-    // matching one, must carry a consent. chat and chatStream take theirs as
-    // a field of the options object; embed takes the texts first and the
-    // consent second, so both spellings count.
-    for (const m of text.matchAll(/\b(chat|chatStream|embed)\(/g)) {
+    if (file === 'ai/llm.ts' || file === 'ai/media.ts') continue; // the definitions themselves
+    // Each call to chat/chatStream/embed/generateImage/startVideo, from the
+    // opening paren to the matching one, must carry a consent. chat and
+    // chatStream take theirs as a field of the options object; embed and the
+    // two media calls take their subject first and the consent second, so both
+    // spellings count.
+    //
+    // The two media names are here because a rule that lists the functions it
+    // binds is a rule you leave by adding a function. Drawing a picture on
+    // somebody's behalf reaches a model and costs their administrator money;
+    // it is the same class of thing as a draft, and it should not have been
+    // possible to add it outside the gate by writing a new verb.
+    for (const m of text.matchAll(/\b(chat|chatStream|embed|generateImage|startVideo)\(/g)) {
       const start = m.index! + m[0].length;
       let depth = 1, i = start;
       while (i < text.length && depth > 0) {
@@ -95,11 +103,16 @@ test('every generation carries a consent', () => {
         i++;
       }
       const args = text.slice(start, i - 1);
+      seen++;
       if (!/consent\s*:/.test(args) && !/capability\s*:/.test(args) && !/evalConsent\(/.test(args)) {
         offenders.push(`${file}: ${m[1]}(${args.slice(0, 70).replace(/\s+/g, ' ')}…)`);
       }
     }
   }
+  // A scan that matched nothing produces an empty offender list, which is
+  // exactly what "clean" looks like. Far under the real figure, so ordinary
+  // edits never approach it.
+  assert.ok(seen >= 15, `only ${seen} model calls found at all — the scan has stopped matching, and this check would report clean on that`);
   assert.deepEqual(offenders, [], `every model call needs a consent:\n${offenders.join('\n')}`);
 });
 

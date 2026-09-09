@@ -10,7 +10,13 @@ import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
-import { EMBED_CATALOGUE, PROVIDER_PRESETS } from '../ai/providers.js';
+import { EMBED_CATALOGUE, PROVIDER_PRESETS, presetsForSlot } from '../ai/providers.js';
+import {
+  generateImage, getMediaSettings, imageEndpoint, isValidSize, mediaDefaults, mediaHealth,
+  saveMediaSettings, startVideo, videoEndpoint, cancelVideoJob, getVideoJob, listVideoJobs,
+  watchVideoJob, type DeliveredUpload, type GeneratedMedia, type MediaSettings,
+} from '../ai/media.js';
+import { scrubMedia } from '../services/scrub.js';
 import { getCommitment } from '../services/commitments.js';
 import { config } from '../config.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
@@ -19,7 +25,7 @@ import { rateLimit } from '../util/rateLimit.js';
 import { logger } from '../log.js';
 import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
-import { requireCapability } from '../services/capabilities.js';
+import { adminEnabled, requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
 import { invalidateVectorsFrom } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
@@ -331,6 +337,240 @@ aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
   const trial = { ...current, ...b, apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey) };
   if (!trial.baseUrl) throw badRequest('Give the transcriber address first');
   res.json({ health: await voiceHealth(trial), local: trial.useTor ? false : await isLocalReach(trial.baseUrl) });
+});
+
+// ---------- Pictures and video ----------
+//
+// Two connections and two switches, because most hosts serve one of the two
+// and an install that draws pictures locally while buying video by the second
+// is the ordinary arrangement rather than the strange one. Everything below
+// reads `ai/media.ts`, which owns the connections; nothing here builds a
+// request to a model server.
+
+function mediaView(m: MediaSettings) {
+  // Both keys stripped, not just the first. `videoApiKey` is a credential for
+  // somebody's model server exactly as `apiKey` is, and a rest-spread that
+  // names only one of them is how the second quietly becomes readable by every
+  // admin page load — the same mistake `/status` records having nearly made
+  // with `embedApiKey`.
+  const { apiKey, videoApiKey, ...safe } = m;
+  return { ...safe, hasApiKey: Boolean(apiKey), hasVideoApiKey: Boolean(videoApiKey) };
+}
+
+// `isLocalReach` resolves the address, outside any proxy. With Tor on that
+// announces the host's name to this machine's resolver, which is exactly the
+// disclosure the switch exists to prevent — so it is not asked, and the answer
+// is the one routing through Tor makes true anyway.
+const reachOf = async (e: { useTor: boolean; baseUrl: string }) =>
+  (e.useTor ? false : (e.baseUrl ? await isLocalReach(e.baseUrl) : null));
+
+aiRouter.get('/media', requireAdmin, async (_req, res) => {
+  const m = await getMediaSettings();
+  const image = imageEndpoint(m);
+  const video = videoEndpoint(m);
+  res.json({
+    settings: mediaView(m),
+    health: {
+      image: image.baseUrl ? await mediaHealth(image) : null,
+      // Skipped when video shares the image connection: it is the same socket
+      // to the same host, and asking twice would double every page load for
+      // an answer already on the screen.
+      video: m.videoProvider === 'same' ? null : (video.baseUrl ? await mediaHealth(video) : null),
+    },
+    local: { image: await reachOf(image), video: await reachOf(video) },
+    presets: { image: presetsForSlot('image'), video: presetsForSlot('video') },
+    defaults: (({ apiKey: _k, videoApiKey: _v, ...d }) => d)(mediaDefaults()),
+  });
+});
+
+const mediaBody = z.object({
+  images: z.boolean().optional(),
+  videos: z.boolean().optional(),
+  provider: z.enum(['openai', 'openai-chat']).optional(),
+  baseUrl: z.string().url().max(300).refine(httpUrl, 'The address must start with http:// or https://').or(z.literal('')).optional(),
+  // Blank leaves the stored key alone; clearing one is asking for it to be
+  // cleared, which is what `null` says here.
+  apiKey: z.string().max(500).nullable().optional(),
+  tlsInsecure: z.boolean().optional(),
+  useTor: z.boolean().optional(),
+  imageModel: z.string().max(200).optional(),
+  imageSize: z.string().max(20).refine(isValidSize, 'A size looks like 1024x1024, or leave it empty').optional(),
+  // Video's own connection. `same` is the default and takes the image
+  // connection whole; the fields below are only read when it is not.
+  videoProvider: z.enum(['same', 'openai']).optional(),
+  videoBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The address must start with http:// or https://').optional(),
+  videoApiKey: z.string().max(500).nullable().optional(),
+  videoTlsInsecure: z.boolean().optional(),
+  videoUseTor: z.boolean().optional(),
+  videoModel: z.string().max(200).optional(),
+  videoSeconds: z.number().int().min(1).max(60).optional(),
+  videoSize: z.string().max(20).refine(isValidSize, 'A size looks like 1280x720, or leave it empty').optional(),
+});
+
+/** Blank means "leave the stored key alone"; null means "clear it". */
+function keyPatch(patch: Record<string, unknown>, field: string, value: string | null | undefined): void {
+  if (value === null) patch[field] = '';
+  else if (value) patch[field] = value;
+  else delete patch[field];
+}
+
+aiRouter.put('/media', requireAdmin, async (req, res) => {
+  const b = parse(mediaBody, req.body);
+  const patch: Partial<MediaSettings> = { ...b, apiKey: undefined, videoApiKey: undefined };
+  keyPatch(patch as Record<string, unknown>, 'apiKey', b.apiKey);
+  keyPatch(patch as Record<string, unknown>, 'videoApiKey', b.videoApiKey);
+  const next = await saveMediaSettings(patch);
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.media_updated',$2)`, [
+    req.user!.id,
+    // The audit row records THAT a key changed, never the key. An audit log is
+    // long-lived, widely readable, and the last place a credential should end
+    // up.
+    JSON.stringify({
+      ...b,
+      apiKey: b.apiKey ? '(set)' : b.apiKey === null ? '(cleared)' : undefined,
+      videoApiKey: b.videoApiKey ? '(set)' : b.videoApiKey === null ? '(cleared)' : undefined,
+    }),
+  ]);
+  const image = imageEndpoint(next);
+  res.json({
+    settings: mediaView(next),
+    local: { image: await reachOf(image), video: await reachOf(videoEndpoint(next)) },
+    health: { image: image.baseUrl ? await mediaHealth(image) : null, video: null },
+  });
+});
+
+// Try an address before storing it, so a wrong one is a message on the form
+// rather than a button that fails for everybody.
+aiRouter.post('/media/test', requireAdmin, async (req, res) => {
+  const b = parse(mediaBody.partial().extend({ which: z.enum(['image', 'video']).default('image') }), req.body);
+  const current = await getMediaSettings();
+  const trial: MediaSettings = {
+    ...current, ...b,
+    apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey),
+    videoApiKey: b.videoApiKey === null ? '' : (b.videoApiKey || current.videoApiKey),
+  };
+  const e = b.which === 'video' ? videoEndpoint(trial) : imageEndpoint(trial);
+  if (!e.baseUrl) throw badRequest('Give the address first');
+  res.json({ health: await mediaHealth(e), local: await reachOf(e) });
+});
+
+// What the composer needs to know: whether the buttons should be there at
+// all, and what will answer. Members see this; the address, the key and the
+// catalogue stay with the admin routes above.
+aiRouter.get('/media/status', async (req, res) => {
+  const m = await getMediaSettings();
+  // The install's switch only. Whether this particular person has consented
+  // is already in the features context every page holds, and answering it
+  // twice invites a screen that trusts the staler of the two.
+  const on = await adminEnabled('ai.media');
+  res.json({
+    images: on && m.images && Boolean(m.imageModel),
+    videos: on && m.videos && Boolean(m.videoModel),
+    imageModel: m.imageModel,
+    videoModel: m.videoModel,
+    videoSeconds: m.videoSeconds,
+    // Whether the prompt is going to leave this box. The composer says so
+    // beside the button rather than leaving somebody to infer it from an
+    // address they cannot see.
+    local: { image: await reachOf(imageEndpoint(m)), video: await reachOf(videoEndpoint(m)) },
+  });
+});
+
+/**
+ * A generated file, filed where an attachment goes.
+ *
+ * The same table, the same metadata scrub and the same delete path as a photo
+ * somebody dragged in, so everything downstream — the composer's attachment
+ * card, the inline `cid:` part, the draft's `inline_upload_ids`, the sweep
+ * that removes an abandoned draft's uploads — needs to know nothing about
+ * where the bytes came from.
+ *
+ * The scrub is not ceremony on a file this server just received: several
+ * hosts write the prompt into the picture's own metadata, and a prompt is
+ * somebody's sentence. Stripping it here means it does not travel with the
+ * message.
+ */
+async function fileGenerated(userId: number, media: GeneratedMedia): Promise<DeliveredUpload & { content_type: string }> {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const dot = media.filename.lastIndexOf('.');
+  const ext = dot > 0 ? media.filename.slice(dot) : '';
+  const filename = `${dot > 0 ? media.filename.slice(0, dot) : media.filename}-${stamp}${ext}`;
+  const scrub = scrubMedia(media.data, media.contentType, filename);
+  const rows = await query<any>(
+    'INSERT INTO uploads (user_id, filename, content_type, size, data) VALUES ($1,$2,$3,$4,$5) RETURNING id, filename, content_type, size',
+    [userId, filename, media.contentType, scrub.data.length, scrub.data],
+  );
+  return { ...rows[0], contentType: rows[0].content_type };
+}
+
+aiRouter.post('/media/image', requireCapability('ai.media'), powGuard('ai'),
+  rateLimit({ name: 'ai-image', perMinute: 8, message: 'Too many pictures at once; wait a moment' }),
+  async (req, res) => {
+    const b = parse(z.object({
+      prompt: z.string().min(2).max(4000),
+      size: z.string().max(20).refine(isValidSize, 'A size looks like 1024x1024').optional(),
+    }), req.body);
+    const media = await generateImage(b.prompt, { userId: req.user!.id, capability: 'ai.media' }, { size: b.size });
+    const upload = await fileGenerated(req.user!.id, media);
+    log.info('picture generated', { user: req.user!.id, model: media.model, bytes: upload.size });
+    res.json({ upload, model: media.model, revisedPrompt: media.revisedPrompt ?? null });
+  });
+
+// Video is a job rather than a request: a few seconds of it is minutes of
+// somebody else's cluster. Starting one hands back a handle; the stream below
+// follows it, and dropping that stream does not stop the work.
+aiRouter.post('/media/video', requireCapability('ai.media'), powGuard('ai'),
+  rateLimit({ name: 'ai-video', perMinute: 3, message: 'Too many videos at once; wait a moment' }),
+  async (req, res) => {
+    const b = parse(z.object({
+      prompt: z.string().min(2).max(4000),
+      seconds: z.number().int().min(1).max(60).optional(),
+      size: z.string().max(20).refine(isValidSize, 'A size looks like 1280x720').optional(),
+    }), req.body);
+    const userId = req.user!.id;
+    const job = await startVideo(b.prompt, { userId, capability: 'ai.media' },
+      async (media) => fileGenerated(userId, media),
+      { seconds: b.seconds, size: b.size });
+    res.json({ job });
+  });
+
+aiRouter.get('/media/video', requireCapability('ai.media'), (req, res) => {
+  res.json({ jobs: listVideoJobs(req.user!.id) });
+});
+
+aiRouter.get('/media/video/:id', requireCapability('ai.media'), (req, res) => {
+  const job = getVideoJob(req.user!.id, String(req.params.id));
+  if (!job) throw notFound('No such generation');
+  res.json({ job });
+});
+
+// Watching one, over SSE. The stream is a subscription and not the work: a
+// page that reloads reattaches and sees where the job is, and a page that
+// never comes back leaves it running to completion.
+aiRouter.get('/media/video/:id/stream', requireCapability('ai.media'), (req, res) => {
+  const send = sse(res);
+  // `detach` is declared before the callback that reads it because the first
+  // update arrives SYNCHRONOUSLY, inside `watchVideoJob` — a page reattaching
+  // to a job that has already finished gets its whole answer before this
+  // function has reached its next line, and a `const` assigned afterwards
+  // would be in its temporal dead zone at that moment.
+  let detach: (() => void) | null = null;
+  let ended = false;
+  const finish = () => { if (ended) return; ended = true; detach?.(); res.end(); };
+  const stop = watchVideoJob(req.user!.id, String(req.params.id), (view) => {
+    send(view.state === 'running' ? 'progress' : 'done', view);
+    if (view.state !== 'running') finish();
+  });
+  if (!stop) { send('done', { state: 'error', error: 'No such generation' }); res.end(); return; }
+  detach = stop;
+  // ...and if that synchronous update was already the last one, the stream is
+  // over and there is nothing to unsubscribe.
+  if (ended) { stop(); return; }
+  req.on('close', () => { ended = true; stop(); });
+});
+
+aiRouter.post('/media/video/:id/cancel', requireCapability('ai.media'), (req, res) => {
+  res.json({ cancelled: cancelVideoJob(req.user!.id, String(req.params.id)) });
 });
 
 // ---------- The transcriber's models ----------

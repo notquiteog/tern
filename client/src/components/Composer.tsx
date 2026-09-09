@@ -15,6 +15,7 @@ import { useMailPrefs } from '../state/mailPrefs';
 import { AddressInput } from './AddressInput';
 import { Editor, type EditorHandle } from './Editor';
 import { AiPanel } from './AiPanel';
+import { GenerateMediaButton } from './GenerateMedia';
 import { DictateButton } from './Dictate';
 import { Avatar, Button, IconButton, Menu, MenuItem, Modal, Input, Field } from './ui';
 import { cls, fmtBytes, localDateTimeValue, textToHtml, type Addr } from '../lib/format';
@@ -381,6 +382,14 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
           </span>
           <IconButton label="Attach files" onClick={() => fileInput.current?.click()}><Paperclip size={17} /></IconButton>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+          {/* A generated picture is filed exactly as a dragged-in one is —
+              same uploads row, same metadata scrub, same delete on discard —
+              so everything below this line, including the `cid:` part the
+              sender builds and the sweep that cleans up an abandoned draft,
+              needs to know nothing about where the bytes came from. */}
+          <GenerateMediaButton
+            onInsert={(url, alt) => { editor.current?.insertHtml(`<img src="${url}" alt="${alt.replace(/"/g, '')}" style="max-width:100%">`); html.current = editor.current?.getHtml() ?? html.current; setDirty(true); }}
+            onAttach={(u) => { setAttachments((a) => [...a, u as Upload]); setDirty(true); }} />
           {templates.length > 0 && (
             <Menu trigger={(open) => <IconButton label="Insert template" onClick={open}><FileText size={17} /></IconButton>} width={300}>
               {/* Ordered by what has actually been answered, not by whatever

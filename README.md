@@ -129,11 +129,13 @@ Nothing leaves your server except the mail itself.
   model frees its memory first and reports a refusal rather than failing
   quietly.
 - **One connection per kind of model.** The server that writes, the server that
-  embeds and the server that transcribes each get their own API shape, address,
-  key, certificate rule and Tor switch — because they are routinely three
-  different machines, and a 4.5 GB VPS cannot hold a chat model and a whisper
-  model at once. Embeddings default to sharing the language model's connection
-  *entirely*, which is the common case; the transcriber shares nothing.
+  embeds, the server that transcribes, the server that draws and the server
+  that films each get their own API shape, address, key, certificate rule and
+  Tor switch — because they are routinely that many different machines, and a
+  4.5 GB VPS cannot hold a chat model and a whisper model at once, let alone a
+  diffusion model. Embeddings default to sharing the language model's
+  connection *entirely*, and video to sharing the image host's, which are the
+  common cases; the transcriber shares nothing.
 - **Reachable through Tor, as an opt-in toggle, per connection.** Off by default and pointless
   for a model on this box; the case it is for is a model on somebody else's
   hardware, which otherwise logs this server's address with every request. It
@@ -150,6 +152,20 @@ Nothing leaves your server except the mail itself.
   no embeddings endpoint, so meaning search gets its own server setting there:
   draft on Anthropic, embed on the Ollama that was already running, or leave
   it unset and search falls back to matching words.
+- **Meaning search runs on the embedder you choose**, not only the small
+  default. Ollama's `all-minilm`, `nomic-embed-text`, `embeddinggemma`,
+  `bge-m3`, `mxbai-embed-large` and `snowflake-arctic-embed2`; the whole Qwen3
+  family (0.6B, 4B and 8B, locally or through Together, Fireworks, OpenRouter
+  and NanoGPT); OpenAI's `text-embedding-3-small` and `-large`; Gemini
+  Embedding 2 and Voyage. The vector width, the input window and what the
+  index will cost on disk are shown before you pick one. A model with a wide
+  window is sent more of each message than a 512-token one — the window is
+  what decides it, rather than a constant — and the Qwen3 and Gemini models
+  are given the task instruction their training expects on a search and
+  deliberately not on a stored message. Changing the model queues a rebuild;
+  until it finishes, search answers from what has been rebuilt rather than
+  scoring the old model's vectors, which are in a different geometry and would
+  come back as confident nonsense.
 
 **Accounts and admin**
 - Sign in with username and password, TOTP two-factor with recovery codes,
@@ -224,6 +240,19 @@ build. A test then walks the source for the one hole types cannot close.
   invitation card, the assistant and the daily brief all read real free/busy.
   Only *when* you are busy, never what you are doing. See
   [docs/CALENDAR.md](docs/CALENDAR.md).
+- **Pictures and video** (off, and needs an image host). Make a picture — or a
+  few seconds of video — from a sentence, in the composer, and put it in the
+  message or attach it. Filed as an ordinary attachment: the same metadata
+  scrub, the same `cid:` part, the same delete. There is no bundled image
+  model and there is not going to be one, so this is the one feature whose
+  host is somebody else's hardware by default; the panel says so beside the
+  button, and the connection has its own Tor switch like every other. Reachable
+  through `/v1/images/generations` (OpenAI, Together, Fireworks, NanoGPT, a
+  local ComfyUI or SwarmUI behind their shims) or through `/v1/chat/completions`
+  (OpenRouter, Google), and video through `/v1/videos`, which is a job rather
+  than a request — closing the composer does not lose one. Only ever from a
+  composer with a person in front of it: a sequence step cannot generate a
+  picture, because nothing can read one and say it is fit to send.
 - **Dictation** (optional container). Speak into any text box. The recording
   never touches disk on either side and the transcript is never stored. The
   transcriber can be the bundled whisper.cpp container or one on another

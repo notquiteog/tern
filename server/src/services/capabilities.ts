@@ -38,6 +38,7 @@ export const CAPABILITIES = [
   'ai.responders',
   'ai.campaigns',
   'ai.playground',
+  'ai.media',
   // New.
   'semantic',
   'triage',
@@ -102,6 +103,11 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
     id: 'ai.playground', label: 'Model playground',
     what: 'The admin prompt bench. Sends whatever is typed into it to the model; never reads a mailbox.',
     readsMail: false, usesAi: true, heavy: false, adminOnly: true,
+  },
+  'ai.media': {
+    id: 'ai.media', label: 'Pictures and video',
+    what: 'Makes a picture or a short video from a sentence you type, to put in a message. Your sentence goes to whichever image host the administrator has configured — which is somebody else’s hardware unless they say otherwise — and the file comes back here. Nothing from your mailbox is sent.',
+    readsMail: false, usesAi: true, heavy: false,
   },
   semantic: {
     id: 'semantic', label: 'Meaning search',

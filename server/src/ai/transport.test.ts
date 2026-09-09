@@ -227,7 +227,7 @@ test('no call to a model server is written without its endpoint’s connection',
  * matching the word "ollama" would flag every admin hint string that mentions
  * it by name, which is most of `routes/ai.ts`.
  */
-const MODEL_PATHS = ['/api/chat', '/api/embed', '/api/embeddings', '/api/generate', '/api/tags', '/api/ps', '/api/show', '/api/pull', '/v1/chat/completions', '/v1/embeddings', '/v1/messages', '/v1/models'];
+const MODEL_PATHS = ['/api/chat', '/api/embed', '/api/embeddings', '/api/generate', '/api/tags', '/api/ps', '/api/show', '/api/pull', '/v1/chat/completions', '/v1/embeddings', '/v1/messages', '/v1/models', '/v1/images/generations', '/v1/videos'];
 
 /**
  * Files outside the bound set that may name one anyway.

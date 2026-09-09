@@ -93,6 +93,25 @@ browser, goes up as the request body, and the server zeroes that buffer in a
 not stored, not logged, and not attached to anything. The only trace a
 dictation leaves is a log line with a byte count and a duration.
 
+## Pictures and video, if they are configured
+
+The one feature here whose model is somebody else's machine by default. There
+is no bundled image server, so the prompt someone types in the composer goes
+to whatever host the administrator configured — and that is said plainly on
+the card an administrator sets up and again beside the box a person types in,
+rather than left to be inferred from an address only an administrator can see.
+
+What goes: the sentence, the size, and nothing else. No message, no thread, no
+contact, no address book. The connection has its own Tor switch, so an install
+that would rather not hand its own address to a company it is buying pictures
+from can turn that on for this connection alone.
+
+What comes back is stripped before it is stored. Several hosts write the
+prompt into the picture's own EXIF; that goes through the same metadata scrub
+as a photo dragged in from a phone, so it does not travel with the message.
+The prompt itself is not stored anywhere on this server: it is not written to
+the upload row, not logged, and not kept with the generation.
+
 ## What the model is holding
 
 A generation is a session, and it ends when the last token arrives. The

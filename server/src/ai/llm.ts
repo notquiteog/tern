@@ -18,7 +18,7 @@ import {
   endpointHeaders, notConfigured, transportFor as endpointTransport,
   type ModelEndpoint,
 } from './endpoint.js';
-import { embedModelInfo, embedModelsForShape } from './providers.js';
+import { embedInputChars, embedModelInfo, embedModelsForShape } from './providers.js';
 
 const log = logger('ai');
 
@@ -961,7 +961,13 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   // wrong turn here.
   const t = embedEndpoint(s);
   const model = s.embedModel || DEFAULTS.embedModel;
-  const input = texts.map((x) => String(x ?? '').slice(0, 8000)).filter(Boolean);
+  // Cut to what this particular model can hold rather than to a constant. The
+  // constant was 8,000 for everything, which was simultaneously too much for
+  // all-minilm's 512-token window — the tail was sent and silently dropped at
+  // the far end — and beside the point for a 32k one. `embedInputChars` is the
+  // single place that decides, so the indexer and this agree by construction.
+  const limit = embedInputChars(model);
+  const input = texts.map((x) => String(x ?? '').slice(0, limit)).filter(Boolean);
   if (!input.length) return { vectors: [], model, dims: 0 };
   // Named for the setting that fixes it. An admin who hits this has configured
   // a model server — it just cannot embed, and sending them to the base URL
@@ -1428,8 +1434,15 @@ function annotate(m: InstalledModel): InstalledModel {
  * get used and not the language model's.
  */
 function ollamaProbeFor(t: ModelEndpoint): Pick<AiSettings, 'provider' | 'baseUrl' | 'apiKey' | 'tlsInsecure' | 'useTor'> {
+  // The shapes that never appear on a drafting or embedding connection are
+  // folded onto `ollama`, which is only ever used here to pick which health
+  // path to try. `openai-chat` joins them: it exists solely for hosts that
+  // draw pictures through chat completions, and nothing in this file can be
+  // pointed at one — but the enum it comes from is shared, so the compiler is
+  // right to ask, and answering with a guess rather than a case would be how
+  // an image host's probe quietly became a drafting probe later.
   return {
-    provider: t.provider === 'gemini' || t.provider === 'voyage' ? 'ollama' : t.provider,
+    provider: t.provider === 'gemini' || t.provider === 'voyage' || t.provider === 'openai-chat' ? 'ollama' : t.provider,
     baseUrl: t.baseUrl,
     apiKey: t.apiKey,
     tlsInsecure: t.tlsInsecure,
