@@ -1,0 +1,29 @@
+Contains four files from a concurrent session that were staged in the shared
+index when this commit ran, and which this message does not describe:
+
+  server/src/ai/providers.ts       MAX_EMBED_CHARS removed; embedInputChars is
+                                   now the model's own window with only
+                                   MIN_EMBED_CHARS below it. CHARS_PER_TOKEN
+                                   dropped 3.5 -> 2, which matters directly to
+                                   the embedding floor: once the ceiling is
+                                   gone the ratio IS the promise made to the
+                                   far end, and a 32k window plus an optimistic
+                                   ratio turns one long non-Latin message into
+                                   a refused batch on OpenAI, Gemini and Voyage
+                                   (Ollama instead truncates silently).
+  server/src/ai/providers.test.ts  tests for the above, incl. the ratio bound.
+  server/src/e2e/features.e2e.ts   embedders group; proves an 18,000-character
+                                   message now reaches the model whole.
+  server/src/routes/ai.ts          UNRELATED to the embed default: the image
+                                   and video prompt validators moved off a
+                                   max(4000) borrowed from dall-e-3 and applied
+                                   to every host, which was refusing prompts
+                                   gpt-image-1 would have accepted.
+
+Bisecting a picture-generation change to this commit is therefore correct even
+though the message talks about install.sh and config.ts. Nothing was modified
+in transit: the diffs are as that session staged them, and the pushed tree is
+green (669 server, 83 client, both typecheckers).
+
+Left as a note rather than a rebase because the branch is shared and already
+pushed.
