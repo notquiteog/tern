@@ -18,6 +18,7 @@ import {
   endpointHeaders, notConfigured, transportFor as endpointTransport,
   type ModelEndpoint,
 } from './endpoint.js';
+import { embedModelInfo, embedModelsForShape } from './providers.js';
 
 const log = logger('ai');
 
@@ -27,7 +28,13 @@ export type AiProvider = 'ollama' | 'openai' | 'anthropic';
 // `same` is the default and what every install had before this existed. There
 // is deliberately no `anthropic`: the Messages API has no embeddings endpoint
 // at all, so an option for it would be an option that cannot work.
-export type EmbedProvider = 'same' | 'ollama' | 'openai';
+//
+// `gemini` and `voyage` are here and NOT on `AiProvider`, which is the same
+// rule pointing the other way: neither serves chat, so offering either for
+// drafting would be a setting that cannot work either. A test asserts both
+// halves, because the two enums are edited at different times by people
+// thinking about different things.
+export type EmbedProvider = 'same' | 'ollama' | 'openai' | 'gemini' | 'voyage';
 
 export interface AiSettings {
   enabled: boolean;
@@ -851,7 +858,81 @@ export async function chat(opts: ChatOptions): Promise<string> {
 // it first.
 export interface EmbedResult { vectors: number[][]; model: string; dims: number }
 
-export async function embed(texts: string[], consent: AiConsent, signal?: AbortSignal): Promise<EmbedResult> {
+/**
+ * Whether these texts are the thing being searched FOR or the things being
+ * searched THROUGH.
+ *
+ * Retrieval models embed the two differently, and Tern has always known which
+ * it is holding — `indexPass` embeds messages, `semanticSearch` embeds one
+ * query — but until there was somewhere to say so, both went out identically.
+ * On the models below that is a measurable loss of recall rather than a
+ * nicety.
+ */
+export type EmbedPurpose = 'document' | 'query';
+
+/**
+ * The instruction some retrieval models expect in front of a SEARCH.
+ *
+ * Asymmetric on purpose. These models are trained so that a query carries a
+ * task instruction and the documents it is matched against do not; prefixing
+ * both would put the same words in every vector in the mailbox and flatten
+ * exactly the distinction the prefix exists to sharpen.
+ *
+ * Qwen3-Embedding takes it in this documented `Instruct:`/`Query:` form.
+ * Gemini Embedding 2 needs it for a different reason: unlike gemini-embedding-001
+ * it accepts NO task-type parameter at all, and Google's guidance is to put the
+ * task in the text instead — so the parameter became a prompt, and this is
+ * where it goes.
+ *
+ * Voyage is deliberately absent: it takes `input_type` as a real request
+ * field, which is better than a prefix, so `embed` sends that instead.
+ */
+const QUERY_INSTRUCTION = 'Given a search over somebody\'s own email, retrieve the messages that answer it.';
+
+export function embeddingText(text: string, model: string, purpose: EmbedPurpose): string {
+  if (purpose !== 'query') return text;
+  const wantsInstruction = /qwen3[-_]embedding/i.test(model)
+    // The 001 generation DOES take a task type, so it must not be given the
+    // instruction in words as well.
+    || /^(?:models\/)?gemini-embedding-(?!001\b)/i.test(model);
+  return wantsInstruction ? `Instruct: ${QUERY_INSTRUCTION}\nQuery: ${text}` : text;
+}
+
+/**
+ * Google names a model `models/gemini-embedding-2` in its own catalogue and
+ * accepts it either way round. Stripping the prefix here means the setting can
+ * hold whichever form an admin copied, and the path is built once, correctly.
+ */
+function geminiModelId(model: string): string {
+  return String(model ?? '').replace(/^models\//, '');
+}
+
+/**
+ * The vectors out of one reply, whichever shape sent it.
+ *
+ * Ordering is the part worth being careful about. The OpenAI shape is
+ * explicitly allowed to answer out of order and carries an `index` to say so —
+ * a reader that trusted arrival order would build an index where every
+ * message's vector belongs to a different message, which nothing downstream
+ * can detect. Ollama and Google both answer strictly in request order and
+ * carry no index at all, so there, arrival order IS the answer.
+ */
+function readVectors(provider: ApiShapeOf<ModelEndpoint>, j: any): number[][] {
+  if (provider === 'gemini') {
+    return (Array.isArray(j?.embeddings) ? j.embeddings : [])
+      .map((e: any) => (Array.isArray(e?.values) ? e.values : []));
+  }
+  if (provider === 'openai' || provider === 'voyage') {
+    return [...(j?.data ?? [])]
+      .sort((a: any, b: any) => a.index - b.index)
+      .map((d: any, i: number) => (d.index === i && Array.isArray(d.embedding) ? d.embedding : []));
+  }
+  return Array.isArray(j?.embeddings) ? j.embeddings : [];
+}
+
+type ApiShapeOf<T> = T extends { provider: infer P } ? P : never;
+
+export async function embed(texts: string[], consent: AiConsent, signal?: AbortSignal, purpose: EmbedPurpose = 'document'): Promise<EmbedResult> {
   await assertCapability(consent.userId, consent.capability);
   const s = await getAiSettings();
   if (!s.enabled) throw new Error('The model is turned off in Admin → AI model');
@@ -869,7 +950,7 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
   // a model server — it just cannot embed, and sending them to the base URL
   // they are about to go and check would waste the trip.
   if (t.provider === 'anthropic') {
-    throw new Error('Anthropic has no embeddings endpoint. Point "Where embeddings come from" at an Ollama or OpenAI-compatible server in Admin → AI model.');
+    throw new Error('Anthropic has no embeddings endpoint. Point "Where embeddings come from" at an Ollama, OpenAI-compatible, Gemini or Voyage server in Admin → AI model.');
   }
   if (!t.baseUrl) throw new Error(t.inheritedFrom
     ? 'No address is set for the language model, which embeddings are set to share.'
@@ -877,22 +958,58 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
 
   const session = beginSession();
   try {
-    if (t.provider === 'openai') {
+    // One request per shape. The three OpenAI-descended ones differ by a
+    // field; Google's differs by everything — model in the path, a batch of
+    // single-part documents rather than a list of strings, and `values` rather
+    // than `embedding` on the way back.
+    if (t.provider === 'gemini') {
+      const path = `models/${geminiModelId(model)}`;
+      const res = await outboundFetch(`${t.baseUrl}/${path}:batchEmbedContents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
+        // Each entry repeats the model. Google requires it to match the one in
+        // the path and refuses the batch otherwise, which reads as a malformed
+        // body rather than as the redundancy it is.
+        body: JSON.stringify({
+          requests: input.map((text) => ({
+            model: path,
+            content: { parts: [{ text: embeddingText(text, model, purpose) }] },
+          })),
+        }),
+        signal,
+      }, endpointTransport(t)).catch((e) => { throw new Error(reachError(t, e)); });
+      if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status} for embeddings: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+      const vectors = readVectors('gemini', await res.json());
+      return { vectors, model, dims: vectors[0]?.length ?? 0 };
+    }
+    if (t.provider === 'openai' || t.provider === 'voyage') {
       const res = await outboundFetch(`${t.baseUrl}/v1/embeddings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
-        body: JSON.stringify({ model, input }),
+        body: JSON.stringify({
+          model,
+          input: input.map((x) => embeddingText(x, model, purpose)),
+          // The whole reason Voyage is its own shape. A search and a message
+          // are embedded differently by this model, and Tern has always known
+          // which it is holding — until now it had nowhere to say so. Leaving
+          // it off is Voyage's own default and measurably worse.
+          ...(t.provider === 'voyage' ? { input_type: purpose } : {}),
+        }),
         signal,
       }, endpointTransport(t)).catch((e) => { throw new Error(reachError(t, e)); });
       if (!res.ok) throw new Error(`Embedding endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
-      const j: any = await res.json();
-      const vectors = (j.data ?? []).map((d: any) => (Array.isArray(d.embedding) ? d.embedding : []));
+      const vectors = readVectors(t.provider, await res.json());
       return { vectors, model, dims: vectors[0]?.length ?? 0 };
     }
     const res = await outboundFetch(`${t.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
-      body: JSON.stringify({ model, input, keep_alive: keepAliveValue(s.keepAlive), truncate: true }),
+      body: JSON.stringify({
+        model,
+        input: input.map((x) => embeddingText(x, model, purpose)),
+        keep_alive: keepAliveValue(s.keepAlive),
+        truncate: true,
+      }),
       signal,
     }, endpointTransport(t)).catch((e) => { throw new Error(reachError(t, e)); });
     if (!res.ok) {
@@ -900,8 +1017,7 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
       if (res.status === 404) throw new Error(`The embedding model "${model}" is not downloaded. Pull it in Admin → AI model.`);
       throw new Error(`Ollama returned HTTP ${res.status} for embeddings: ${body.slice(0, 200)}`);
     }
-    const j: any = await res.json();
-    const vectors: number[][] = Array.isArray(j.embeddings) ? j.embeddings : [];
+    const vectors = readVectors('ollama', await res.json());
     return { vectors, model, dims: vectors[0]?.length ?? 0 };
   } finally {
     // The texts handed in were mail. Same rule as a chat prompt: they do not
@@ -932,9 +1048,16 @@ export async function ollamaHealth(candidate?: AiSettings): Promise<{ ok: boolea
 // What a refusal from the other end most likely means. Written for the two
 // that a remote model server actually produces: a proxy wanting a token, and
 // a base URL with a path or a trailing slash on it.
-export function httpHint(status: number, s: AiSettings): string {
-  if (status === 401 || status === 403) return `HTTP ${status}: that server wants authentication. Put its token in the API key field — it is sent as \`Authorization: Bearer\`.`;
-  if (status === 404) return `HTTP 404: nothing is serving the ${s.provider === 'anthropic' ? 'Messages API' : s.provider === 'openai' ? 'OpenAI-compatible API' : 'Ollama API'} at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
+export function httpHint(status: number, s: { provider: string; baseUrl: string }): string {
+  // Named for the header that connection actually sends. Telling somebody with
+  // a Gemini key to check their bearer token sends them to look at the one
+  // thing that is right.
+  const header = s.provider === 'anthropic' ? '`x-api-key`' : s.provider === 'gemini' ? '`x-goog-api-key`' : '`Authorization: Bearer`';
+  const api = s.provider === 'anthropic' ? 'Messages API'
+    : s.provider === 'gemini' ? 'Gemini API'
+      : s.provider === 'ollama' ? 'Ollama API' : 'OpenAI-compatible API';
+  if (status === 401 || status === 403) return `HTTP ${status}: that server wants authentication. Put its token in the API key field — it is sent as ${header}.`;
+  if (status === 404) return `HTTP 404: nothing is serving the ${api} at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
   if (status === 502 || status === 503 || status === 504) return `HTTP ${status}: a proxy in front of that server could not reach it.`;
   return `HTTP ${status}`;
 }
@@ -972,16 +1095,19 @@ export async function checkProvider(candidate: AiSettings): Promise<ProviderChec
   // the same `{ data: [{ id }] }` envelope, so the two share a branch. What
   // they do not share is the credential header — `providerHeaders` handles
   // that, which is why this reads it rather than building one inline.
-  if (s.provider === 'openai' || s.provider === 'anthropic') {
-    try {
-      const res = await outboundFetch(`${s.baseUrl}/v1/models`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(6000) }, transportFor(s));
-      if (!res.ok) return { ok: false, error: httpHint(res.status, s), cert };
-      const j: any = await res.json().catch(() => null);
-      const models = Array.isArray(j?.data) ? j.data.map((m: any) => String(m?.id ?? '')).filter(Boolean) : undefined;
-      return { ok: true, models, modelInstalled: models ? models.includes(s.model) : undefined, cert };
-    } catch (e) {
-      return { ok: false, error: reachError(s, e), cert };
-    }
+  // Everything that is not Ollama answers a catalogue rather than holding
+  // files, so "does it work" is the same question as "what does it have".
+  // `hostedCatalogue` is the one implementation of that question, shared with
+  // `liveModels` — and it takes an endpoint rather than reading the settings,
+  // which is what lets this check an address the admin has typed but not yet
+  // saved. That property is the entire point of this function: saving first
+  // and reading the status line afterwards unloads the model the install was
+  // using.
+  if (s.provider !== 'ollama') {
+    const cat = await hostedCatalogue(llmEndpoint(s));
+    const models = cat.models.map((m) => m.name);
+    if (!cat.ok) return { ok: false, error: cat.error, models, cert };
+    return { ok: true, models, modelInstalled: models.length ? models.includes(s.model) : undefined, cert };
   }
 
   const health = await ollamaHealth(s);
@@ -1000,11 +1126,28 @@ export async function checkProvider(candidate: AiSettings): Promise<ProviderChec
   }
 }
 
-export interface InstalledModel { name: string; size: number; modified: string; family?: string; parameterSize?: string; quantization?: string; capabilities: string[] }
+export interface InstalledModel {
+  name: string;
+  size: number;
+  modified: string;
+  family?: string;
+  parameterSize?: string;
+  quantization?: string;
+  /**
+   * What the server said this model can do. EMPTY means it did not say, and
+   * an unclassified model is offered for every slot rather than for none:
+   * hiding a model somebody just pulled, with no way to find out why, is a
+   * worse failure than listing one that turns out to be wrong for the job.
+   */
+  capabilities: string[];
+  /** From providers.ts, for the embedders Tern knows. Advisory — see `annotate`. */
+  dims?: number;
+  contextTokens?: number;
+}
 
-export async function listModels(): Promise<InstalledModel[]> {
-  const s = await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(8000) }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
+export async function listModels(endpoint?: ModelEndpoint): Promise<InstalledModel[]> {
+  const s = endpoint ? ollamaProbeFor(endpoint) : await getAiSettings();
+  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: endpointHeaders(endpoint ?? llmEndpoint(s as AiSettings)), signal: AbortSignal.timeout(8000) }, endpointTransport(endpoint ?? llmEndpoint(s as AiSettings))).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok) throw new Error(httpHint(res.status, s));
   const j: any = await res.json();
   // `capabilities` is what separates a model that writes from one that only
@@ -1017,9 +1160,9 @@ export async function listModels(): Promise<InstalledModel[]> {
 // taking; `sizeVram` is how much of that is on a GPU and is 0 on the
 // CPU-only boxes Tern is usually installed on — reporting only the VRAM
 // figure there makes a resident 3 GB model look free.
-export async function loadedModels(): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
-  const s = await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/ps`, { headers: await providerHeaders(s), signal: AbortSignal.timeout(4000) }, transportFor(s));
+export async function loadedModels(endpoint?: ModelEndpoint): Promise<{ name: string; size: number; sizeVram: number; expiresAt: string }[]> {
+  const s = endpoint ?? llmEndpoint(await getAiSettings());
+  const res = await outboundFetch(`${s.baseUrl}/api/ps`, { headers: endpointHeaders(s), signal: AbortSignal.timeout(4000) }, endpointTransport(s));
   if (!res.ok) return [];
   const j: any = await res.json();
   return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size ?? 0, sizeVram: m.size_vram ?? 0, expiresAt: m.expires_at }));
@@ -1044,24 +1187,188 @@ export interface LiveModels {
   models: InstalledModel[];
   loaded: { name: string; size: number; sizeVram: number; expiresAt: string }[];
   at: string;
+  /**
+   * Whether models can be pulled and deleted here. Only an Ollama holds files
+   * on somebody's disk; a hosted API has a catalogue, not an install. The page
+   * draws its pull and delete controls from this rather than re-deciding what
+   * "the provider is ollama" implies, so a second manageable backend later is
+   * one flag rather than a hunt through the UI.
+   */
+  manageable: boolean;
+  /**
+   * Whether this list came from the server or from Tern's own table. True
+   * everywhere except Voyage, which publishes no catalogue endpoint at all —
+   * see `liveModels`. A list presented as live when it is not is how a page
+   * confidently shows a model the server has never heard of.
+   */
+  live: boolean;
 }
 
-export async function liveModels(): Promise<LiveModels> {
+/**
+ * What one hosted API says it has, for any shape that is not Ollama.
+ *
+ * Takes an ENDPOINT rather than reading the settings, and that is the property
+ * that matters: `checkProvider` uses it to test an address an admin has typed
+ * and not yet saved, and `liveModels` uses it for the address that is saved.
+ * One implementation, so the connection test and the model list cannot
+ * disagree about what a provider has — which they did, in an earlier shape
+ * where the test read `/v1/models` and the list simply refused.
+ */
+async function hostedCatalogue(t: ModelEndpoint): Promise<{ ok: boolean; live: boolean; error?: string; models: InstalledModel[] }> {
+  // Voyage publishes no catalogue endpoint at all — there is nothing to ask.
+  // So this is the one list that is not live, and it says so out loud rather
+  // than presenting a table from providers.ts as though it had come from the
+  // server. `ok` is still true: the connection is fine and any model ID can be
+  // typed in.
+  if (t.provider === 'voyage') {
+    return {
+      ok: true,
+      live: false,
+      error: 'Voyage publishes no model list, so these are the ones Tern knows about rather than a live answer. Any other Voyage model ID can be typed in.',
+      models: embedModelsForShape('voyage').map((m) => ({
+        name: m.name, size: 0, modified: '', capabilities: ['embedding'], dims: m.dims, contextTokens: m.contextTokens,
+      })),
+    };
+  }
+
+  // Google's catalogue is its own, and unlike the OpenAI shape it really does
+  // say what each model can do: `supportedGenerationMethods` is what separates
+  // an embedder from a chat model.
+  if (t.provider === 'gemini') {
+    try {
+      const res = await outboundFetch(`${t.baseUrl}/models?pageSize=200`, {
+        headers: endpointHeaders(t), signal: AbortSignal.timeout(8000),
+      }, endpointTransport(t));
+      if (!res.ok) return { ok: false, live: true, error: httpHint(res.status, t), models: [] };
+      const j: any = await res.json();
+      const models = (j?.models ?? [])
+        .filter((m: any) => m?.name)
+        .map((m: any) => {
+          const methods: string[] = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+          return annotate({
+            name: geminiModelId(String(m.name)),
+            size: 0,
+            modified: '',
+            family: 'gemini',
+            // Only embedding is claimed even for a model that also generates:
+            // this connection is wired for batchEmbedContents and nothing
+            // else, so a Gemini chat model listed here would be a choice that
+            // cannot be used. Drafting on Gemini goes through the
+            // OpenAI-compatible preset instead.
+            capabilities: methods.some((x) => /embed/i.test(x)) ? ['embedding'] : [],
+          });
+        })
+        .sort((a: InstalledModel, b: InstalledModel) => a.name.localeCompare(b.name));
+      return { ok: true, live: true, models };
+    } catch (e) {
+      return { ok: false, live: true, error: reachError(t, e), models: [] };
+    }
+  }
+
+  // Anthropic lists models at the same path as the OpenAI shape and returns
+  // the same `{data:[{id}]}` envelope, so the two share a branch. What they do
+  // not share is the credential header — `endpointHeaders` handles that.
+  try {
+    const res = await outboundFetch(`${t.baseUrl}/v1/models`, {
+      headers: endpointHeaders(t), signal: AbortSignal.timeout(8000),
+    }, endpointTransport(t));
+    if (!res.ok) return { ok: false, live: true, error: httpHint(res.status, t), models: [] };
+    const j: any = await res.json().catch(() => null);
+    const models = (j?.data ?? [])
+      .map((m: any) => String(m?.id ?? ''))
+      .filter(Boolean)
+      .sort((a: string, b: string) => a.localeCompare(b))
+      .map((id: string) => annotate({
+        name: id,
+        size: 0,
+        modified: '',
+        // A hosted catalogue says nothing about what a model can do, so
+        // nothing is claimed — and an empty list means "offered for every
+        // slot", not "for none". Anthropic's real limitation is encoded
+        // elsewhere and more strongly: `EmbedProvider` has no `anthropic`, so
+        // its models can never reach the embedding picker at all.
+        capabilities: [],
+      }));
+    return { ok: true, live: true, models };
+  } catch (e) {
+    return { ok: false, live: true, error: reachError(t, e), models: [] };
+  }
+}
+
+export async function liveModels(which: 'llm' | 'embed' = 'llm'): Promise<LiveModels> {
   const s = await getAiSettings();
+  const t = which === 'embed' ? embedEndpoint(s) : llmEndpoint(s);
   const at = new Date().toISOString();
-  const base = { provider: s.provider, baseUrl: s.baseUrl, models: [], loaded: [], at };
-  // Managing models means pulling and deleting them, which only makes sense
-  // for a server holding files on somebody's disk. A hosted API has a
-  // catalogue, not an install — `checkProvider` is what reads that.
-  if (s.provider !== 'ollama') return { ...base, ok: false, error: 'The provider is not Ollama, so it has no model list to manage' };
-  const health = await ollamaHealth(s);
+  const base: Omit<LiveModels, 'ok'> = {
+    provider: t.provider, baseUrl: t.baseUrl, models: [], loaded: [], at, manageable: false, live: true,
+  };
+  if (!t.baseUrl) {
+    return {
+      ...base,
+      ok: false,
+      error: t.inheritedFrom
+        ? 'No address is set for the language model, which embeddings are set to share.'
+        : notConfigured(t),
+    };
+  }
+
+  if (t.provider !== 'ollama') {
+    const cat = await hostedCatalogue(t);
+    return { ...base, ok: cat.ok, live: cat.live, error: cat.error, models: cat.models };
+  }
+
+  const health = await ollamaHealth({ ...s, ...ollamaProbeFor(t) });
   if (!health.ok) return { ...base, ok: false, error: health.error };
   try {
-    const [models, loaded] = await Promise.all([listModels(), loadedModels().catch(() => [])]);
-    return { ...base, ok: true, version: health.version, models, loaded };
+    // Pulling and deleting only make sense for a server holding files on
+    // somebody's disk, so it is Ollama alone that reports itself manageable —
+    // and the page draws its pull and delete controls from that flag rather
+    // than from re-deciding what "ollama" implies.
+    const [models, loaded] = await Promise.all([
+      listModels(t).then((ms) => ms.map(annotate)),
+      loadedModels(t).catch(() => []),
+    ]);
+    return { ...base, ok: true, manageable: true, version: health.version, models, loaded };
   } catch (e) {
     return { ...base, ok: false, version: health.version, error: (e as Error).message };
   }
+}
+
+/**
+ * What Tern knows about an embedder on top of what the server said.
+ *
+ * Only the vector width, and only for the models in `providers.ts` — but it is
+ * the number an admin is actually choosing by. Meaning search stores one row
+ * per message at the model's width, so a 4096-wide model is five times a
+ * 768-wide one over the same mailbox, and no model server reports that in a
+ * listing.
+ *
+ * Advisory, and never indexed by: `embed` reads the real width off the vectors
+ * that came back, because several of these will answer narrower than their
+ * default if asked.
+ */
+function annotate(m: InstalledModel): InstalledModel {
+  const known = embedModelInfo(m.name);
+  return known ? { ...m, dims: known.dims, contextTokens: known.contextTokens } : m;
+}
+
+/**
+ * An endpoint's connection in the shape `ollamaHealth` and the outbound
+ * helpers read.
+ *
+ * They take `AiSettings` because they were written when there was one
+ * connection; this is the adapter rather than a second copy of them, so the
+ * embedding endpoint's own address, key, certificate rule and proxy are what
+ * get used and not the language model's.
+ */
+function ollamaProbeFor(t: ModelEndpoint): Pick<AiSettings, 'provider' | 'baseUrl' | 'apiKey' | 'tlsInsecure' | 'useTor'> {
+  return {
+    provider: t.provider === 'gemini' || t.provider === 'voyage' ? 'ollama' : t.provider,
+    baseUrl: t.baseUrl,
+    apiKey: t.apiKey,
+    tlsInsecure: t.tlsInsecure,
+    useTor: t.useTor,
+  };
 }
 
 export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<{ status: string; completed?: number; total?: number; error?: string }> {

@@ -47,9 +47,13 @@ export const useVoiceConfigured = (enabled = true) => useQuery({
 // or runs `ollama rm` on the host — and a table drawn from a cache is a table
 // that is wrong without saying so. `staleTime: 0` and a poll are the whole
 // point: the list is the model server's answer, not Tern's memory of it.
-export const useAiModels = (enabled = true) => useQuery({
-  queryKey: ['ai-models'],
-  queryFn: () => api.get<any>('/api/ai/models'),
+export const useAiModels = (which: 'llm' | 'embed' = 'llm', enabled = true) => useQuery({
+  // Keyed by connection, because the embedding server is very often a
+  // different machine from the drafting one — that is the whole reason it is
+  // separable — and one cache entry for both would show the drafting server's
+  // models in the embedding picker.
+  queryKey: ['ai-models', which],
+  queryFn: () => api.get<any>(`/api/ai/models?endpoint=${which}`),
   staleTime: 0,
   refetchInterval: 5_000,
   // A download in another tab, or on the box itself, should show up on

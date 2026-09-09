@@ -241,6 +241,12 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .toggle[aria-checked="true"] { background: var(--accent); }
 .toggle[aria-checked="true"]::after { transform: translateX(16px); }
 .toggle:disabled { opacity: .5; }
+/* The row of known hosts above a connection's fields. A row of shortcuts that
+   fill two fields in, deliberately not styled as the setting: the setting is
+   the shape and the address underneath, and an admin pointing at their own
+   vLLM must not feel they have gone off-piste by matching no button here. */
+.preset-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+
 .form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; }
 .form-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 14px; }
 .segmented { display: inline-flex; background: var(--bg-sunken); border-radius: 8px; padding: 3px; gap: 2px; }

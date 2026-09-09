@@ -97,7 +97,11 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
     return { done: rows.length, remaining: await indexPending(userId) };
   }
 
-  const { vectors, model, dims } = await embed(usable.map((x) => x.t), { userId, capability: 'semantic' });
+  // Documents. Named rather than left to the default, because the pair below
+  // is the whole point: a retrieval model embeds the thing being searched for
+  // and the things being searched through differently, and until this argument
+  // existed both went out identically.
+  const { vectors, model, dims } = await embed(usable.map((x) => x.t), { userId, capability: 'semantic' }, undefined, 'document');
   if (!vectors.length || !dims) return { done: 0, remaining: await indexPending(userId) };
   const rot = await rotationFor_(userId, dims);
 
@@ -154,7 +158,7 @@ export async function semanticSearch(
 ): Promise<SemanticHit[]> {
   const query_ = String(text ?? '').trim();
   if (!query_ || !accountIds.length) return [];
-  const { vectors, dims } = await embed([query_], { userId, capability: 'semantic' });
+  const { vectors, dims } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
   if (!vectors[0]?.length || !dims) return [];
   const rot = await rotationFor_(userId, dims);
   const needle = project(rot, vectors[0]);

@@ -172,7 +172,14 @@ the transport refuses anything that is not that shape. The assistant panel
 only sends the editor's contents for the modes that edit a draft (rewrite,
 polish, shorten, expand, subject).
 
-- **Provider**: Ollama (bundled) or any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional API key.
+- **Provider**: Ollama (bundled or elsewhere), Anthropic's Messages API, or
+  any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional
+  API key. The **Start from** row above the fields fills in the shape and the
+  address for the hosts Tern knows — Ollama, perch, OpenAI, Anthropic, Groq,
+  OpenRouter, Together, Fireworks, NanoGPT and Google. It is a shortcut, not a
+  gate: the setting remains a shape and an address, so an endpoint that is not
+  on that list — a vLLM in your own rack, a proxy in front of one of these — is
+  configured by typing its address in, exactly as before.
 - **Model**: pull curated models with one click or type any name from
   ollama.com/library. The page shows the RAM-based recommendation. The list of
   what is installed is read from the model server every few seconds rather
@@ -602,6 +609,46 @@ the download — which is why the card shows both.
 | `all-minilm` | 46 MB | ~286 MB | 23M · 512 tok | The default below 6 GB. Loads beside the writing model without competing for room. |
 | `nomic-embed-text` | 274 MB | ~572 MB | 137M · 8,192 tok | Better quality and a much longer window, so a whole message embeds as one vector instead of just its opening. |
 | `embeddinggemma` | 621 MB | ~1.0 GB | 300M · 2,048 tok | Larger again. Worth it only if you search a big mailbox and find the others imprecise. |
+| `qwen3-embedding:4b` | 2.5 GB | ~3.4 GB | 4B · 32,768 tok | Strong multilingual retrieval, 2560-wide vectors, and a window long enough that nothing is truncated. Wants a graphics card. |
+| `qwen3-embedding:8b` | 4.7 GB | ~6.2 GB | 8B · 32,768 tok | The best open-weight retrieval model here and the widest at 4096. Only worth it with room on the card beside the writing model. |
+
+### Embedding somewhere other than the writing model
+
+**Admin → AI model → Embeddings.** By default this is left on *the same server
+as the language model*, which inherits its whole connection — address, key,
+certificate rule and Tor switch — and is what every install had before the
+setting existed.
+
+It is separable because the two are different jobs on different-sized models,
+and because one provider cannot do both: **the Messages API has no embeddings
+endpoint at all**, so an install drafting on Anthropic must point meaning
+search somewhere else or go without it. The other combinations are just as
+real — drafting on your own GPU and embedding on a hosted retrieval model, or
+the reverse.
+
+Four shapes are accepted here, two of which drafting does not offer:
+
+| Shape | For | Notes |
+|---|---|---|
+| Ollama | `all-minilm`, `nomic-embed-text`, `embeddinggemma`, `qwen3-embedding:4b`/`:8b` | Anything the server reports as `embedding`-capable. |
+| OpenAI-compatible | `text-embedding-3-large` (3072 wide), `-small` (1536), `Qwen/Qwen3-Embedding-8B` on Together, Fireworks, OpenRouter and the rest | The width depends on the model, not the host. |
+| Google Gemini | `gemini-embedding-2` (3072 wide, 8k window) | Its own API: the model goes in the path and the key is sent as `x-goog-api-key`, never in the URL. Gemini *drafting* is a different endpoint — use the "Google (Gemini)" preset for that. |
+| Voyage AI | `voyage-3-large` (1024 wide, 32k window) | The only host here that is told whether it is embedding a search or a message, which measurably changes what comes back. It publishes no model list, so that one picker falls back to the models Tern knows and says so. |
+
+Every other picker on the page is the live answer from the server at that
+address, read every few seconds — including on hosted providers, which the
+page used to skip. A model pulled on the GPU box, or a model added to a hosted
+catalogue, appears without an upgrade.
+
+Wider vectors cost storage: `email_vectors` holds one row per message at the
+model's width, so `qwen3-embedding:8b` builds an index over five times the
+size of an `all-minilm` one for the same mailbox. The picker shows the width
+beside each model it knows.
+
+The embedding connection has **its own Tor switch and its own certificate
+rule**, not the language model's. That is deliberate and was once a bug: while
+they were shared, pointing meaning search at a machine on the LAN silently
+sent it through Tor if the GPU happened to be reached that way.
 
 The card downloads, deletes, loads and unloads them, the same as the writing
 models above, and anything else from the registry can be pulled by name — a

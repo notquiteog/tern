@@ -824,10 +824,19 @@ function AiAdminSettings() {
   const [probing, setProbing] = useState(false);
   // What the model server has, asked of it every few seconds rather than
   // taken from whatever /status happened to see when the page was opened.
-  // Only for Ollama: an OpenAI-compatible endpoint has no models to manage.
+  //
+  // Asked of EVERY provider now, not only Ollama. A hosted API has no models
+  // to pull or delete, but it very much has a catalogue — and the version of
+  // this page that skipped the poll for them left an admin on OpenAI typing a
+  // model name into a free-text box from memory, which is how "gpt-5-turbo"
+  // gets saved and every draft fails with a 404 the page cannot explain.
   const isOllama = (f?.provider ?? data?.settings?.provider) === 'ollama';
-  const live = useAiModels(isOllama);
-  const refetch = () => { qc.invalidateQueries({ queryKey: ['ai-status'] }); return live.refetch(); };
+  const live = useAiModels('llm');
+  // The embedding connection's own catalogue, which is a different machine
+  // whenever `embedProvider` is not `same`. Polled separately for the same
+  // reason it is configured separately.
+  const embedLive = useAiModels('embed');
+  const refetch = () => { qc.invalidateQueries({ queryKey: ['ai-status'] }); void embedLive.refetch(); return live.refetch(); };
   const downloads = useDownloads('model', live.data?.pulls, () => { void live.refetch(); qc.invalidateQueries({ queryKey: ['ai-status'] }); });
   useEffect(() => { if (data && !f) setF({ ...data.settings }); }, [data, f]);
   async function save(patch: any) {
@@ -900,10 +909,21 @@ function AiAdminSettings() {
     ...data.curated.map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: data.settings.model === m.name, note: m.note, sizeGB: m.sizeGB })),
     ...installed.filter((x: any) => !data.curated.some((c: any) => c.name === x.name || `${c.name}:latest` === x.name) && !embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: data.settings.model === x.name, note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
+  // The embedding table is drawn from the EMBEDDING connection's catalogue,
+  // not the drafting one. They are the same list on the common install where
+  // both point at one Ollama, and completely different the moment they do not
+  // — which is the case this endpoint was made separable for.
+  const embedInstalled: any[] = embedLive.data?.models ?? [];
+  const embedLoadedList: any[] = embedLive.data?.loaded ?? [];
+  const findEmbedInstalled = (n: string) => embedInstalled.find((x: any) => x.name === n || x.name === `${n}:latest`);
+  const findEmbedLoaded = (n: string) => embedLoadedList.find((x: any) => x.name === n || x.name === `${n}:latest`);
   const embedRows: any[] = [
-    ...(data.embedModels ?? []).map((m: any) => ({ name: m.name, inst: findInstalled(m.name), loaded: findLoaded(m.name), active: sameName(data.settings.embedModel, m.name), note: m.note, params: m.params, contextTokens: m.contextTokens, sizeBytes: m.sizeBytes, needsBytes: m.needsBytes })),
-    ...installed.filter((x: any) => embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findLoaded(x.name), active: sameName(data.settings.embedModel, x.name), note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
+    ...(data.embedModels ?? []).map((m: any) => ({ name: m.name, inst: findEmbedInstalled(m.name), loaded: findEmbedLoaded(m.name), active: sameName(data.settings.embedModel, m.name), note: m.note, params: m.params, contextTokens: m.contextTokens, sizeBytes: m.sizeBytes, needsBytes: m.needsBytes })),
+    ...embedInstalled.filter((x: any) => embeds(x) && !knownEmbed(x.name)).map((x: any) => ({ name: x.name, inst: x, loaded: findEmbedLoaded(x.name), active: sameName(data.settings.embedModel, x.name), note: `${x.parameterSize ?? ''} ${x.quantization ?? ''}`.trim() })),
   ];
+  // Where embeddings actually come from, resolved the way the server resolves
+  // it: `same` means the language model's connection entirely.
+  const embedShape: string = (f.embedProvider ?? 'same') === 'same' ? f.provider : f.embedProvider;
   // Which downloads belong to which card, so a bar appears under the table
   // that started it rather than under both.
   const embedNames = new Set<string>(embedRows.map((m: any) => m.name));
@@ -915,11 +935,29 @@ function AiAdminSettings() {
       <AiConcurrencyCard data={data} f={f} save={(patch) => { setF({ ...f, ...patch }); void save(patch); }} />
       <div className="card mb-16">
         <div className="card-title"><h2>Provider and model</h2><div className="row"><Toggle checked={f.enabled} onChange={(v) => { setF({ ...f, enabled: v }); void save({ enabled: v }); }} /><span className="small">Enabled</span></div></div>
+        <ProviderPresets
+          presets={data.providerPresets ?? []}
+          slot="llm"
+          shape={f.provider}
+          baseUrl={f.baseUrl}
+          onPick={(p: any) => { setF({ ...f, provider: p.shape, baseUrl: p.baseUrl }); setProbe(null); }}
+        />
         <div className="form-row">
-          <Field label="Provider"><Select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option><option value="anthropic">Anthropic (Messages API)</option></Select></Field>
+          <Field label="Provider"><Select value={f.provider} onChange={(e) => { setF({ ...f, provider: e.target.value }); setProbe(null); }}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option><option value="anthropic">Anthropic (Messages API)</option></Select></Field>
           <Field label="Base URL" hint="The server's root — scheme, host and port, with no path and no trailing slash. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : f.provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.example.com'} /></Field>
           <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it — as Authorization: Bearer. A hosted box usually calls it an instance or open-button token. The bundled container needs nothing here.' : f.provider === 'anthropic' ? 'Sent as x-api-key, not as a bearer token. Required — the Messages API has no anonymous mode.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => { setF({ ...f, apiKey: e.target.value }); setProbe(null); }} /></Field>
-          <Field label="Model name"><Input value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })} /></Field>
+          <Field
+            label="Model name"
+            hint={live.data && !live.data.ok ? `That server would not list its models: ${live.data.error}` : undefined}
+          >
+            <ModelChooser
+              value={f.model}
+              onChange={(v: string) => setF({ ...f, model: v })}
+              catalogue={live.data}
+              loading={live.isLoading}
+              slot="chat"
+            />
+          </Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
           <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
@@ -938,43 +976,6 @@ function AiAdminSettings() {
               : 'For a model on somebody else\u2019s hardware: the host otherwise logs this server\u2019s address with every request. Required for an .onion address. Needs a Tor proxy running locally (TOR_SOCKS_HOST / TOR_SOCKS_PORT, default 127.0.0.1:9150).'}
           </p>
         </div>
-        {/* Anthropic cannot embed, so choosing it splits meaning search off
-            onto a second server. Shown only when that is the situation: an
-            Ollama install has one server and should not have to read about a
-            second one it does not have. */}
-        {f.provider === 'anthropic' && (
-          <div className="mt-16">
-            <p className="small muted">Anthropic has no embeddings endpoint, so meaning search needs a second server. Leave this unset and search falls back to matching words, which still works — it just stops finding messages that mean the same thing in different words.</p>
-            <div className="form-row">
-              <Field label="Embeddings from"><Select value={f.embedProvider ?? 'same'} onChange={(e) => setF({ ...f, embedProvider: e.target.value })}><option value="same">Nowhere — word search only</option><option value="ollama">An Ollama</option><option value="openai">An OpenAI-compatible server</option></Select></Field>
-              {(f.embedProvider ?? 'same') !== 'same' && (
-                <>
-                  <Field label="Embedding server URL" hint="The same rules as above: the server's root, no path, no trailing slash."><Input value={f.embedBaseUrl ?? ''} onChange={(e) => setF({ ...f, embedBaseUrl: e.target.value })} placeholder={f.embedProvider === 'ollama' ? 'http://ollama:11434' : 'https://api.example.com'} /></Field>
-                  <Field label="Embedding server key" hint={data.settings.hasEmbedApiKey ? 'A key is stored; leave blank to keep it.' : 'Blank for the bundled Ollama.'}><Input type="password" value={f.embedApiKey ?? ''} onChange={(e) => setF({ ...f, embedApiKey: e.target.value })} /></Field>
-                </>
-              )}
-            </div>
-            {/* A separate server is a separate decision about how to reach it.
-                While these did not exist the embedder silently used whatever
-                the drafting model needed, so pointing meaning search at a box
-                on the LAN sent it through Tor if the GPU was reached that
-                way. */}
-            {(f.embedProvider ?? 'same') !== 'same' && (
-              <div className="mt-16">
-                {/^https:/i.test(f.embedBaseUrl ?? '') && (
-                  <div className="row">
-                    <Toggle checked={Boolean(f.embedTlsInsecure)} onChange={(v) => setF({ ...f, embedTlsInsecure: v })} />
-                    <span className="small">Trust the embedding server&rsquo;s certificate even if it cannot be verified</span>
-                  </div>
-                )}
-                <div className="row">
-                  <Toggle checked={Boolean(f.embedUseTor)} onChange={(v) => setF({ ...f, embedUseTor: v })} />
-                  <span className="small">Reach the embedding server through Tor</span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
         {/* Only asked about for an https address, because it is only https
             that can fail this way. A hosted GPU box issues itself a
             certificate at boot and no public authority will vouch for it. */}
@@ -1100,11 +1101,112 @@ function AiAdminSettings() {
             onConfirm={() => { const n = del!.name; setDel(null); return doDelete(n); }} />
         </div>
       )}
-      {f.provider === 'ollama' && (
+      {/* ── Where embeddings come from ────────────────────────────────────
+          Its own card, and always shown.
+
+          It used to appear only when the language model was Anthropic, on the
+          reasoning that an Ollama install has one server and should not read
+          about a second. That was the wrong shape: the reason for the split is
+          not "Anthropic cannot embed" but that drafting and embedding are
+          different jobs on different-sized models, and an install may
+          reasonably draft on its own GPU and embed on Voyage, or the reverse.
+          Hiding the choice behind one provider made the other combinations
+          unreachable from the UI while the server supported them all. */}
+      <div className="card mb-16">
+        <div className="card-title">
+          <h2>Embeddings</h2>
+          <span className="small muted row gap-8"><LiveDot at={embedLive.data?.at} fetching={embedLive.isFetching} />{embedLive.data?.ok ? `${embedLive.data.models?.length ?? 0} models` : embedLive.data?.error ?? 'not loaded'}</span>
+        </div>
+        <p className="small muted">
+          Meaning search turns each message into a vector with a second, much smaller model. It never
+          writes a word, and it can live on a different machine from the one that drafts — which it must,
+          when drafting is on Anthropic, because the Messages API has no embeddings endpoint at all.
+          {' '}Leave this on “the same server” and everything behaves as it always has.
+        </p>
+        <div className="form-row">
+          <Field
+            label="Embeddings from"
+            hint="“The same server” uses the language model’s whole connection — address, key, certificate rule and Tor switch included. Anything else is a connection of its own."
+          >
+            <Select value={f.embedProvider ?? 'same'} onChange={(e) => setF({ ...f, embedProvider: e.target.value })}>
+              <option value="same">The same server as the language model</option>
+              <option value="ollama">An Ollama</option>
+              <option value="openai">An OpenAI-compatible server</option>
+              <option value="gemini">Google Gemini embeddings</option>
+              <option value="voyage">Voyage AI</option>
+            </Select>
+          </Field>
+        </div>
+        {(f.embedProvider ?? 'same') !== 'same' && (
+          <>
+            <ProviderPresets
+              presets={data.providerPresets ?? []}
+              slot="embed"
+              shape={f.embedProvider}
+              baseUrl={f.embedBaseUrl}
+              onPick={(p: any) => setF({ ...f, embedProvider: p.shape, embedBaseUrl: p.baseUrl })}
+            />
+            <div className="form-row">
+              <Field label="Embedding server URL" hint="The server's root — no path, no trailing slash."><Input value={f.embedBaseUrl ?? ''} onChange={(e) => setF({ ...f, embedBaseUrl: e.target.value })} placeholder={f.embedProvider === 'ollama' ? 'http://ollama:11434' : f.embedProvider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : f.embedProvider === 'voyage' ? 'https://api.voyageai.com/v1' : 'https://api.openai.com/v1'} /></Field>
+              <Field label="Embedding server key" hint={data.settings.hasEmbedApiKey ? 'A key is stored; leave blank to keep it.' : f.embedProvider === 'gemini' ? 'A Google API key. Sent as x-goog-api-key rather than as a bearer token, and never in the URL.' : 'Blank for the bundled Ollama.'}><Input type="password" value={f.embedApiKey ?? ''} onChange={(e) => setF({ ...f, embedApiKey: e.target.value })} /></Field>
+            </div>
+          </>
+        )}
+        <div className="form-row">
+          <Field
+            label="Embedding model"
+            hint={embedLive.data && !embedLive.data.ok
+              ? `That server would not list its models: ${embedLive.data.error}`
+              : embedLive.data && embedLive.data.live === false
+                ? embedLive.data.error
+                : 'Vectors are only comparable with others from the same model, so changing this queues every indexed message to be embedded again.'}
+          >
+            <ModelChooser
+              value={f.embedModel ?? data.settings.embedModel}
+              onChange={(v: string) => setF({ ...f, embedModel: v })}
+              catalogue={embedLive.data}
+              loading={embedLive.isLoading}
+              slot="embed"
+            />
+          </Field>
+        </div>
+        {/* A separate server is a separate decision about how to reach it.
+            While these did not exist the embedder silently used whatever the
+            drafting model needed, so pointing meaning search at a box on the
+            LAN sent it through Tor if the GPU was reached that way. */}
+        {(f.embedProvider ?? 'same') !== 'same' && (
+          <div className="mt-16">
+            {/^https:/i.test(f.embedBaseUrl ?? '') && (
+              <div className="row">
+                <Toggle checked={Boolean(f.embedTlsInsecure)} onChange={(v) => setF({ ...f, embedTlsInsecure: v })} />
+                <span className="small">Trust the embedding server&rsquo;s certificate even if it cannot be verified</span>
+              </div>
+            )}
+            <div className="row">
+              <Toggle checked={Boolean(f.embedUseTor)} onChange={(v) => setF({ ...f, embedUseTor: v })} />
+              <span className="small">Reach the embedding server through Tor</span>
+            </div>
+            <p className="small muted">
+              Its own switch, not the language model&rsquo;s. Turning Tor on for a rented GPU should not
+              silently route a transcriber on the LAN through it as well, and turning it off for one
+              should not quietly expose the other.
+            </p>
+          </div>
+        )}
+        <div className="row mt-16">
+          <Button variant="primary" onClick={() => save({ embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined, embedTlsInsecure: Boolean(f.embedTlsInsecure), embedUseTor: Boolean(f.embedUseTor), embedModel: f.embedModel })}>Save embeddings</Button>
+        </div>
+      </div>
+      {/* Pulling and deleting only mean anything on a server that holds files
+          on somebody's disk, which is what `manageable` says — read off the
+          answer rather than re-derived here from "the provider is ollama", so
+          the two cannot disagree. A hosted embedder is chosen in the card
+          above and has nothing to download. */}
+      {embedLive.data?.manageable && (
         <div className="card mb-16">
-          <div className="card-title"><h2>Meaning search</h2><span className="small muted row gap-8"><LiveDot at={live.data?.at} fetching={live.isFetching} />In use: <b>{data.settings.embedModel}</b>{findInstalled(data.settings.embedModel) ? '' : ' · not downloaded'}</span></div>
-          <Callout kind={findInstalled(data.settings.embedModel) ? 'info' : 'warning'}>
-            {findInstalled(data.settings.embedModel)
+          <div className="card-title"><h2>Meaning search</h2><span className="small muted row gap-8"><LiveDot at={embedLive.data?.at} fetching={embedLive.isFetching} />In use: <b>{data.settings.embedModel}</b>{findEmbedInstalled(data.settings.embedModel) ? '' : ' · not downloaded'}</span></div>
+          <Callout kind={findEmbedInstalled(data.settings.embedModel) ? 'info' : 'warning'}>
+            {findEmbedInstalled(data.settings.embedModel)
               ? <>Search by meaning turns each message into a vector with a second, much smaller model — it loads beside the writing model rather than instead of it, so the memory it wants is on top. It never writes a word.</>
               : <><b>{data.settings.embedModel}</b> is not downloaded, so meaning search cannot index anything and falls back to matching words. Pull it below.</>}
             {' '}Vectors are only comparable with others from the same model, so changing it queues every indexed message to be embedded again.
@@ -1132,6 +1234,129 @@ function AiAdminSettings() {
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
     </div>
   );
+}
+
+/**
+ * Known hosts, as buttons that fill in the shape and the address.
+ *
+ * ── Why this is not the setting ─────────────────────────────────────────────
+ *
+ * The setting is a shape and an address, and that is right: `openai` means the
+ * OpenAI-compatible request shape, which a dozen hosts serve and which an
+ * install may well be pointing at a vLLM in its own rack. Replacing it with a
+ * dropdown of company names would take a working configuration away from every
+ * admin whose host is not on the list, to save the rest a paste.
+ *
+ * So this fills the fields in and then gets out of the way. Nothing is stored,
+ * nothing validates against it, and the address stays editable — choosing
+ * "Groq" and then pointing the URL at a proxy in front of Groq is a normal
+ * thing to do and is not a special case anywhere.
+ *
+ * The list comes from the server (`ai/providers.ts`, sent with /status), so a
+ * host added there appears here without this file changing.
+ */
+function ProviderPresets({ presets, slot, shape, baseUrl, onPick }: { presets: any[]; slot: string; shape: string; baseUrl: string; onPick: (p: any) => void }) {
+  const mine = (presets ?? []).filter((p: any) => (p.slots ?? []).includes(slot));
+  if (!mine.length) return null;
+  // Lit for the host whose shape AND address are both currently set. Not a
+  // radio button: nothing is selected when the address is somebody's own
+  // machine, which is a good configuration rather than an unfinished one.
+  const current = mine.find((p: any) => p.shape === shape && p.baseUrl === baseUrl);
+  return (
+    <div className="preset-row mb-16">
+      <span className="small muted">Start from</span>
+      {mine.map((p: any) => (
+        <Button
+          key={p.id}
+          size="sm"
+          variant={current?.id === p.id ? 'primary' : 'ghost'}
+          title={`${p.note}${p.key === 'none' ? '' : ' Needs an API key.'}`}
+          onClick={() => onPick(p)}
+        >
+          {p.label}
+        </Button>
+      ))}
+      <span className="small faint" style={{ flexBasis: '100%' }}>
+        Fills in the API shape and the address. Anything else speaking one of these APIs works too — type its address in.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * A model name, chosen from what the server at that address actually holds.
+ *
+ * ── Why this is not simply a select ─────────────────────────────────────────
+ *
+ * Because the install has to be configurable against a model server that is
+ * not answering right now: an admin setting up behind a tunnel that is down,
+ * or writing the settings before the GPU box exists, must still be able to
+ * save a model name. So the free-text box never goes away — it is the fallback
+ * when the list is empty and a deliberate choice when it is not.
+ *
+ * ── Why models that suit the wrong slot are still listed ────────────────────
+ *
+ * Greyed rather than hidden. Ollama says which models embed and which
+ * generate, so the ones that suit this slot lead; but a hosted API says
+ * nothing at all, and a model whose capabilities are unknown is offered
+ * everywhere rather than nowhere. Hiding a model somebody can see on their own
+ * server, with no way to find out why, is a worse failure than listing one
+ * that turns out to be wrong for the job.
+ */
+function ModelChooser({ value, onChange, catalogue, loading, slot }: { value: string; onChange: (v: string) => void; catalogue: any; loading: boolean; slot: 'chat' | 'embed' }) {
+  const [custom, setCustom] = useState(false);
+  const models: any[] = catalogue?.ok ? (catalogue.models ?? []) : [];
+  // An empty `capabilities` means the server did not say — offered for both.
+  const fits = (m: any) => {
+    const caps: string[] = m.capabilities ?? [];
+    if (!caps.length) return true;
+    return slot === 'embed' ? caps.includes('embedding') : caps.includes('completion');
+  };
+  const suited = models.filter(fits);
+  const others = models.filter((m: any) => !fits(m));
+  // A model that is set but not in the list is kept selectable, because it may
+  // be perfectly valid on a server that is merely unreachable at this moment.
+  const missing = value && !models.some((m: any) => m.name === value);
+
+  if (custom || (!loading && !models.length)) {
+    return (
+      <div className="row gap-8">
+        <Input value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder="model ID" />
+        {models.length > 0 && <Button size="sm" variant="ghost" onClick={() => setCustom(false)}>Choose from server</Button>}
+      </div>
+    );
+  }
+  return (
+    <Select
+      value={value ?? ''}
+      onChange={(e) => { if (e.target.value === '__custom__') { setCustom(true); return; } onChange(e.target.value); }}
+    >
+      <option value="">{loading ? 'Reading the server\u2019s models\u2026' : '\u2014 not set \u2014'}</option>
+      {missing && <option value={value}>{value} — current, not listed</option>}
+      <option value="__custom__">Enter a model ID…</option>
+      {suited.length > 0 && (
+        <optgroup label={slot === 'embed' ? 'Embedding models' : 'Models that generate'}>
+          {suited.map((m: any) => <option key={m.name} value={m.name}>{describeLiveModel(m)}</option>)}
+        </optgroup>
+      )}
+      {others.length > 0 && (
+        <optgroup label={slot === 'embed' ? 'Not embedding models' : 'Not generation models'}>
+          {others.map((m: any) => <option key={m.name} value={m.name} disabled>{describeLiveModel(m)}</option>)}
+        </optgroup>
+      )}
+    </Select>
+  );
+}
+
+function describeLiveModel(m: any): string {
+  const bits: string[] = [];
+  if (m.parameterSize) bits.push(m.parameterSize);
+  if (m.size) bits.push(`${(m.size / 1024 ** 3).toFixed(1)} GB`);
+  // The vector width, for the embedders Tern knows. It is what the choice
+  // actually costs — meaning search stores a row per message at this width —
+  // and no model server reports it in a listing.
+  if (m.dims) bits.push(`${m.dims} wide`);
+  return bits.length ? `${m.name}  (${bits.join(', ')})` : m.name;
 }
 
 // The app's own name and logo (admins). Saving refreshes the auth context so

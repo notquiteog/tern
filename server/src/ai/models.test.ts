@@ -11,7 +11,7 @@ test('the models for meaning search are a separate list from the ones that write
   // model — a model that cannot generate a word.
   const writing = new Set(CURATED_MODELS.map((m) => m.name));
   for (const e of EMBED_MODELS) assert.equal(writing.has(e.name), false, e.name);
-  assert.deepEqual(EMBED_MODELS.map((m) => m.name), ['all-minilm', 'nomic-embed-text', 'embeddinggemma']);
+  assert.deepEqual(EMBED_MODELS.map((m) => m.name), ['all-minilm', 'nomic-embed-text', 'embeddinggemma', 'qwen3-embedding:4b', 'qwen3-embedding:8b']);
 });
 
 test('an embedding model is recognised whether or not Ollama tagged it', () => {

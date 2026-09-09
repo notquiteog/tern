@@ -10,6 +10,7 @@ import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
+import { EMBED_CATALOGUE, PROVIDER_PRESETS } from '../ai/providers.js';
 import { getCommitment } from '../services/commitments.js';
 import { config } from '../config.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
@@ -89,6 +90,11 @@ aiRouter.get('/status', async (req, res) => {
     loaded,
     concurrency: await concurrencyView(s, models),
     presets: await listPresets(),
+    // The hosts a connection can be pointed at — see ai/providers.ts. Named
+    // apart from `presets` above, which is the sampling tuning for a model and
+    // an entirely different thing that happens to share the word.
+    providerPresets: PROVIDER_PRESETS,
+    embedCatalogue: EMBED_CATALOGUE,
     modelInstalled,
     modelCanThink: canThink,
     recommended: recommendModel(config.totalMemBytes),
@@ -189,7 +195,12 @@ aiRouter.delete('/presets/:id', requireAdmin, async (req, res) => {
 
 aiRouter.put('/settings', requireAdmin, async (req, res) => {
   const b = parse(z.object({ ...TUNING_SHAPE, enabled: z.boolean().optional(), provider: z.enum(['ollama', 'openai', 'anthropic']).optional(), baseUrl: z.string().url().max(300).refine(httpUrl, 'The base URL must start with http:// or https://').optional(), apiKey: z.string().max(500).optional(), tlsInsecure: z.boolean().optional(), useTor: z.boolean().optional(), model: z.string().min(1).max(120).optional(), embedModel: z.string().min(1).max(120).optional(),
-    embedProvider: z.enum(['same', 'ollama', 'openai']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+    // The two embedding-only shapes are accepted here and NOT on `provider`
+    // above, which is the same rule the language model's enum applies in the
+    // other direction: neither Gemini's embedding API nor Voyage serves chat,
+    // and `anthropic` cannot embed. A setting that cannot work should not be
+    // storable, whichever end it would fail at.
+    embedProvider: z.enum(['same', 'ollama', 'openai', 'gemini', 'voyage']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
@@ -389,9 +400,19 @@ aiRouter.delete('/voice/models', requireAdmin, async (req, res) => {
 // whenever the page was opened. It matters most for a model server that is
 // somebody else's — a perch on the GPU box, where models appear and vanish
 // without Tern being involved at all.
-aiRouter.get('/models', requireAdmin, async (_req, res) => {
-  const live = await liveModels();
-  res.json({ ...live, pulls: listPulls('model') });
+aiRouter.get('/models', requireAdmin, async (req, res) => {
+  // Which connection's catalogue. The embedding endpoint is very often a
+  // different machine from the drafting one — that is the whole reason it is
+  // separable — so "the models" is not one list, and a page that showed the
+  // language model's would offer an embedding slot models the embedding server
+  // has never heard of.
+  const which = req.query.endpoint === 'embed' ? 'embed' : 'llm';
+  const live = await liveModels(which);
+  // Pulls belong to the Ollama that is being pulled INTO, and only the
+  // drafting connection has a pull UI today; sending the same list under the
+  // embedding catalogue would show progress bars for downloads happening
+  // somewhere else.
+  res.json({ ...live, endpoint: which, pulls: which === 'llm' ? listPulls('model') : [] });
 });
 
 const modelName = z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:/-]+$/);

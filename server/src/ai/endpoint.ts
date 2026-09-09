@@ -24,8 +24,25 @@
 import type { TlsTrust } from '../util/outbound.js';
 import { torAgent } from '../util/tor.js';
 
-/** The wire shapes Tern speaks. Not hosts, not companies — request shapes. */
-export type ApiShape = 'ollama' | 'openai' | 'anthropic';
+/**
+ * The wire shapes Tern speaks. Not hosts, not companies — request shapes.
+ *
+ * `openai` is the one that won: OpenAI itself, but also Groq, OpenRouter,
+ * Together, Fireworks, NanoGPT, vLLM, llama.cpp, whisper.cpp, Kokoro and
+ * perch's own /v1 all answer it, so "which company" is a base URL rather than
+ * a branch. `providers.ts` lists the ones worth offering as a starting point.
+ *
+ * `gemini` and `voyage` are embedding-only, and are shapes rather than base
+ * URLs because neither fits the OpenAI one without losing something. Google
+ * puts the model in the path, authenticates with `x-goog-api-key` and answers
+ * `{embeddings:[{values}]}`; going through its OpenAI-compatible shim instead
+ * would work but could not ask for a vector narrower than 3072, which is most
+ * of the reason to pick that model. Voyage's format IS OpenAI's, with one
+ * field on top — `input_type` — that tells the model whether it is embedding a
+ * question or a document, which Tern already knows and which measurably
+ * changes what comes back.
+ */
+export type ApiShape = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'voyage';
 
 /** Everything needed to reach one model server, and nothing about the model. */
 export interface ModelEndpoint {
@@ -74,6 +91,14 @@ export function endpointHeaders(e: ModelEndpoint): Record<string, string> {
       ...(e.apiKey ? { 'x-api-key': e.apiKey } : {}),
     };
   }
+  // Google reads neither of the other two. The same key can go in a `?key=`
+  // query parameter instead, and that is exactly why it does not: a credential
+  // in a URL is a credential in every log, proxy and error message between
+  // here and there.
+  if (e.provider === 'gemini') {
+    return e.apiKey ? { 'x-goog-api-key': e.apiKey } : {};
+  }
+  // Voyage takes a bearer token, like the OpenAI shape it otherwise copies.
   return e.apiKey ? { Authorization: `Bearer ${e.apiKey}` } : {};
 }
 

@@ -92,10 +92,16 @@ export const UNCENSORED_MODELS = [
 // rather than instead of it, which is why "wants" here matters more than the
 // download size — that is the memory it occupies while search is in use.
 //
-// The same three, with the same numbers, are what perch offers on the GPU
-// side (`server/src/system.ts`, EMBED_MODELS). Change one, change both:
-// somebody choosing a model there and setting it here should not be reading
-// two different descriptions of it.
+// The same list, with the same numbers, is what perch offers on the GPU side
+// (`server/src/system.ts`, EMBED_MODELS). Change one, change both: somebody
+// choosing a model there and setting it here should not be reading two
+// different descriptions of it.
+//
+// This is the list of models the bundled Ollama can PULL. The wider catalogue
+// — hosted embedders on OpenAI, Gemini and Voyage, and the vector width of
+// each — is `ai/providers.ts`, which is what the settings page draws its
+// picker from. Two lists because they answer different questions: this one is
+// "what can this box download", that one is "what can this connection reach".
 //
 // Changing this is not free in a way the writing model is: existing vectors
 // were made by the old model and are not comparable with the new one's, so
@@ -124,6 +130,23 @@ export const EMBED_MODELS: EmbedModel[] = [
   {
     name: 'embeddinggemma', sizeBytes: 0.62e9, needsBytes: 1.1e9, params: '300M', contextTokens: 2048,
     note: 'Larger again. Worth it only if you search a big mailbox and find the others imprecise.',
+  },
+  // The two Qwen3 embedders. A different class from the three above — they
+  // want a graphics card, not a corner of a VPS — and they are here rather
+  // than only in providers.ts because these tags really are pullable onto the
+  // bundled Ollama, which is what this list is for.
+  //
+  // Their vectors are also much wider, and that is the cost worth knowing
+  // before pulling one: `email_vectors` stores a row per message at the
+  // model's width, so the 8B builds an index over five times the size of an
+  // all-minilm one over the same mailbox.
+  {
+    name: 'qwen3-embedding:4b', sizeBytes: 2.5e9, needsBytes: 3.4e9, params: '4B', contextTokens: 32768,
+    note: 'Strong multilingual retrieval, 2560-wide vectors, and a 32k input window so nothing is truncated. Wants a GPU; on CPU the first index pass over a real mailbox is an overnight job.',
+  },
+  {
+    name: 'qwen3-embedding:8b', sizeBytes: 4.7e9, needsBytes: 6.2e9, params: '8B', contextTokens: 32768,
+    note: 'The best open-weight retrieval model here and the widest at 4096. Only worth it with a card that has room for it beside the writing model.',
   },
 ];
 
