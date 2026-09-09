@@ -145,27 +145,45 @@ function sources(): string[] {
   const inAi = fs.readdirSync(ai)
     .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.eval.ts'))
     .map((f) => path.join(ai, f));
-  return [...inAi, path.join(root, 'services', 'voice.ts')];
+  const found = [...inAi, path.join(root, 'services', 'voice.ts')];
+  // The floor lives here rather than beside here. It used to be a test of its
+  // own that every other check leaned on — and a watcher is something a later
+  // edit can delete or weaken without the checks it was protecting saying
+  // anything: they would go straight back to reporting clean on an empty list.
+  // Inside the helper the property is structural, and no arrangement of the
+  // tests gets a caller an unchecked empty list. Far under the real figure of
+  // 17, so ordinary edits never approach it.
+  assert.ok(found.length >= 10, `only ${found.length} bound sources under ${root} — the scan is looking in the wrong place, and every check that reads this would report clean on it`);
+  for (const f of found) assert.ok(fs.existsSync(f), `${f} is on the bound list and does not exist`);
+  return found;
 }
 
-const everyCall = (): Call[] => sources().flatMap(callsIn);
-
-test('the scan can actually see the code it is checking', () => {
-  // Asserted before anything else, because every check below reports "clean"
-  // on an empty list. The floors are well under the real figures — 17 files
-  // and 28 calls when this was written — so ordinary edits never touch them,
-  // and a scan that has stopped working cannot creep past them.
-  const files = sources();
-  assert.ok(files.length >= 10, `only ${files.length} bound sources under ${root} — the scan is looking in the wrong place`);
-  for (const f of files) assert.ok(fs.existsSync(f), `${f} is on the bound list and does not exist`);
-  const calls = everyCall();
-  assert.ok(calls.length >= 20, `only ${calls.length} outbound calls found — the match set has stopped matching, and every check here would pass on that`);
-  // Named rather than counted: these two certainly reach a model server, so
-  // their absence means the walk is finding the wrong kind of node.
+/**
+ * Every outbound call in the bound files, with the same floor for the same
+ * reason.
+ *
+ * A correct scan root does not save a dead match set: if `isOutbound` stops
+ * matching, this returns an empty list and every filter over it is empty too —
+ * which is exactly what "no problems" looks like. Naming two files that
+ * certainly contain a call catches the case where the walk is finding the
+ * wrong kind of node rather than none at all.
+ */
+function everyCall(): Call[] {
+  const calls = sources().flatMap(callsIn);
+  assert.ok(calls.length >= 20, `only ${calls.length} outbound calls found — the match set has stopped matching, and every check that reads this would report clean on it`);
   const seen = new Set(calls.map((c) => path.basename(c.file)));
   for (const expected of ['llm.ts', 'voice.ts']) {
-    assert.ok(seen.has(expected), `no outbound call found in ${expected}, which certainly has one`);
+    assert.ok(seen.has(expected), `no outbound call found in ${expected}, which certainly has one — the walk is finding the wrong kind of node`);
   }
+  return calls;
+}
+
+test('the scan can actually see the code it is checking', () => {
+  // The floors themselves live in `sources` and `everyCall`, so every check in
+  // this file inherits them and none can be left reading an empty list. This
+  // states the property out loud and fails first when it breaks — it is the
+  // sentence a reader needs, not the mechanism.
+  assert.ok(everyCall().length > 0);
 });
 
 test('no call to a model server is written without its endpoint’s connection', () => {
