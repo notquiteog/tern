@@ -80,10 +80,62 @@ export async function indexPending(userId: number): Promise<number> {
   return r?.n ?? 0;
 }
 
+/**
+ * Notice that the embedding model has changed, however it changed, and queue
+ * the rebuild.
+ *
+ * ── Why this is not left to the settings route ──────────────────────────────
+ *
+ * Because that route is only one of the ways it changes. `PUT /api/ai/settings`
+ * calls `invalidateVectorsFrom` when an admin picks a different embedder, and
+ * that was the whole of the mechanism — but `embedModel` also comes from
+ * `DEFAULTS`, which reads `config.aiEmbedModel`, which reads `AI_EMBED_MODEL`.
+ * An install that has never saved AI settings has no stored value at all, so
+ * changing that environment variable — or shipping a new default in the
+ * installer — switches the embedder on the next restart with nobody having
+ * touched the page.
+ *
+ * That path wrote no invalidation. `emails.embedded` stayed true, so the
+ * background pass had nothing to do, while `semanticSearch` scopes its scan by
+ * model name and therefore matched none of the existing rows. Meaning search
+ * returned nothing at all, and kept returning nothing until somebody happened
+ * to re-save the setting by hand.
+ *
+ * Before the scan was scoped it failed the other way — the old vectors were
+ * scored under a rotation that was not theirs and came back as noise — so this
+ * is not a regression that scoping introduced, it is the second half of that
+ * fix. The check belongs here, where indexing actually happens, because then
+ * it holds for every route into a model change including the ones nobody has
+ * written yet.
+ *
+ * Cheap: memoised per model for the life of the process, so an ordinary tick
+ * does nothing, and the one UPDATE it can run is the same one the settings
+ * route has always run.
+ */
+let reconciledFor: string | null = null;
+
+/** Tests only: the memo is process-wide state. */
+export function forgetEmbedReconciliation(): void { reconciledFor = null; }
+
+async function reconcileEmbedModel(model: string): Promise<void> {
+  if (!model || reconciledFor === model) return;
+  reconciledFor = model;
+  const queued = await invalidateVectorsFrom(model);
+  if (queued) log.info('the embedding model no longer matches the index; queued a rebuild', { model, messages: queued });
+}
+
 // One batch for one person. Returns how many were written, so the caller can
 // keep going while there is work and stop asking when there is not.
 export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{ done: number; remaining: number }> {
   if (!(await allowed(userId, 'semantic'))) return { done: 0, remaining: 0 };
+  // Before choosing what to work on rather than after: a model change that
+  // arrived any way other than through the settings page has to become pending
+  // work here, or nothing downstream will ever see it.
+  // The model the SETTINGS name. What actually made the vectors comes back
+  // from `embed` below and is what gets written to the row — they agree, but
+  // only one of them is a measurement, and the row must carry that one.
+  const configuredModel = (await getAiSettings()).embedModel;
+  await reconcileEmbedModel(configuredModel);
   const rows = await query<any>(
     `SELECT e.id, e.account_id, e.subject, e.preview, e.body_text, e.body_html
        FROM emails e JOIN accounts a ON a.id=e.account_id
@@ -95,7 +147,7 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   if (!rows.length) return { done: 0, remaining: 0 };
 
   const opened = await openEmails(userId, 'semantic', rows);
-  const budget = embedInputChars((await getAiSettings()).embedModel);
+  const budget = embedInputChars(configuredModel);
   const texts = opened.map((m) => embeddableText(m, budget));
   // A message with nothing in it still gets marked, or the pass would find
   // it again for ever.
@@ -138,9 +190,15 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
 // visibly, it would quietly make it worse, which is harder to notice and
 // harder to explain.
 //
-// The rows are marked for re-indexing rather than deleted: search keeps
-// answering from what is there while the background pass rebuilds them, which
-// is a much better failure than an empty index for the length of a rebuild.
+// The rows are marked for re-indexing rather than deleted, so a message that
+// has been re-embedded is findable again immediately instead of at the end of
+// the pass. What is not yet rebuilt is simply not scored — see
+// `semanticSearch` for why matching it would be worse than missing it.
+//
+// Two callers. The settings route calls it the moment an admin picks a
+// different embedder, which is what lets the page say how much work that just
+// asked for; `reconcileEmbedModel` above calls it for every other way the
+// model can change, none of which pass through a route at all.
 export async function invalidateVectorsFrom(model: string): Promise<number> {
   const rows = await query<{ id: number }>(
     `UPDATE emails SET embedded=false

@@ -199,13 +199,23 @@ export function presetsForSlot(slot: Slot): ProviderPreset[] {
  * Every embedder Tern knows, hosted and local alike, and how wide its vectors
  * are.
  *
- * ── Why width is written down, and still not trusted ────────────────────────
+ * ── Why width is written down, and what it does NOT cost ────────────────────
  *
- * `email_vectors` stores one row per message at the model's width, so this is
- * the number that decides what meaning search costs on disk: a 4096-wide model
- * is five times a 768-wide one over the same mailbox. Nothing on the wire
- * reports it before you have embedded something, so an admin choosing between
- * two models cannot see it anywhere else.
+ * It is not the disk. This said it was — "a 4096-wide model is five times a
+ * 768-wide one over the same mailbox" — and that stopped being true when the
+ * keyed projection went in: every vector is cut to `EMBED_DIMS` before it is
+ * stored, so a 384-wide model and a 4096-wide one both leave 256-byte rows
+ * behind, and an index over the same mailbox is the same size whichever is
+ * chosen. Worth stating in the negative because the claim survived in three
+ * places and argued against exactly the models most worth picking.
+ *
+ * What width does decide is the geometry. The rotation is derived per input
+ * width, so it is what makes one model's vectors incomparable with another's,
+ * and it is why `semanticSearch` scopes its scan by model NAME — the stored
+ * width cannot tell them apart. The real costs of a wide model are the pull,
+ * what it wants resident, and whether it needs a card; `ai/models.ts` carries
+ * those, and this number is here so the picker can show what an admin is
+ * choosing between.
  *
  * It is NOT what gets indexed. `embed` reads the real width off the vectors
  * that came back, because several of these support Matryoshka truncation and

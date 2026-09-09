@@ -18,7 +18,7 @@ import { migrate, one, pool, query, waitForDb } from '../db.js';
 import { grant, revoke, setFeatureFlag } from '../services/capabilities.js';
 import { eraseCapabilityData } from '../services/capabilityData.js';
 import { openEmails, sealEmail } from '../services/mailVault.js';
-import { indexBatch, indexPending, semanticSearch } from '../services/semantic.js';
+import { forgetEmbedReconciliation, indexBatch, indexPending, semanticSearch } from '../services/semantic.js';
 import { EMBED_DIMS } from '../services/embeddings.js';
 import { EMBED_CATALOGUE, embedInputChars } from '../ai/providers.js';
 import { guardBatch } from '../services/guard.js';
@@ -372,10 +372,60 @@ const embeddersGroup = group('embedders', async () => {
       ok(/pricing/i.test(String(opened[0]?.subject ?? '')), `top hit after the rebuild was "${opened[0]?.subject}"`);
     });
 
+    await test('a model changed without going through the settings page still rebuilds', async () => {
+      // The path a floor change takes. `embedModel` also comes from DEFAULTS,
+      // which reads `config.aiEmbedModel`, which reads AI_EMBED_MODEL — so an
+      // install that has never saved AI settings switches embedder on the next
+      // restart with nobody having touched the page, and the settings route
+      // that queues the rebuild is never called.
+      //
+      // The failure that produced was total and quiet rather than partial:
+      // `emails.embedded` stayed true so nothing re-indexed, while the scan
+      // scopes by model name so nothing matched. Meaning search returned
+      // nothing at all, for good.
+      //
+      // So this changes the model the way an environment variable does — a
+      // saved setting, no invalidation, `embedded` left alone — and asserts
+      // that the background pass notices anyway.
+      await useModel('bge-m3');
+      await query('UPDATE emails SET embedded=false WHERE account_id=$1', [f.accountId]);
+      for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+      ok((await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 3, minScore: 0 })).length,
+        'the fixture did not index under the first model, so this proves nothing');
+
+      // Now the environment-variable route: the setting moves, every row stays
+      // marked embedded, and nothing calls invalidateVectorsFrom.
+      forgetEmbedReconciliation();
+      await useModel('nomic-embed-text');
+      const stillMarked = await one<{ n: number }>(
+        'SELECT count(*)::int AS n FROM emails WHERE account_id=$1 AND embedded', [f.accountId]);
+      ok(stillMarked!.n > 0, 'the fixture has nothing marked embedded, so the case is not set up');
+      eq(await indexPending(f.userId), 0, 'something already queued the rebuild; this test is not exercising the gap');
+
+      // One pass is enough to notice and queue it.
+      await indexBatch(f.userId);
+      ok((await indexPending(f.userId)) >= 0);
+      for (let i = 0; i < 5 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
+      const hits = await semanticSearch(f.userId, [f.accountId], 'pricing engagement invoiced monthly', { limit: 3, minScore: 0 });
+      ok(hits.length, 'meaning search stayed empty after a model change nobody re-saved');
+      const rows = await query<any>('SELECT id, subject FROM emails WHERE id=$1', [hits[0].emailId]);
+      const opened = await openEmails(f.userId, 'owner', rows);
+      ok(/pricing/i.test(String(opened[0]?.subject ?? '')), `top hit was "${opened[0]?.subject}"`);
+      // And every vector is now the new model's, not a mixture.
+      const models = await query<{ model: string }>(
+        'SELECT DISTINCT model FROM email_vectors WHERE account_id=$1', [f.accountId]);
+      eq(models.length, 1, `the index is a mixture: ${models.map((m) => m.model).join(', ')}`);
+      eq(models[0].model, 'nomic-embed-text', 'the rebuild did not use the new model');
+    });
+
     // ── And the rest of the catalogue, at its own width ─────────────────────
     await test('every embedder in the catalogue indexes and searches at its own width', async () => {
       for (const m of EMBED_CATALOGUE) {
         await useModel(m.name);
+        // The sweep drives the models by hand, so it also clears the memo the
+        // reconciler keeps — otherwise it would be asserting against whatever
+        // that memo happened to hold rather than against each model in turn.
+        forgetEmbedReconciliation();
         await query('UPDATE emails SET embedded=false WHERE account_id=$1', [f.accountId]);
         for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
         eq(await indexPending(f.userId), 0, `${m.name}: messages left unindexed`);
