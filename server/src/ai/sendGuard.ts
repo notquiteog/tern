@@ -48,6 +48,12 @@ export async function transportReachable(acc: AccountRow): Promise<boolean> {
   const url = (acc as any).api_url as string | undefined;
   if (!url) return false;
   try {
+    // transport-exempt: this reaches the account's MAIL server, not a model
+    // server — `api_url` is a JMAP endpoint. The per-endpoint certificate rule
+    // and Tor switch belong to the model connections and say nothing about how
+    // mail is reached; that has its own guard in `util/netguard.ts`. Applying
+    // the model's proxy here would route a mailbox through it because a GPU
+    // happened to need one.
     const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2500) });
     return res.status < 500;
   } catch {

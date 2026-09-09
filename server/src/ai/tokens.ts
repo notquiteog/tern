@@ -11,16 +11,32 @@
 // output is enough to be told how many tokens went in. It is only used by the
 // evaluation scripts and the depth sweep; nothing in the mail path calls it.
 import { config } from '../config.js';
+import { outboundFetch } from '../util/outbound.js';
+import { endpointHeaders, transportFor, type ModelEndpoint } from './endpoint.js';
 
 export interface PromptSize { tokens: number; chars: number }
 
 // -1 when the endpoint would not say, so a report can print "unknown" rather
 // than a number that is quietly a guess.
-export async function countTokens(text: string, model: string, baseUrl = config.ollamaUrl): Promise<number> {
+export async function countTokens(text: string, model: string, baseUrl = config.ollamaUrl, endpoint?: ModelEndpoint): Promise<number> {
+  // The endpoint's own connection, not a bare socket. This is a real call to a
+  // real model server, and an install that reaches its model over Tor or with
+  // a self-signed certificate should not have an evaluation quietly stepping
+  // around both — the whole point of routing a model over Tor is that nothing
+  // announces this server's address to it, and "it was only the token counter"
+  // is not an exception that setting makes.
+  //
+  // Defaults to the bundled container with no credential, which is what the
+  // evaluations run against and what this did before it carried a transport
+  // at all.
+  const t: ModelEndpoint = endpoint ?? {
+    id: 'llm', label: 'the language model', provider: 'ollama', baseUrl,
+    apiKey: '', tlsInsecure: false, useTor: false, inheritedFrom: null,
+  };
   try {
-    const res = await fetch(`${baseUrl}/api/chat`, {
+    const res = await outboundFetch(`${baseUrl}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: text }],
@@ -32,7 +48,7 @@ export async function countTokens(text: string, model: string, baseUrl = config.
         keep_alive: '5m',
       }),
       signal: AbortSignal.timeout(600_000),
-    });
+    }, transportFor(t));
     if (!res.ok) return -1;
     const j: any = await res.json();
     return typeof j.prompt_eval_count === 'number' ? j.prompt_eval_count : -1;
