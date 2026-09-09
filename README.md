@@ -327,6 +327,17 @@ sudo ./install.sh
 The installer walks through domain and TLS, the admin account, the AI model,
 and the optional mail server. Run it again any time; it keeps your answers.
 
+**On the AI model.** Tern's AI features are built and tested against
+`qwen3.5:9b` or `gemma4:12b` for chat and `qwen3-embedding:4b` for meaning
+search. Drafting works well below that — a 2b rewrites and fixes grammar
+perfectly — but anything asked for a decision or a fixed format, such as an AI
+responder judging whether a message needs a reply, drifts rather than fails.
+The installer sizes a model to your box, says which side of that line it landed
+on, and installs it either way: it is a warning, never a wall. A hosted
+frontier model with thinking enabled is equally supported and has no floor at
+all. [docs/SETUP.md](docs/SETUP.md) has the detail and the two deployment
+shapes.
+
 Later: `./update.sh` pulls, rebuilds and restarts. `./bin/tern logs app`,
 `./bin/tern backup`, `./bin/tern cli list-users`.
 

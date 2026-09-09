@@ -658,10 +658,17 @@ address, read every few seconds — including on hosted providers, which the
 page used to skip. A model pulled on the GPU box, or a model added to a hosted
 catalogue, appears without an upgrade.
 
-Wider vectors cost storage: `email_vectors` holds one row per message at the
-model's width, so `qwen3-embedding:8b` builds an index over five times the
-size of an `all-minilm` one for the same mailbox. The picker shows the width
-beside each model it knows.
+**Wider vectors do not cost storage**, which is worth saying plainly because
+the opposite is the natural assumption and this page used to assert it. Every
+vector is projected down to a fixed width before it is stored, so an
+`all-minilm` row and a `qwen3-embedding:8b` row are the same 256 bytes and an
+index over the same mailbox is the same size either way. Measured across the
+whole catalogue above.
+
+What a wider model does cost is the download, the memory to keep it loaded, and
+wanting a graphics card to run at a sensible speed. Those are real — and they
+are the only reasons to pick a smaller one. The picker shows the width beside
+each model it knows.
 
 The embedding connection has **its own Tor switch and its own certificate
 rule**, not the language model's. That is deliberate and was once a bug: while

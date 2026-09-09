@@ -2,7 +2,57 @@
 // install.sh so the container and the installer agree; change both.
 // Sizes are the q4 quantisations Ollama pulls by default, plus headroom for
 // the KV cache and everything else on the box.
-export interface ModelTier { minGiB: number; model: string; label: string; note: string }
+export interface ModelTier {
+  minGiB: number;
+  model: string;
+  label: string;
+  /** Meets the floor Tern's AI features are built and tested against. */
+  floor?: boolean;
+  note: string;
+}
+
+// ---------- The floor ----------
+//
+// What a FEATURE may assume, which is a different question from what an
+// operator may install.
+//
+// **Chat: qwen3.5:9b or gemma4:12b. Meaning: qwen3-embedding:4b.**
+//
+// Drafting is the easy half and a small model does it well — that is why the
+// tiers below go down to 0.8b and stay there. The floor is about everything
+// else: an AI responder deciding whether a message needs a reply, a campaign
+// step following a structured format, anything asked to return a shape rather
+// than a paragraph. Below the floor those do not fail loudly, they drift —
+// the fence in prompts.ts becomes a suggestion, the format becomes advice, and
+// the send-side filter in llm.ts is left doing work it was never meant to be
+// the only line of.
+//
+// **It is a warning, never a wall.** Every tier below is offered, install.sh
+// recommends whatever fits the box, and a 4.5 GB VPS gets a working install
+// with a model that drafts perfectly well. What changes is that the installer
+// now says which side of the line the box is on, instead of implying that the
+// tier it picked is the intended experience.
+//
+// The other end is a first-class target: a hosted frontier model with thinking
+// enabled is a supported configuration, not an edge case, and nothing here is
+// gated on model size — see docs/SETUP.md.
+//
+// When the floor moves it moves here, in install.sh's rec_model, and in
+// docs/SETUP.md — all three, or the installer recommends something the
+// features are not tested against.
+export const FLOOR_CHAT = ['qwen3.5:9b', 'gemma4:12b'] as const;
+export const FLOOR_EMBED = 'qwen3-embedding:4b';
+
+/** Is this tier below the floor the features are tested against? */
+export function belowFloor(model: string): boolean {
+  return !FLOOR_CHAT.includes(model.replace(/:latest$/, '') as typeof FLOOR_CHAT[number])
+    && !ABOVE_FLOOR.includes(model.replace(/:latest$/, ''));
+}
+
+// Models larger than the floor. Kept explicit rather than inferred from size,
+// because "bigger" and "newer" are not the same axis: gemma4:e4b is a larger
+// file than gemma4:12b and about 4B of it works.
+const ABOVE_FLOOR: readonly string[] = ['qwen3.8:27b', 'gemma4:31b', 'qwen3.5:27b'];
 
 // Moved off qwen2.5 to the current generation. The sizes below are the real
 // downloads, checked against registry.ollama.ai rather than remembered — the
@@ -17,8 +67,8 @@ export const MODEL_TIERS: ModelTier[] = [
   { minGiB: 0, model: 'qwen3.5:0.8b', label: 'Tiny (under 6 GB RAM)', note: 'One gigabyte, and shipped at Q8 so it is less lossy than its size suggests. The right pick for a 4.5 GB VPS: good subject lines and short rewrites, simple drafts.' },
   { minGiB: 6, model: 'qwen3.5:2b', label: 'Small (6 to 10 GB RAM)', note: 'Also Q8. Noticeably steadier tone and structure than the 0.8b.' },
   { minGiB: 10, model: 'qwen3.5:4b', label: 'Medium (10 to 16 GB RAM)', note: 'The best value measured on this suite: 36 of 42 cases for 3.4 GB.' },
-  { minGiB: 16, model: 'qwen3.5:9b', label: 'Large (16 to 24 GB RAM)', note: 'The strongest measured here — 39 of 42 — for 2.4 GB more than the 4b and about half the speed. Wants a GPU on anything but a big box.' },
-  { minGiB: 24, model: 'gemma4:12b', label: 'Extra large (24+ GB RAM)', note: 'A true 12B in 7.6 GB, newest Gemma generation. Needs a GPU or patience.' },
+  { minGiB: 16, model: 'qwen3.5:9b', floor: true, label: 'Large (16 to 24 GB RAM)', note: 'The floor, and the strongest measured here — 39 of 42 — for 2.4 GB more than the 4b and about half the speed. Wants a GPU on anything but a big box.' },
+  { minGiB: 24, model: 'gemma4:12b', floor: true, label: 'Extra large (24+ GB RAM)', note: 'The floor, and the better of the two if the box has room. A true 12B in 7.6 GB, newest Gemma generation. Needs a GPU or patience.' },
 ];
 
 export function recommendModel(totalBytes: number): ModelTier {
@@ -136,10 +186,18 @@ export const EMBED_MODELS: EmbedModel[] = [
   // than only in providers.ts because these tags really are pullable onto the
   // bundled Ollama, which is what this list is for.
   //
-  // Their vectors are also much wider, and that is the cost worth knowing
-  // before pulling one: `email_vectors` stores a row per message at the
-  // model's width, so the 8B builds an index over five times the size of an
-  // all-minilm one over the same mailbox.
+  // Their vectors are much wider, and it is worth being precise about what
+  // that does and does not cost, because the instinct is a reasonable one and
+  // this comment used to teach it wrongly. It said the 8B builds an index five
+  // times the size of an all-minilm one. It does not, and has not since the
+  // keyed projection went in: every vector is cut to `EMBED_DIMS` (256) before
+  // it is stored, so a 384-wide model and a 4096-wide one both leave a
+  // 256-byte row. Measured across this whole catalogue.
+  //
+  // What width actually costs is the pull, the memory to hold it, and wanting
+  // a card. Those are real and they are what the tiers below are sized on.
+  // Disk is not one of them — which, if anything, is an argument FOR the wider
+  // model rather than against it.
   {
     name: 'qwen3-embedding:0.6b', sizeBytes: 0.64e9, needsBytes: 1.1e9, params: '0.6B', contextTokens: 32768,
     note: 'The Qwen3 family without a graphics card: the same long window and the same query instruction as its siblings, in 1024-wide vectors.',
@@ -158,7 +216,7 @@ export const EMBED_MODELS: EmbedModel[] = [
   },
   {
     name: 'qwen3-embedding:4b', sizeBytes: 2.5e9, needsBytes: 3.4e9, params: '4B', contextTokens: 32768,
-    note: 'Strong multilingual retrieval, 2560-wide vectors, and a window wide enough that Tern sends it the whole of any ordinary message. Wants a GPU; on CPU the first index pass over a real mailbox is an overnight job.',
+    note: 'The floor: what meaning search is built and tested against. Strong multilingual retrieval, 2560-wide vectors, and a window wide enough that Tern sends it the whole of any ordinary message. Wants a GPU; on CPU the first index pass over a real mailbox is an overnight job. Costs no more disk than all-minilm — every vector is stored at the same width.',
   },
   {
     name: 'qwen3-embedding:8b', sizeBytes: 4.7e9, needsBytes: 6.2e9, params: '8B', contextTokens: 32768,

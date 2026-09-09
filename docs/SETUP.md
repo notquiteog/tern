@@ -88,6 +88,65 @@ These apply to sequences and to "Send with a natural delay". Manual sends are ne
 
 ## 6. Turn on the assistant
 
+### Which model, and the floor under it
+
+**Chat: `qwen3.5:9b` or `gemma4:12b`. Meaning search: `qwen3-embedding:4b`.**
+
+That is what Tern's AI features are built and tested against — not the smallest
+thing that runs. The installer sizes a model to whatever box it finds and will
+happily hand a 4.5 GB VPS a `qwen3.5:0.8b`, so it is worth knowing what the
+line means before you choose.
+
+**Drafting is the easy half, and a small model does it well.** Rewriting a
+paragraph, fixing grammar, shortening, suggesting a subject line — a 2b handles
+all of it, and on a CPU-only box a small model is also a far faster one. If
+that is what you want the assistant for, you are fine below the floor.
+
+**What drifts below the line is anything asked for a decision or a shape.** An
+AI responder judging whether a message needs a reply at all, a campaign step
+following a structured brief, anything where the prompt sets a fence — a
+smaller model treats the fence as a suggestion. It does not error; it just
+gradually does something other than what was asked, which is harder to notice
+than a failure and more annoying to debug.
+
+**The floor is a warning, never a wall.** Nothing refuses a smaller model, the
+installer offers whatever fits, and you can point **Settings → AI** at a bigger
+model — or at a hosted provider — later without reinstalling. What the floor
+governs is what a *feature* may assume, not what an *operator* may install.
+
+Perch's [`docs/TERN.md`](https://github.com/notquiteog/perch/blob/main/docs/TERN.md)
+carries the measured table of models against VRAM; it is deliberately not
+copied here, because a second copy is a copy that rots.
+
+### The other end: a frontier model with thinking
+
+A supported configuration and a first-class one, not an edge case. Point
+**Settings → AI** at Anthropic, OpenAI or any OpenAI-compatible host, turn
+thinking on, and the same features get better — nothing in Tern is gated on
+model size, no prompt is shortened for the floor, and the reasoning is kept
+separate from the draft rather than pasted into it. If you would rather not run
+a model at all, this path has no floor.
+
+### The two shapes this is built for
+
+**Models elsewhere.** Tern on a VPS, models on a separate box or a provider
+API. VPSs do not have GPUs and this is the intended production setup — it is
+the reason [Perch](https://github.com/notquiteog/perch) exists, and the app
+scales on its own machine without the model competing for its memory.
+
+**Everything on one box, 16 GB or more.** One VPS running Ollama, whisper, the
+app, Postgres and nginx together, no third party. Supported, and 16 GB is a
+real floor rather than a comfortable one: a floor chat model is about 6 GB
+resident, `qwen3-embedding:4b` about 2.5 GB, whisper `base` about 0.4 GB, and
+the app and database about 1 GB. That has headroom on 16 GB and none on 8, so
+below the line the installer's smaller tiers are doing real work rather than
+being a formality. Dictation is the first thing to drop, and lowering **Keep
+model loaded** so the chat and embedding models are not both resident between
+requests is the next.
+
+### Turning it on
+
+
 **Settings → AI** shows whether Ollama is reachable and the model is installed, and lets an admin pull other models. **Keep model loaded** takes a duration with a unit (`30s`, `10m`, `1h`) or a plain number of seconds, where `-1` never unloads it and `0` unloads it straight after each request. In the composer, **Draft with AI** opens the assistant; in a thread, **Summarize**.
 
 For sequences, a step's **AI personalise** switch has the model write each contact's message from the template brief and the contact's fields and notes. With the sequence's AI mode on **Review** (the default), those drafts wait in **AI review** for approval.

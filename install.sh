@@ -155,6 +155,23 @@ ok "admin user: $ADMIN_USER"
 step "4/8 AI drafting assistant (Ollama, runs locally)"
 TOTAL_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
 TOTAL_GIB="$(awk -v kb="$TOTAL_KB" 'BEGIN { printf "%.1f", kb/1024/1024 }')"
+# ---------- The floor ----------
+#
+# The RAM at which this box can run a model Tern's AI features are built and
+# tested against: qwen3.5:9b or gemma4:12b. Below it, drafting still works
+# well — that is the easy half, and a 2b does it — but the features that ask a
+# model for a decision or a shape rather than a paragraph start to drift: an
+# AI responder judging whether a message needs a reply, a campaign step
+# following a structured format, anything where the prompt sets a fence.
+#
+# The failure is quiet, which is why the installer now says which side of the
+# line it landed on. It is a warning and never a wall: every tier below is
+# offered, and a 4.5 GB VPS gets a working install.
+#
+# Same number as FLOOR_CHAT in server/src/ai/models.ts, and the tiers below
+# mirror MODEL_TIERS there. Change all of them together.
+FLOOR_GIB=16
+
 # Same tiers as server/src/ai/models.ts; change both.
 rec_model() {
   awk -v g="$TOTAL_GIB" 'BEGIN {
@@ -163,6 +180,17 @@ rec_model() {
 RECOMMENDED="$(rec_model)"
 note "This machine has ${TOTAL_GIB} GB of RAM; recommended model: $RECOMMENDED"
 note "Tiers: <6 GB qwen3.5:0.8b · 6-10 GB qwen3.5:2b · 10-16 GB qwen3.5:4b · 16-24 GB qwen3.5:9b · 24+ GB gemma4:12b"
+if awk -v g="$TOTAL_GIB" -v f="$FLOOR_GIB" 'BEGIN { exit !(g < f) }'; then
+  note ""
+  note "$RECOMMENDED is below the model Tern's AI features are tested against"
+  note "(qwen3.5:9b, which wants about ${FLOOR_GIB} GB). It drafts, rewrites, fixes"
+  note "grammar and suggests subject lines perfectly well — that is most of what"
+  note "the assistant is for. What is less reliable below the line is anything"
+  note "asked for a decision or a fixed format: AI responders judging whether a"
+  note "message needs a reply, and campaign steps following a structure."
+  note "Nothing here stops you, and you can point Admin -> AI model at a bigger"
+  note "model later, or at a hosted provider, without reinstalling."
+fi
 ask_yn AI_ENABLED "Enable the AI assistant?" y
 if [ "$AI_ENABLED" = 1 ]; then
   ask AI_MODEL "Model to download (any name from ollama.com/library)" "${AI_MODEL:-$RECOMMENDED}"
