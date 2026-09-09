@@ -443,14 +443,31 @@ export interface ChatOptions {
 // attention. Read once per model and remembered, because both answers are
 // wanted on every settings page and neither changes while a model exists.
 const described = new Map<string, { capabilities: string[]; info: Record<string, unknown> } | null>();
-async function describeModel(baseUrl: string, model: string): Promise<{ capabilities: string[]; info: Record<string, unknown> } | null> {
-  const key = `${baseUrl}|${model}`;
+
+/**
+ * `/api/show` for one model, remembered.
+ *
+ * Takes an ENDPOINT rather than a bare address, and that is load-bearing
+ * rather than tidiness. The version that took only a `baseUrl` read the
+ * language model's key, certificate rule and proxy out of the settings to
+ * reach whatever address it was handed — so describing a model on the
+ * EMBEDDING server would have sent the drafting server's credential to it, and
+ * routed it through the drafting server's Tor switch. That is the exact
+ * failure `endpoint.ts` was written to make impossible, reintroduced through a
+ * back door.
+ *
+ * The default keeps every existing caller behaving as it did: they pass the
+ * language model's own address, and the language model's connection is what
+ * they get.
+ */
+async function describeModel(baseUrl: string, model: string, endpoint?: ModelEndpoint): Promise<{ capabilities: string[]; info: Record<string, unknown> } | null> {
+  const key = `${normalizeBaseUrl(baseUrl)}|${model}`;
   const known = described.get(key);
   if (known !== undefined) return known;
   let out: { capabilities: string[]; info: Record<string, unknown> } | null = null;
   try {
-    const s = await getAiSettings();
-    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) }, transportFor(s));
+    const t = endpoint ?? llmEndpoint(await getAiSettings());
+    const res = await outboundFetch(`${normalizeBaseUrl(baseUrl)}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000) }, endpointTransport(t));
     if (res.ok) {
       const j: any = await res.json();
       out = { capabilities: Array.isArray(j.capabilities) ? j.capabilities : [], info: j.model_info ?? {} };
@@ -1146,14 +1163,63 @@ export interface InstalledModel {
 }
 
 export async function listModels(endpoint?: ModelEndpoint): Promise<InstalledModel[]> {
-  const s = endpoint ? ollamaProbeFor(endpoint) : await getAiSettings();
-  const res = await outboundFetch(`${s.baseUrl}/api/tags`, { headers: endpointHeaders(endpoint ?? llmEndpoint(s as AiSettings)), signal: AbortSignal.timeout(8000) }, endpointTransport(endpoint ?? llmEndpoint(s as AiSettings))).catch((e) => { throw new Error(reachError(s, e)); });
+  // The whole connection, resolved once: address, key, certificate rule and
+  // proxy together. Everything below reads `target`, so listing the embedding
+  // server's models cannot reach for the language model's credential.
+  const target = endpoint ?? llmEndpoint(await getAiSettings());
+  const s = ollamaProbeFor(target);
+  const res = await outboundFetch(`${target.baseUrl}/api/tags`, { headers: endpointHeaders(target), signal: AbortSignal.timeout(8000) }, endpointTransport(target)).catch((e) => { throw new Error(reachError(s, e)); });
   if (!res.ok) throw new Error(httpHint(res.status, s));
   const j: any = await res.json();
-  // `capabilities` is what separates a model that writes from one that only
-  // embeds. Without it the page offered "Use" on all-minilm, which would have
-  // set the drafting model to something that cannot draft.
-  return (j.models ?? []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at, family: m.details?.family, parameterSize: m.details?.parameter_size, quantization: m.details?.quantization_level, capabilities: Array.isArray(m.capabilities) ? m.capabilities : [] }));
+  const rows = (j.models ?? []).map((m: any) => ({
+    name: m.name,
+    size: m.size,
+    modified: m.modified_at,
+    family: m.details?.family,
+    parameterSize: m.details?.parameter_size,
+    quantization: m.details?.quantization_level,
+    // `capabilities` is what separates a model that writes from one that only
+    // embeds. Without it the page offered "Use" on all-minilm, which would
+    // have set the drafting model to something that cannot draft.
+    //
+    // It is read from BOTH places a build might put it, and this was a real
+    // bug rather than caution. Ollama's documented `/api/tags` response has no
+    // capability field at all — it is `/api/show` that reports one — and some
+    // builds put it under `details`. Reading only the top level therefore got
+    // an empty list from every Ollama, so every model was "unclassified" and
+    // an embedder somebody had pulled appeared in the WRITING table with a Use
+    // button: exactly the failure the paragraph above says was fixed.
+    capabilities: Array.isArray(m.capabilities) ? m.capabilities
+      : Array.isArray(m.details?.capabilities) ? m.details.capabilities
+        : [],
+  }));
+
+  // Whatever the listing did not say, asked of `/api/show`, which does say.
+  //
+  // Cheap despite being one request per model: `describeModel` remembers each
+  // answer for the life of the process — a model's capabilities do not change
+  // while it exists — so this costs a round trip once per model rather than on
+  // every poll, and the admin page polls this endpoint every few seconds.
+  //
+  // A few at a time. Sequentially an admin with thirty models waits thirty
+  // round trips; all at once it is thirty sockets at a model server that may
+  // be a Raspberry Pi at the end of an SSH tunnel. A model whose `/api/show`
+  // fails stays unclassified, and the rest of the list is unaffected.
+  const unknown = rows.filter((r: InstalledModel) => !r.capabilities.length);
+  const POOL = 5;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < unknown.length; i = next++) {
+      const row = unknown[i];
+      // The endpoint, not just its address: this may be the embedding server,
+      // which has its own key and its own proxy.
+      const described = await describeModel(target.baseUrl, row.name, target).catch(() => null);
+      if (described?.capabilities.length) row.capabilities = described.capabilities;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(POOL, unknown.length) }, worker));
+
+  return rows;
 }
 
 // What Ollama currently holds in memory. `size` is the total the model is
