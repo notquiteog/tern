@@ -13,7 +13,7 @@ import path from 'node:path';
 import url from 'node:url';
 import ts from 'typescript';
 
-import { collectionFor } from './vectorStore.js';
+import { collectionFor, modelSlug, parseCollection } from './vectorStore.js';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -233,4 +233,168 @@ test('the orphan sweep is reachable, not just exported', () => {
     'nothing invokes the orphan sweep, so orphaned collections stay for ever');
   assert.match(readReal('server/src/cli.ts'), /vectors-sweep/,
     'the sweep has no command name, so nobody can run it');
+});
+
+
+// ---------- Changing the embedder, which is the third way to leak ----------
+
+test('changing the embedder drops the collections the old one built', () => {
+  // The third instance of the same bug, after the revocation and the orphans.
+  // The model is in the collection name precisely so a model change writes
+  // somewhere new instead of poisoning the old index — and nothing dropped the
+  // old one, so switching embedder left a complete set of every user's
+  // mail-derived vectors behind, under a model nothing would ever query again.
+  //
+  // It compounds, which is what makes it worse than a stale row: every change
+  // adds another full copy per user, and no user action reaches them. Postgres
+  // self-heals here (the manifest row is overwritten `ON CONFLICT`), so the two
+  // stores quietly disagreed about what "changing the embedder" meant.
+  const semantic = readReal('server/src/services/semantic.ts');
+  assert.match(semantic, /export async function dropCollectionsNotFrom/,
+    'nothing sweeps the collections a previous embedder built');
+  const body = /export async function invalidateVectorsFrom[\s\S]*?\n}/.exec(semantic);
+  assert.ok(body, 'invalidateVectorsFrom is gone');
+  assert.match(body[0], /dropCollectionsNotFrom\(/,
+    'invalidateVectorsFrom marks the mail for rebuild and leaves the old vectors in the index');
+});
+
+test('the mark comes before the drop, so a failure loses nothing', () => {
+  // Same argument `indexBatch` makes pointing the other way. A message marked
+  // for rebuild whose old collection still exists is recoverable — the next
+  // pass rewrites it. Dropping first and then failing the UPDATE leaves
+  // messages flagged as indexed with nothing behind them, and nothing will
+  // ever look for them again.
+  const semantic = readReal('server/src/services/semantic.ts');
+  const body = /export async function invalidateVectorsFrom[\s\S]*?\n}/.exec(semantic)![0];
+  const update = body.indexOf('UPDATE emails SET embedded=false');
+  const drop = body.indexOf('dropCollectionsNotFrom(');
+  assert.ok(update >= 0 && drop >= 0, 'the two halves are no longer both here');
+  assert.ok(update < drop, 'the collections are dropped before the mail is marked for rebuild');
+});
+
+test('an unreachable index cannot block a change of embedder', () => {
+  // The same rule as `eraseSemanticIndex`, for the same reason: the SQL has
+  // already run and the rebuild is queued, so throwing here would fail a
+  // settings save over a service that is not on the critical path.
+  const semantic = readReal('server/src/services/semantic.ts');
+  const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(semantic);
+  assert.ok(body, 'dropCollectionsNotFrom is gone');
+  assert.match(body[0], /try\s*{/, 'dropCollectionsNotFrom does not catch anything');
+  assert.ok(!/\bthrow\b/.test(body[0]),
+    'dropCollectionsNotFrom can throw, so an unreachable index would fail the settings save');
+});
+
+test('the name a vector is written under and the name it is dropped by cannot diverge', () => {
+  // The sweep recognises a collection by re-deriving its slug. If that rule
+  // were written twice, the two spellings could drift — and the failure is not
+  // symmetrical: missing a collection leaks, while failing to recognise the
+  // LIVE one deletes the index somebody is currently using.
+  assert.match(readReal('server/src/services/vectorStore.ts'),
+    /export function collectionFor[\s\S]{0,200}modelSlug\(/,
+    'collectionFor no longer builds its name from modelSlug, so the sweep can disagree with the writer');
+  for (const model of ['qwen3-embedding:4b', 'nomic-embed-text', 'qwen/qwen3-embedding-8b', 'text-embedding-3-small']) {
+    assert.deepEqual(parseCollection(collectionFor(9, model)), { userId: 9, slug: modelSlug(model) });
+  }
+});
+
+test('a sweep never touches a collection that is not ours', () => {
+  // This Qdrant may be shared with something else on the same box. A sweep
+  // that assumed every collection it could see belonged to Tern would delete a
+  // stranger's data, and it would do it while reporting success.
+  for (const name of ['', 'tern', 'tern_', 'tern_u', 'tern_ux_model', 'ternu5_model', 'other_u5_model', 'tern_u0_m', 'tern_u-1_m']) {
+    assert.equal(parseCollection(name), null, `${name} was claimed as ours`);
+  }
+  // A bare `tern_u<id>` is ours — `eraseSemanticIndex` already matches one —
+  // so the parser has to agree rather than skipping it.
+  assert.deepEqual(parseCollection('tern_u7'), { userId: 7, slug: '' });
+});
+
+test('a missing embedder name never reads as a model change', () => {
+  // An empty slug matches nothing and must sweep nothing. Reacting to an
+  // unset setting by dropping every index would be a spectacular way to
+  // handle a blank field.
+  assert.equal(modelSlug(''), '');
+  assert.equal(modelSlug('   '), '');
+  const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(readReal('server/src/services/semantic.ts'))![0];
+  assert.match(body, /if \(!keep\) return 0;/,
+    'dropCollectionsNotFrom does not bail on an empty model, so a blank setting would drop every collection');
+});
+
+test('changing the embedder drops the collections the old one built', () => {
+  // The second instance of the bug the test above was written for, arriving by
+  // a different route.
+  //
+  // `invalidateVectorsFrom` is the "the embedder changed" path. It marks every
+  // message for rebuild in Postgres, and the manifest row is later overwritten
+  // by `ON CONFLICT (email_id) DO UPDATE`, so that store self-heals. Qdrant has
+  // no equivalent: the model is IN the collection name, so a new embedder
+  // writes to a new collection and the old one — a complete set of every
+  // user's mail-derived vectors — was simply abandoned. Every subsequent change
+  // added another full copy per user.
+  //
+  // Nothing visible broke, which is why it needs a test rather than a bug
+  // report: search kept working, because `semanticSearch` scopes by model and
+  // never looked at the old collection again.
+  const semantic = readReal('server/src/services/semantic.ts');
+  assert.match(semantic, /export async function dropCollectionsNotFrom/,
+    'nothing sweeps the collections a superseded embedder built');
+  const invalidate = /export async function invalidateVectorsFrom[\s\S]*?\n}/.exec(semantic);
+  assert.ok(invalidate, 'invalidateVectorsFrom is gone');
+  assert.match(invalidate[0], /dropCollectionsNotFrom\(/,
+    'changing the embedder marks the mail for rebuild and leaves the old vectors in the index');
+});
+
+test('changing the embedder cannot be blocked by an unreachable index', () => {
+  // Same argument as the revocation path: the SQL has already run and the
+  // rebuild is queued, so throwing here would fail an admin's settings save
+  // over a service that is allowed to be down. Whatever was missed is swept by
+  // the next model change or by `vectors-sweep`.
+  const semantic = readReal('server/src/services/semantic.ts');
+  const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(semantic);
+  assert.ok(body, 'dropCollectionsNotFrom is gone');
+  assert.match(body[0], /try\s*{/, 'dropCollectionsNotFrom does not catch anything');
+  assert.ok(!/\bthrow\b/.test(body[0]),
+    'dropCollectionsNotFrom can throw, so an unreachable index would fail a settings save');
+});
+
+test('the name a vector is written under and the name it is dropped by cannot drift', () => {
+  // The sweep decides what to delete by comparing a parsed slug against the
+  // current model's. If `collectionFor` and the sweep ever spelled a slug
+  // differently, the sweep would either miss every old collection for ever or
+  // — far worse — fail to recognise the LIVE one and drop the index that is
+  // in use. One definition, used by both, is what stops that being possible.
+  const store = readReal('server/src/services/vectorStore.ts');
+  assert.match(store, /export function modelSlug/, 'modelSlug is gone');
+  const built = /export function collectionFor[\s\S]*?\n}/.exec(store);
+  assert.ok(built, 'collectionFor is gone');
+  assert.match(built[0], /modelSlug\(/,
+    'collectionFor spells the slug itself instead of using modelSlug, so the writer and the sweeper can disagree');
+
+  // And the round trip holds for the names people actually configure.
+  for (const model of ['qwen3-embedding:4b', 'nomic-embed-text', 'qwen/qwen3-embedding-8b', 'text-embedding-3-small']) {
+    assert.deepEqual(parseCollection(collectionFor(42, model)), { userId: 42, slug: modelSlug(model) });
+  }
+});
+
+test('the sweep refuses every name that is not ours', () => {
+  // This Qdrant may be shared with something else on the same box. A sweep that
+  // treated an unparseable collection as Tern's would delete a stranger's data,
+  // and it would do it during an ordinary settings save.
+  for (const name of ['', 'tern', 'tern_', 'tern_u', 'tern_ux_model', 'ternu5_model', 'other_u5_model', 'tern_u0_model', 'collections']) {
+    assert.equal(parseCollection(name), null, `${name} was parsed as one of ours`);
+  }
+  // A bare `tern_u<id>` is ours with no model segment — `eraseSemanticIndex`
+  // already matches those, so the parser has to agree.
+  assert.deepEqual(parseCollection('tern_u7'), { userId: 7, slug: '' });
+});
+
+test('a missing embedder name never triggers the sweep', () => {
+  // An empty slug would compare unequal to every real one and drop the entire
+  // index across all users. That is not a model change, it is a missing
+  // setting, and reacting to it by erasing everything would be a spectacular
+  // way to handle a blank field.
+  assert.equal(modelSlug(''), '');
+  const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(readReal('server/src/services/semantic.ts'));
+  assert.ok(body && /if \(!keep\) return 0;/.test(body[0]),
+    'dropCollectionsNotFrom does not bail out on an empty model name');
 });

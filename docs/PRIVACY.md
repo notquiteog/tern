@@ -126,6 +126,24 @@ stays resident, which by default is ten minutes after the last request. With
 nothing is generating, so that copy goes too. The grace period exists so that
 somebody working through their inbox is not paying a model load per message.
 
+### Changing the embedding model removes the old index
+
+Vectors are stored per user and per embedding model, so switching embedder
+writes into a new index rather than mixing two geometries. The other end of
+that bargain is that the previous one is dropped in the same action — it is not
+kept "just in case", and it is not left to be tidied up later. Nothing can read
+it once the setting changes (search is scoped to the model that made the
+vectors), and a copy of your mail's meaning that nothing will ever read is
+exactly the sort of thing that should not survive.
+
+Three things now remove vectors, and between them they cover every way the
+question can be asked: turning **Meaning search** off erases your whole index,
+deleting your account takes it with everything else, and changing the model
+drops what the previous one built. If the index service is unreachable at that
+moment the erase is not abandoned — the change still goes through, the failure
+is logged loudly, and `./bin/tern vectors-sweep` clears whatever was left.
+
+
 ## What each person can do
 
 - **Export**: Settings → Security → *Export my data* streams one JSON file with

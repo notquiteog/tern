@@ -162,10 +162,12 @@ Nothing leaves your server except the mail itself.
   window is sent more of each message than a 512-token one — the window is
   what decides it, rather than a constant — and the Qwen3 and Gemini models
   are given the task instruction their training expects on a search and
-  deliberately not on a stored message. Changing the model queues a rebuild;
-  until it finishes, search answers from what has been rebuilt rather than
-  scoring the old model's vectors, which are in a different geometry and would
-  come back as confident nonsense.
+  deliberately not on a stored message. Changing the model queues a rebuild and
+  drops the index the previous embedder built, so the old vectors are removed
+  rather than left sitting there unread; until the rebuild finishes, search
+  answers from what has been rebuilt rather than scoring the old model's
+  vectors, which are in a different geometry and would come back as confident
+  nonsense.
 
 **Accounts and admin**
 - Sign in with username and password, TOTP two-factor with recovery codes,

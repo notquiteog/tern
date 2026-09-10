@@ -20,6 +20,7 @@
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import * as vectors from './vectorStore.js';
+import { modelSlug, parseCollection } from './vectorStore.js';
 import { embed, getAiSettings } from '../ai/llm.js';
 import { embedInputChars } from '../ai/providers.js';
 import { dataKey } from './vault.js';
@@ -247,13 +248,84 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
 // asked for; `reconcileEmbedModel` above calls it for every other way the
 // model can change, none of which pass through a route at all.
 export async function invalidateVectorsFrom(model: string): Promise<number> {
+  // The manifest first, the index second, and the order is the same argument
+  // `indexBatch` makes pointing the other way. A message marked for rebuild
+  // whose old collection still exists is recoverable — the next pass rewrites
+  // it. A collection dropped before the mark, with the UPDATE then failing,
+  // leaves messages flagged as indexed with nothing behind them, and nothing
+  // will ever look for them again.
   const rows = await query<{ id: number }>(
     `UPDATE emails SET embedded=false
       WHERE embedded AND id IN (SELECT email_id FROM email_vectors WHERE model <> $1)
       RETURNING id`,
     [model],
   );
+  await dropCollectionsNotFrom(model);
   return rows.length;
+}
+
+/**
+ * Drop every collection built by an embedder this install is no longer using.
+ *
+ * ── Why this has to exist ───────────────────────────────────────────────────
+ *
+ * Because the model is in the collection name, which is what makes a model
+ * change safe — a new embedder writes into a new collection instead of
+ * poisoning the old one. The half that was missing is the other end of that
+ * bargain: nothing ever dropped the old one.
+ *
+ * The result was a leak that grew rather than a stale row. Switching embedder
+ * left `tern_u<id>_<old model>` holding a complete set of every user's
+ * mail-derived vectors, under a model nothing would query again, indefinitely
+ * — and every subsequent change added another full copy per user. Postgres
+ * self-heals here, because the manifest row is overwritten by `ON CONFLICT
+ * (email_id) DO UPDATE`; Qdrant had no equivalent, so the two stores disagreed
+ * about what "changing the embedder" meant.
+ *
+ * ── Why it is safe to drop immediately ──────────────────────────────────────
+ *
+ * Because nothing can read those vectors any more. `semanticSearch` scopes by
+ * `v.model = $4`, so from the instant the setting changes the old collection
+ * serves no query — keeping it does not soften the gap during a rebuild, it
+ * only decides whether the data is still on disk while it is already unused.
+ *
+ * ── What it will not touch ──────────────────────────────────────────────────
+ *
+ * Anything it cannot parse as one of ours. This Qdrant may be shared with
+ * something else on the same box, and a sweep that assumed every collection it
+ * could see belonged to Tern would be a sweep that deletes a stranger's data.
+ * `parseCollection` returns null for those and they are skipped.
+ *
+ * Never throws. An unreachable index must not stop an admin changing the
+ * embedder — the SQL above has already run, the rebuild is queued, and the
+ * next model change or a capability revocation sweeps whatever was missed.
+ */
+export async function dropCollectionsNotFrom(model: string): Promise<number> {
+  const keep = modelSlug(model);
+  // An empty slug would match every collection with no model segment, which is
+  // not a model change — it is a missing setting, and dropping the index on
+  // one would be a spectacular way to react to it.
+  if (!keep) return 0;
+  let dropped = 0;
+  try {
+    for (const name of await vectors.listCollections()) {
+      const parsed = parseCollection(name);
+      if (!parsed || parsed.slug === keep) continue;
+      try {
+        await vectors.dropCollection(name);
+        dropped += 1;
+      } catch (err) {
+        log.error('could not drop a superseded vector collection', { name, err: String(err) });
+      }
+    }
+  } catch (err) {
+    log.error('the vector index could not be reached to drop superseded collections; they remain', {
+      model, err: String(err),
+    });
+    return dropped;
+  }
+  if (dropped) log.info(`dropped ${dropped} vector collections built by a previous embedder`, { model });
+  return dropped;
 }
 
 // ---------- Searching ----------

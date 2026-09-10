@@ -73,9 +73,37 @@ async function call(path: string, init: RequestInit = {}): Promise<unknown> {
  * `GET /collections` can see what is there. Qdrant accepts a wide range of
  * names; this keeps to a narrow one so nothing has to be escaped.
  */
+/**
+ * A model name, flattened to something Qdrant will accept in a collection name.
+ *
+ * Its own function because two things depend on it agreeing with itself: the
+ * name a collection is WRITTEN under, and the name it is later recognised and
+ * dropped by. While the slug rule lived inline in `collectionFor` there was
+ * only one caller and no way for them to disagree; now that stale collections
+ * are swept, a second spelling of this would either miss collections for ever
+ * or — far worse — fail to recognise the live one and drop it.
+ */
+export function modelSlug(model: string): string {
+  return String(model).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
 export function collectionFor(userId: number, model: string): string {
-  const slug = String(model).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  return `tern_u${userId}_${slug}`;
+  return `tern_u${userId}_${modelSlug(model)}`;
+}
+
+/**
+ * A collection name, read back into the two things it encodes.
+ *
+ * Returns null for anything that is not one of ours, which is the load-bearing
+ * half: this Qdrant may be shared, and a sweep that dropped names it could not
+ * parse would be a sweep that deletes somebody else's data.
+ */
+export function parseCollection(name: string): { userId: number; slug: string } | null {
+  const m = /^tern_u(\d+)(?:_(.*))?$/.exec(name);
+  if (!m) return null;
+  const userId = Number(m[1]);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+  return { userId, slug: m[2] ?? '' };
 }
 
 /** Collections this process has already ensured, so a batch does not re-ask. */
