@@ -28,6 +28,7 @@ import { guardBatch } from '../services/guard.js';
 import { extractPending } from '../services/attachments.js';
 import { scanThread, settleFromMail, threadsToScan } from '../services/commitments.js';
 import { scanForInvitations } from '../services/calendarMail.js';
+import { reblindAll } from '../routes/contacts.js';
 
 const log = logger('enrichment');
 
@@ -45,6 +46,40 @@ type Pass = {
 };
 
 const PASSES: Pass[] = [
+  {
+    // Contacts and senders, joined on the blind hash.
+    //
+    // Two things were quietly not happening. `contacts.email_blind` — the
+    // value a sender and a contact card meet on without either being readable
+    // — had a column, an index and a helper, and nothing ever wrote to it, so
+    // the priority model's `from_contact` signal was false for everybody. And
+    // `contact_threads` was only ever filled by the live receive path, so mail
+    // brought in from an archive was never linked to the people it was from —
+    // on exactly the mail the README tells you to import first.
+    //
+    // Both are one indexed statement each and both no-op once an install is in
+    // step, so this pass costs nothing on the tick after it finishes.
+    name: 'contact-links',
+    capability: 'triage',
+    usesModel: false,
+    run: async (userId, accounts) => {
+      let n = await reblindAll(userId);
+      for (const acc of accounts) {
+        const rows = await query<{ n: number }>(
+          `INSERT INTO contact_threads (contact_id, account_id, thread_id)
+           SELECT DISTINCT c.id, e.account_id, e.thread_id
+             FROM emails e
+             JOIN contacts c ON c.email_blind = e.from_blind AND c.user_id = $2
+            WHERE e.account_id = $1 AND e.from_blind IS NOT NULL
+           ON CONFLICT DO NOTHING
+           RETURNING 1 AS n`,
+          [acc.id, userId],
+        );
+        n += rows.length;
+      }
+      return n;
+    },
+  },
   {
     name: 'guard',
     capability: 'guard',

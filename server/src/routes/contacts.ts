@@ -4,7 +4,7 @@ import { requireAuth } from '../auth.js';
 import { idParam, parse, z } from '../util/validate.js';
 import { badRequest, notFound } from '../errors.js';
 import { guessMapping, parseCsv, toCsv } from '../util/csv.js';
-import { openEmailWith } from '../services/mailVault.js';
+import { contactBlind, openEmailWith } from '../services/mailVault.js';
 import { dataKey } from '../services/vault.js';
 import { requireCapability } from '../services/capabilities.js';
 import { powGuard } from '../services/workGuard.js';
@@ -30,6 +30,47 @@ const contactSchema = z.object({
   status: z.enum(['active', 'unsubscribed', 'bounced', 'replied', 'do_not_contact']).optional(),
   timezone: z.string().max(64).nullable().optional(),
 });
+
+/**
+ * Keep a contact's blind sender hash in step with its address.
+ *
+ * `contacts.email_blind` is how a sender and a contact card meet on one value
+ * without either being readable — the priority model's `from_contact` signal
+ * and the "have I met this sender" check both join on it. The column, its
+ * index and `contactBlind()` all shipped; nothing ever wrote to it, so both
+ * read an empty set and `from_contact` was permanently false for everybody.
+ *
+ * Called after every write that can set or change an address.
+ */
+async function reblind(userId: number, ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  const rows = await query<{ id: number; email: string }>(
+    'SELECT id, email FROM contacts WHERE id = ANY($1) AND user_id=$2',
+    [ids, userId],
+  );
+  for (const r of rows) {
+    await query('UPDATE contacts SET email_blind=$3 WHERE id=$1 AND user_id=$2', [r.id, userId, await contactBlind(userId, r.email)]);
+  }
+}
+
+/**
+ * Fill in every missing hash for one person.
+ *
+ * Cheap enough to run after a CSV import and on the first read of the contact
+ * list — the WHERE clause means an install that is already in step does one
+ * indexed count and stops. It is also the backfill the migration's own comment
+ * promised and nothing ever provided.
+ */
+export async function reblindAll(userId: number): Promise<number> {
+  const rows = await query<{ id: number; email: string }>(
+    'SELECT id, email FROM contacts WHERE user_id=$1 AND email_blind IS NULL LIMIT 5000',
+    [userId],
+  );
+  for (const r of rows) {
+    await query('UPDATE contacts SET email_blind=$3 WHERE id=$1 AND user_id=$2', [r.id, userId, await contactBlind(userId, r.email)]);
+  }
+  return rows.length;
+}
 
 contactsRouter.get('/', async (req, res) => {
   const q = String(req.query.q ?? '').trim();
@@ -172,6 +213,7 @@ contactsRouter.post('/', async (req, res) => {
      RETURNING *`,
     [req.user!.id, b.email, b.first_name, b.last_name, b.company, b.title, b.phone, b.website, JSON.stringify(b.fields), b.tags, b.notes, b.consent_source, b.status ?? 'active', b.timezone ?? null],
   );
+  await reblind(req.user!.id, [rows[0].id]);
   res.json({ contact: rows[0] });
 });
 
@@ -202,6 +244,7 @@ contactsRouter.put('/:id', async (req, res) => {
   } else if (b.status === 'active') {
     await query(`DELETE FROM suppressions WHERE user_id=$1 AND lower(email)=lower($2) AND reason IN ('manual','import')`, [req.user!.id, rows[0].email]);
   }
+  if (b.email) await reblind(req.user!.id, [id]);
   res.json({ contact: rows[0] });
 });
 
@@ -363,6 +406,9 @@ contactsRouter.post('/import', async (req, res) => {
     }
     await c.query('DELETE FROM uploads WHERE id=$1', [b.uploadId]);
   });
+  // Every address in the file gets its blind hash, so an imported list is
+  // recognised as contacts by everything that matches senders on it.
+  await reblindAll(req.user!.id);
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'contacts.imported',$2)`, [req.user!.id, JSON.stringify(stats)]);
   res.json({ ok: true, ...stats });
 });
