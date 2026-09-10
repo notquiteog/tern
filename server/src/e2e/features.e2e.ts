@@ -20,6 +20,7 @@ import { eraseCapabilityData } from '../services/capabilityData.js';
 import { openEmails, sealEmail } from '../services/mailVault.js';
 import { forgetEmbedReconciliation, indexBatch, indexPending, semanticSearch } from '../services/semantic.js';
 import { EMBED_DIMS } from '../services/embeddings.js';
+import { collectionFor, listCollections } from '../services/vectorStore.js';
 import { EMBED_CATALOGUE, embedInputChars } from '../ai/providers.js';
 import { guardBatch } from '../services/guard.js';
 import { retrain, scorePending } from '../services/triage.js';
@@ -179,11 +180,33 @@ const semanticGroup = group('semantic', async () => {
     eq(await indexPending(f.userId), 0, 'messages left unindexed');
   });
 
-  await test('a stored vector is opaque bytes of the expected width', async () => {
-    const v = await one<{ vec: Buffer; dims: number }>('SELECT vec, dims FROM email_vectors WHERE account_id=$1 LIMIT 1', [f.accountId]);
-    ok(Buffer.isBuffer(v?.vec), 'not bytes');
-    eq(v!.vec.length, v!.dims, 'width does not match the column');
-    ok(!/[\x20-\x7e]{16,}/.test(v!.vec.toString('latin1')), 'a run of readable text in a vector');
+  await test('Postgres keeps the manifest and none of the numbers', async () => {
+    // This used to read `email_vectors.vec` and assert it was opaque bytes of
+    // the right width. That column is gone: the vectors live in Qdrant now and
+    // Postgres keeps only a record of WHICH messages are indexed and under
+    // which model.
+    //
+    // The property worth asserting therefore changed rather than disappeared.
+    // It is no longer "the bytes here are unreadable" — it is that there are no
+    // bytes here at all, and that what remains cannot be read back as content.
+    const cols = await query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name='email_vectors'`,
+    );
+    const names = cols.map((c) => c.column_name);
+    ok(!names.includes('vec'), 'email_vectors still has a vec column');
+    ok(!names.includes('norm'), 'email_vectors still has a norm column');
+    // What it does keep, and all of it is bookkeeping.
+    for (const needed of ['email_id', 'account_id', 'model', 'dims']) {
+      ok(names.includes(needed), `the manifest lost ${needed}`);
+    }
+
+    const row = await one<{ model: string; dims: number }>(
+      'SELECT model, dims FROM email_vectors WHERE account_id=$1 LIMIT 1', [f.accountId],
+    );
+    ok(row, 'nothing was indexed at all');
+    ok(row!.dims > 0, 'the manifest does not record a width');
+    // The model name is a model name, not a fragment of somebody's mail.
+    ok(/^[\w.:\/-]+$/.test(row!.model), `model column holds something unexpected: ${row!.model}`);
   });
 
   await test('a question finds mail that shares no words with it', async () => {
@@ -292,20 +315,31 @@ const embeddersGroup = group('embedders', async () => {
     await useModel('qwen3-embedding:4b');
     embedSeen.length = 0;
 
-    await test('a 2560-wide model indexes a whole mailbox', async () => {
+    await test('a 2560-wide model indexes a whole mailbox, across both stores', async () => {
+      // Rewritten for the Qdrant split. This used to read `vec` out of
+      // `email_vectors` and check its width; that column is gone, correctly —
+      // the numbers live in Qdrant now and Postgres keeps the manifest. So the
+      // assertion moves to the property the split has to preserve: Postgres
+      // knows WHICH messages are indexed and under WHICH model, and Qdrant has
+      // somewhere to have put them.
       for (let i = 0; i < 4 && (await indexPending(f.userId)) > 0; i++) await indexBatch(f.userId);
       eq(await indexPending(f.userId), 0, 'messages left unindexed');
-      const rows = await query<{ dims: number; model: string; vec: Buffer }>(
-        'SELECT dims, model, vec FROM email_vectors WHERE account_id=$1', [f.accountId]);
-      eq(rows.length, 3, 'wrong number of vectors');
+
+      const rows = await query<{ dims: number; model: string }>(
+        'SELECT dims, model FROM email_vectors WHERE account_id=$1', [f.accountId]);
+      eq(rows.length, 3, 'wrong number of manifest rows');
       for (const r of rows) {
         eq(r.model, 'qwen3-embedding:4b', 'the row does not name the model that made it');
-        // The STORED width, which is the projection's and not the model's:
-        // 2560 in, 256 out. The whole reason a search cannot tell models apart
-        // by this column.
+        // Still the projection's width and not the model's — 2560 in, 256 out
+        // — which is why the collection NAME has to carry the model. Two
+        // models' points are the same width and live in different geometries.
         eq(r.dims, EMBED_DIMS, 'unexpected stored width');
-        eq(r.vec.length, EMBED_DIMS, 'the bytes disagree with the column');
       }
+
+      const mine = collectionFor(f.userId, 'qwen3-embedding:4b');
+      const collections = await listCollections();
+      ok(collections.includes(mine),
+        `no collection ${mine} in Qdrant; it has ${collections.join(', ') || 'none'}`);
     });
 
     await test('a long message reaches a 32k-window model whole, past both old caps', async () => {
@@ -864,7 +898,11 @@ const READABLE_BY_DESIGN: Record<string, string> = {
   'emails.address_terms': 'HMAC under the owner key',
   'emails.from_terms': 'HMAC under the owner key',
   'emails.from_blind': 'HMAC under the owner key',
-  'email_vectors.vec': 'a keyed projection; see ENCRYPTION.md layer 1b',
+  // `email_vectors.vec` was here and is gone: the column no longer exists,
+  // because the vectors moved to Qdrant and this table became a manifest. A
+  // stale entry is not harmless — the group below asserts the allow-list has
+  // nothing in it that the schema does not, precisely so a column that goes
+  // away takes its exemption with it.
   'email_vectors.model': 'the name of a model, not anybody’s words',
   'user_capabilities.capability': 'a fixed vocabulary',
   'attachment_text.part_id': 'an opaque blob id the mail server chose',
