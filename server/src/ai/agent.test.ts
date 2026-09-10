@@ -240,3 +240,66 @@ test('a conversation whose last turn died mid-tool is still answerable', () => {
   // The question survives; only the abandoned call is dropped.
   assert.equal(out[out.length - 1]!.content, 'and this?');
 });
+
+// ---------- The proposal rule, as the catalogue grew verbs ----------
+//
+// The assistant used to read and do two things: write a draft and draw a
+// picture. It now proposes a calendar entry, a ledger note, a rule and a pile
+// of archiving as well. Every one of those writes to something, which makes
+// "nothing happens without the person's button" a property that has to be
+// checked rather than remembered.
+
+test('every tool that proposes something names the capability it writes to', () => {
+  // A tool proposing a calendar entry to somebody who has not turned the
+  // calendar on would hand them a card whose button 403s. `toolsFor` removes
+  // it instead, which only works if the tool declares what it needs.
+  const wants: Record<string, string> = {
+    propose_event: 'calendar',
+    record_commitment: 'commitments',
+    draft_rule: 'nlrules',
+    draft_email: 'ai.compose',
+    make_picture: 'ai.media',
+    read_attachment: 'attachments',
+    search_mail: 'semantic',
+    my_commitments: 'commitments',
+    my_day: 'calendar',
+  };
+  for (const [name, cap] of Object.entries(wants)) {
+    const tool = TOOLS.find((t) => t.spec.name === name);
+    assert.ok(tool, `${name} is gone from the catalogue`);
+    assert.ok(tool!.needs.includes(cap as any), `${name} should need ${cap}`);
+  }
+});
+
+test('the two search tools are told apart in words a model can act on', () => {
+  // They answer different questions and a model choosing wrongly is the whole
+  // failure mode: `search_mail` returns plausible neighbours, which is wrong
+  // for "every unread from Dana", and `search_mail_exact` cannot answer "the
+  // thread where we agreed the price" at all.
+  const vague = TOOLS.find((t) => t.spec.name === 'search_mail')!;
+  const exact = TOOLS.find((t) => t.spec.name === 'search_mail_exact')!;
+  assert.match(vague.spec.description, /meaning/i);
+  assert.match(exact.spec.description, /operator|from:|is:unread/i);
+  // Each points at the other, so a model reading one is told when to reach for
+  // the other rather than being left to infer it.
+  assert.match(exact.spec.description, /search_mail\b/);
+  assert.match(vague.spec.description, /rather than by exact words/i);
+  // The exact one works without the meaning index; the vague one cannot.
+  assert.ok(!exact.needs.includes('semantic'), 'operator search should not need the meaning index');
+  assert.ok(vague.needs.includes('semantic'));
+});
+
+test('the triage tool offers only actions that Undo covers', () => {
+  // Archive, label, snooze and mute are all reversible from the mail list, so
+  // a wrong set is a mistake somebody clicks away. Delete, junk and mark-read
+  // are not, and a model choosing one of those on a set of forty is a set of
+  // forty messages nobody sees again.
+  const triage = TOOLS.find((t) => t.spec.name === 'propose_triage')!;
+  const described = triage.spec.description.toLowerCase();
+  for (const verb of ['archive', 'label', 'snooze', 'mute']) {
+    assert.ok(described.includes(verb), `propose_triage should offer ${verb}`);
+  }
+  assert.match(described, /cannot delete or junk/i);
+  const action = triage.spec.parameters.properties.action as { description?: string };
+  assert.match(String(action.description), /archive, label, snooze, mute/i);
+});

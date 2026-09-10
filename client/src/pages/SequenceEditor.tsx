@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ChevronLeft, Clock, Eye, Mail, Pause, Play, Plus, Sparkles, Trash2, UserPlus, Users, Archive, Save, RotateCcw, SkipForward, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarClock, ChevronLeft, Clock, Eye, Mail, Pause, Play, Plus, Sparkles, Trash2, UserPlus, Users, Archive, Save, RotateCcw, SkipForward, X } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useAccounts, useContactTags, useTemplates } from '../lib/queries';
@@ -12,6 +12,8 @@ import { MERGE_FIELDS } from './Templates';
 import { fmtDateTime, fmtDuration, plural } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { DictateBox, appendDictated } from '../components/Dictate';
+import { useDebounced } from '../lib/hooks';
+import { useFocusContext } from '../state/assistant';
 
 interface Step { id?: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean }
 
@@ -47,10 +49,25 @@ export default function SequenceEditorPage() {
     if (dirty) await save();
     try { await api.post(`/api/sequences/${sid}/status`, { status }); qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['sequences'] }); toast.success(status === 'active' ? 'Sequence is live' : `Sequence ${status}`); } catch (e) { toast.error(e); }
   }
-  async function doPreview() {
+  // A dry run, optionally against somebody real.
+  //
+  // The editor could preview the steps and never the run. Merge mistakes were
+  // findable one step at a time; "these three arrive on the same Tuesday" and
+  // "the last one lands on Boxing Day" were only findable once it was live.
+  async function doPreview(contactId?: number) {
     if (dirty) await save();
-    try { setPreview(await api.get(`/api/sequences/${sid}/preview`)); } catch (e) { toast.error(e); }
+    const q = contactId ? `?contactId=${contactId}` : '';
+    try { setPreview(await api.get(`/api/sequences/${sid}/preview${q}`)); } catch (e) { toast.error(e); }
   }
+  // So the assistant knows which sequence is on screen: "how is this going?"
+  // in the dock beside this page had nothing to attach "this" to.
+  useFocusContext(seq ? {
+    kind: 'sequence',
+    label: seq.name,
+    ref: seq.name,
+    detail: `${seq.status}, ${steps.filter((x) => x.kind === 'email').length} emails${seq.stats?.active ? `, ${seq.stats.active} contacts in it` : ''}`,
+  } : null);
+
   const updStep = (i: number, patch: Partial<Step>) => { setSteps((s) => s.map((st, j) => (j === i ? { ...st, ...patch } : st))); setDirty(true); };
   const move = (i: number, d: number) => { setSteps((s) => { const n = [...s]; const [x] = n.splice(i, 1); n.splice(i + d, 0, x); return n; }); setDirty(true); };
   const addStep = (kind: 'email' | 'wait') => { setSteps((s) => [...s, { kind, template_id: null, subject: '', body_html: '', wait_days: kind === 'wait' ? 3 : 0, wait_hours: 0, ai_personalize: false, ai_instructions: '', reply_in_thread: true }]); setDirty(true); };
@@ -72,7 +89,7 @@ export default function SequenceEditorPage() {
           </div>
         </div>
         <div className="row gap-4 wrap seq-actions">
-          <Button icon={<Eye size={15} />} onClick={doPreview}>Preview</Button>
+          <Button icon={<Eye size={15} />} onClick={() => void doPreview()}>Dry run</Button>
           <Button icon={<UserPlus size={15} />} onClick={() => setEnrollOpen(true)}>Enroll contacts</Button>
           {seq.status === 'active' ? <Button icon={<Pause size={15} />} onClick={() => setStatus('paused')}>Pause</Button> : <Button variant="primary" icon={<Play size={15} />} onClick={() => setStatus('active')} disabled={!seq.account_id || !emailSteps}>Activate</Button>}
           <Button variant={dirty ? 'primary' : 'default'} icon={<Save size={15} />} loading={saving} disabled={!dirty} onClick={save}>{dirty ? 'Save changes' : 'Saved'}</Button>
@@ -112,8 +129,38 @@ export default function SequenceEditorPage() {
         </div>
       )}
       <EnrollDialog open={enrollOpen} onClose={() => setEnrollOpen(false)} sid={sid} onDone={() => { qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['enrollments', sid] }); setTab('enrollments'); }} />
-      <Modal open={Boolean(preview)} onClose={() => setPreview(null)} title="Preview for a sample contact" size="wide">
-        {preview?.preview?.map((p: any, i: number) => p.kind === 'wait' ? <div key={i} className="row small muted mb-16"><Clock size={14} /> wait {fmtDuration(p.step.wait_days, p.step.wait_hours)}</div> : <div key={i} className="card mb-16"><div className="strong mb-8">{p.subject || '(no subject)'}{p.step.ai_personalize && <Badge kind="accent"><Sparkles size={12} /> AI rewrites this per contact</Badge>}</div><SafeHtml className="msg-text" html={p.html} />{p.brief && <div className="small muted mt-8">Brief: {p.brief}</div>}</div>)}
+      <Modal
+        open={Boolean(preview)}
+        onClose={() => setPreview(null)}
+        title={preview?.schedule?.contact ? `Dry run for ${preview.schedule.contact.name || preview.schedule.contact.email}` : 'Dry run for a sample contact'}
+        size="wide"
+      >
+        <div className="row wrap mb-16" style={{ alignItems: 'flex-end' }}>
+          <Field label="Run it against" hint="Their real merge values, on the dates the sending policy would choose.">
+            <ContactPicker onPick={(c) => void doPreview(c?.id)} />
+          </Field>
+        </div>
+        {preview?.schedule && (
+          <Callout>
+            {preview.schedule.window
+              ? <>Sends only {preview.schedule.window}{preview.schedule.tz ? ` (${preview.schedule.tz})` : ''}; the dates below are pushed to the next open slot.</>
+              : <>No send window is set on this account, so each step goes as soon as its wait is up.</>}
+            {preview.schedule.stopsOnReply && ' The whole run stops the moment they reply, so in practice most people never reach the last step.'}
+          </Callout>
+        )}
+        {preview?.preview?.map((p: any, i: number) => p.kind === 'wait'
+          ? <div key={i} className="row small muted mb-16"><Clock size={14} /> wait {fmtDuration(p.step.wait_days, p.step.wait_hours)}</div>
+          : (
+            <div key={i} className="card mb-16">
+              <div className="row small muted mb-8">
+                <CalendarClock size={13} />
+                {p.at ? fmtDateTime(p.at) : 'as soon as it is due'}
+              </div>
+              <div className="strong mb-8">{p.subject || '(no subject)'}{p.step.ai_personalize && <Badge kind="accent"><Sparkles size={12} /> AI rewrites this per contact</Badge>}</div>
+              <SafeHtml className="msg-text" html={p.html} />
+              {p.brief && <div className="small muted mt-8">Brief: {p.brief}</div>}
+            </div>
+          ))}
       </Modal>
       <Confirm open={del} onClose={() => setDel(false)} danger title="Delete this sequence?" message="Enrollments are removed. Sent messages stay in the mailbox and the send log." confirmLabel="Delete" onConfirm={async () => { await api.del(`/api/sequences/${sid}`); qc.invalidateQueries({ queryKey: ['sequences'] }); nav('/sequences'); }} />
     </div>
@@ -236,6 +283,52 @@ function Enrollments({ sid }: { sid: number }) {
         ]} />
       )}
       {data && data.total > data.size && <div className="row mt-8" style={{ justifyContent: 'flex-end' }}><Button size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button><span className="small muted">page {page}</span><Button size="sm" disabled={page * data.size >= data.total} onClick={() => setPage(page + 1)}>Next</Button></div>}
+    </div>
+  );
+}
+
+
+/**
+ * Somebody real to run the dry run against.
+ *
+ * Deliberately not a dropdown of every contact: an outreach list is thousands
+ * of rows and the question being answered is "what does this look like for
+ * *this* person", which starts with a name somebody already has in mind. The
+ * sample contact stays as the default, because the commonest reason to open a
+ * preview is to check a merge field rather than a date.
+ */
+function ContactPicker({ onPick }: { onPick: (c: { id: number } | null) => void }) {
+  const [q, setQ] = useState('');
+  const term = useDebounced(q, 250);
+  const { data } = useQuery({
+    queryKey: ['contact-pick', term],
+    queryFn: () => api.get<{ contacts: any[] }>(`/api/contacts?q=${encodeURIComponent(term)}&size=10`),
+    enabled: term.trim().length > 1,
+  });
+  const rows = data?.contacts ?? [];
+  return (
+    <div className="col gap-4" style={{ minWidth: 280 }}>
+      <div className="row gap-4">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a contact by name or address" />
+        <Button size="sm" variant="ghost" onClick={() => { setQ(''); onPick(null); }}>Sample</Button>
+      </div>
+      {term.trim().length > 1 && (
+        <div className="col gap-4">
+          {!rows.length && <span className="small faint">Nobody matches “{term}”.</span>}
+          {rows.slice(0, 6).map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className="link-btn small"
+              style={{ textAlign: 'left' }}
+              onClick={() => { setQ(''); onPick(c); }}
+            >
+              {[c.first_name, c.last_name].filter(Boolean).join(' ') || c.email}
+              <span className="faint"> · {c.email}{c.company ? ` · ${c.company}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -15,12 +15,13 @@
 import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ClipboardCheck, Clock, Loader2, Plus, Telescope, Timer, X } from 'lucide-react';
+import { CalendarClock, Check, ClipboardCheck, Clock, Loader2, Plus, Send, Telescope, Timer, X } from 'lucide-react';
 import { api } from '../api';
 import { postWithWork } from '../lib/work';
 import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
 import { Badge, Button, IconButton, Input, Segmented } from './ui';
+import { CommitmentMove } from './CommitmentMove';
 import { dueIn, fmtDate } from '../lib/format';
 import type { SemanticHit } from './SearchExtras';
 
@@ -55,6 +56,8 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
   const [kind, setKind] = useState<'owed' | 'awaiting'>('owed');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState<number | 'new' | null>(null);
+  const [moving, setMoving] = useState<ThreadCommitment | null>(null);
+  const canWrite = useCan('ai.compose');
 
   if (!can) return null;
 
@@ -114,6 +117,20 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
             </div>
             <span className="aside-commit-acts">
               {busy === c.id ? <Loader2 size={13} className="spin" /> : <>
+                {/* Reschedule and Nudge lived only on the Commitments page,
+                    although the moment somebody wants either is while reading
+                    the conversation the promise came out of. Same panel, same
+                    draft, same rule that it hands you a composer rather than
+                    sending anything. */}
+                {canWrite && (
+                  <IconButton
+                    label={c.kind === 'owed' ? 'It is going to be late — write and say so' : 'Ask again'}
+                    className="btn-sm"
+                    onClick={() => setMoving(c)}
+                  >
+                    {c.kind === 'owed' ? <CalendarClock size={13} /> : <Send size={13} />}
+                  </IconButton>
+                )}
                 <IconButton label="Mark done" className="btn-sm" onClick={() => close(c.id, 'done')}><Check size={13} /></IconButton>
                 <IconButton label="Not a commitment" className="btn-sm" onClick={() => close(c.id, 'dropped')}><X size={13} /></IconButton>
               </>}
@@ -121,6 +138,14 @@ export function ThreadCommitments({ accountId, threadId, items, counterparty, on
           </div>
         );
       })}
+
+      {moving && (
+        <CommitmentMove
+          c={{ ...moving, status: 'open', source: moving.source, createdAt: '' } as any}
+          onClose={() => setMoving(null)}
+          onMoved={() => { setMoving(null); onChanged(); }}
+        />
+      )}
 
       {adding && (
         <div className="aside-add">

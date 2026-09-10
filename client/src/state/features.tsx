@@ -13,7 +13,7 @@ import { useAuth } from './auth';
 export type Capability =
   | 'ai.compose' | 'ai.summaries' | 'ai.responders' | 'ai.campaigns' | 'ai.playground' | 'ai.media' | 'ai.assistant'
   | 'semantic' | 'triage' | 'guard' | 'attachments' | 'commitments'
-  | 'nlrules' | 'brief' | 'voice' | 'calendar' | 'links' | 'import';
+  | 'nlrules' | 'brief' | 'voice' | 'calendar' | 'links' | 'import' | 'enrich';
 
 export interface CapabilityInfo {
   id: Capability;

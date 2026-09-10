@@ -19,9 +19,10 @@
 // mails your contacts on a model's say-so.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
-  Bot, ChevronLeft, ImagePlus, Loader2, Mail, MessageSquare, Mic, Plus,
-  Search, Square, Trash2, Volume2, VolumeX, X,
+  AlertTriangle, Bot, CalendarPlus, Check, ChevronLeft, ClipboardCheck, ImagePlus, Layers,
+  ListFilter, Loader2, Mail, MessageSquare, Mic, Plus, Search, Square, Trash2, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { api } from '../api';
 import { streamWithWork, withWork } from '../lib/work';
@@ -37,9 +38,27 @@ import { Button, Empty, IconButton, Spinner } from './ui';
 // ---------- What the server sends ----------
 
 interface Reference { accountId: number; threadId: string; subject: string; from: string; date: string }
+interface TriageThread { accountId: number; threadId: string; subject: string; from: string; date: string }
+interface DraftRule { name: string; match: 'all' | 'any'; conditions: { field: string; op: string; value?: string }[]; actions: { type: string; mailboxId?: string }[] }
 type Proposal =
   | { kind: 'draft'; to: { name: string | null; email: string }[]; subject: string; body: string; accountId: number | null; threadId: string | null }
-  | { kind: 'picture'; upload: { id: number; filename: string; contentType: string; size: number }; prompt: string; revisedPrompt?: string };
+  | { kind: 'picture'; upload: { id: number; filename: string; contentType: string; size: number }; prompt: string; revisedPrompt?: string }
+  | {
+      kind: 'event'; summary: string; startsAt: string; endsAt: string; allDay: boolean;
+      location: string | null; description: string | null; timezone: string | null;
+      attendees: { name: string | null; email: string }[];
+      clashes: { summary: string; startsAt: string; endsAt: string }[];
+    }
+  | {
+      kind: 'commitment'; commitmentKind: 'owed' | 'awaiting'; text: string;
+      counterparty: string | null; dueAt: string | null; accountId: number | null; threadId: string | null;
+    }
+  | { kind: 'rule'; rule: DraftRule; sentence: string }
+  | {
+      kind: 'triage'; action: 'archive' | 'label' | 'snooze' | 'mute';
+      mailbox: { id: string; name: string } | null; until: string | null;
+      reason: string; threads: TriageThread[];
+    };
 
 interface UiMessage {
   id: number;
@@ -80,6 +99,12 @@ const DOING: Record<string, string> = {
   my_day: 'Checking your calendar',
   draft_email: 'Writing a draft',
   make_picture: 'Drawing a picture',
+  search_mail_exact: 'Searching your mail',
+  read_attachment: 'Reading an attachment',
+  propose_event: 'Working out a time',
+  record_commitment: 'Noting that down',
+  draft_rule: 'Writing a rule',
+  propose_triage: 'Gathering those up',
 };
 const doingLabel = (name: string) => DOING[name] ?? `Running ${name}`;
 
@@ -124,6 +149,273 @@ function PictureCard({ p }: { p: Extract<Proposal, { kind: 'picture' }> }) {
       <img className="assistant-card-image" src={`/api/mail/uploads/${p.upload.id}`} alt={p.prompt} loading="lazy" />
       <div className="assistant-card-actions">
         <Button size="sm" onClick={() => compose.open({ attachments: [upload] })}>Attach to a new message</Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- The cards that change something here ----------
+//
+// Four proposals that write to the person's own things rather than to somebody
+// else's inbox. They share a shape deliberately: a heading that names what has
+// NOT happened yet, the whole of what is proposed rendered plainly, one button,
+// and — once pressed — the card saying so rather than sitting there looking
+// pressable. Every one of them is reversible by the ordinary means, which is
+// the reason they are allowed a button at all.
+
+/** A button that runs once and then says what it did. */
+function useOnce(run: () => Promise<string>) {
+  const toast = useToast();
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');
+  const [said, setSaid] = useState('');
+  const go = async () => {
+    if (state !== 'idle') return;
+    setState('busy');
+    try {
+      setSaid(await run());
+      setState('done');
+    } catch (e) {
+      toast.error(e);
+      setState('idle');
+    }
+  };
+  return { state, said, go };
+}
+
+function EventCard({ p }: { p: Extract<Proposal, { kind: 'event' }> }) {
+  const start = new Date(p.startsAt);
+  const end = new Date(p.endsAt);
+  const when = p.allDay
+    ? `${start.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} · all day`
+    : `${start.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} · ${start.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}–${end.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+  // Guests are shown but not invited. Sending an invitation is mail going to
+  // somebody else, which is the line this whole file is built around, so the
+  // event is saved with the guests on it and `notify` off — Tern's own calendar
+  // page is where somebody chooses to write to them.
+  const once = useOnce(async () => {
+    await api.post('/api/calendar/events', {
+      summary: p.summary,
+      startsAt: p.startsAt,
+      endsAt: p.endsAt,
+      allDay: p.allDay,
+      location: p.location ?? undefined,
+      description: p.description ?? undefined,
+      timezone: p.timezone ?? undefined,
+      attendees: p.attendees.map((a) => ({ email: a.email, name: a.name })),
+      notify: false,
+    });
+    return 'In your calendar';
+  });
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head"><CalendarPlus size={14} /><span>Not in your calendar yet</span></div>
+      <div className="assistant-card-row"><span className="faint">What</span> {p.summary}</div>
+      <div className="assistant-card-row"><span className="faint">When</span> {when}</div>
+      {p.location ? <div className="assistant-card-row"><span className="faint">Where</span> {p.location}</div> : null}
+      {p.attendees.length ? <div className="assistant-card-row"><span className="faint">Guests</span> {p.attendees.map((a) => a.name || a.email).join(', ')}</div> : null}
+      {p.description ? <div className="assistant-card-body">{p.description}</div> : null}
+      {p.clashes.length ? (
+        <div className="assistant-card-warn">
+          <AlertTriangle size={13} />
+          <span>
+            Clashes with {p.clashes.map((c) => c.summary).join(', ')}. Saving it anyway is fine — Tern is telling you, not stopping you.
+          </span>
+        </div>
+      ) : null}
+      <div className="assistant-card-actions">
+        {once.state === 'done'
+          ? <span className="assistant-card-done"><Check size={13} /> {once.said}</span>
+          : <Button size="sm" loading={once.state === 'busy'} onClick={() => void once.go()}>Add to calendar</Button>}
+        {p.attendees.length && once.state !== 'done'
+          ? <span className="faint small">Guests are saved on it; nobody is invited until you send it from the calendar.</span>
+          : null}
+      </div>
+    </div>
+  );
+}
+
+function CommitmentCard({ p }: { p: Extract<Proposal, { kind: 'commitment' }> }) {
+  const qc = useQueryClient();
+  const once = useOnce(async () => {
+    if (!p.accountId) throw new Error('No account to file this under');
+    await api.post('/api/assist/commitments', {
+      accountId: p.accountId,
+      threadId: p.threadId ?? undefined,
+      kind: p.commitmentKind,
+      text: p.text,
+      counterparty: p.counterparty,
+      dueAt: p.dueAt,
+    });
+    void qc.invalidateQueries({ queryKey: ['commitments'] });
+    return 'Added to your list';
+  });
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head">
+        <ClipboardCheck size={14} />
+        <span>{p.commitmentKind === 'owed' ? 'Something you owe — not saved yet' : 'Something you are waiting for — not saved yet'}</span>
+      </div>
+      <div className="assistant-card-body">{p.text}</div>
+      {p.counterparty ? <div className="assistant-card-row"><span className="faint">With</span> {p.counterparty}</div> : null}
+      {p.dueAt ? <div className="assistant-card-row"><span className="faint">Due</span> {new Date(p.dueAt).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</div> : null}
+      <div className="assistant-card-actions">
+        {once.state === 'done'
+          ? <span className="assistant-card-done"><Check size={13} /> {once.said}</span>
+          : <Button size="sm" loading={once.state === 'busy'} onClick={() => void once.go()}>Keep it</Button>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A drafted rule, handed to the ordinary editor.
+ *
+ * It opens unsaved, on purpose and not as an oversight: the promise the plain
+ * English rules feature makes is that the model writes a draft and then leaves,
+ * and a card that saved the rule itself would quietly break that. So the button
+ * carries the draft to `/rules`, the ordinary form fills in with it, and the
+ * person saves it there having seen every condition.
+ */
+function RuleCard({ p }: { p: Extract<Proposal, { kind: 'rule' }> }) {
+  const nav = useNavigate();
+  const summary = p.rule.conditions
+    .map((c) => `${c.field} ${c.op.replace(/_/g, ' ')}${c.value ? ` “${c.value}”` : ''}`)
+    .join(p.rule.match === 'all' ? ' and ' : ' or ');
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head"><ListFilter size={14} /><span>Draft rule, not saved and not running</span></div>
+      <div className="assistant-card-row"><span className="faint">Name</span> {p.rule.name}</div>
+      <div className="assistant-card-row"><span className="faint">When</span> {summary || 'nothing yet'}</div>
+      <div className="assistant-card-row"><span className="faint">Then</span> {p.rule.actions.map((a) => a.type.replace(/_/g, ' ')).join(', ') || 'nothing yet'}</div>
+      <div className="assistant-card-actions">
+        <Button
+          size="sm"
+          onClick={() => {
+            // Carried in session storage rather than in the URL: a rule is an
+            // object, and a query string big enough to hold one is a query
+            // string that ends up in a history entry somebody can share.
+            try { sessionStorage.setItem('tern.ruleDraft', JSON.stringify(p.rule)); } catch { /* private mode */ }
+            nav('/rules?draft=1');
+          }}
+        >
+          Open in the rules editor
+        </Button>
+      </div>
+      <div className="assistant-card-note">Rules only run on mail that arrives after you save them.</div>
+    </div>
+  );
+}
+
+/**
+ * A pile of conversations, with one button.
+ *
+ * The rules this card follows are the reason the tool behind it is allowed to
+ * exist at all:
+ *
+ *   **Every row is shown.** There is no "and 9 more". Approving a set you
+ *   cannot see is not approving anything.
+ *
+ *   **Every row can be taken out.** The model's selection is a suggestion, and
+ *   the commonest correction is "yes, except that one".
+ *
+ *   **Undo, exactly as the mail list does it.** All four actions are reversible
+ *   and the undo token the server hands back is passed to the same toast the
+ *   list uses, so a wrong set costs one click.
+ */
+function TriageCard({ p }: { p: Extract<Proposal, { kind: 'triage' }> }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [dropped, setDropped] = useState<Set<string>>(new Set());
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');
+  const [count, setCount] = useState(0);
+  const key = (t: TriageThread) => `${t.accountId}:${t.threadId}`;
+  const kept = p.threads.filter((t) => !dropped.has(key(t)));
+
+  const VERB: Record<typeof p.action, string> = {
+    archive: 'Archive', label: `Label “${p.mailbox?.name ?? ''}”`, snooze: 'Snooze', mute: 'Mute',
+  };
+
+  async function run() {
+    if (!kept.length || state !== 'idle') return;
+    setState('busy');
+    try {
+      // Grouped by account because the action route takes one account at a
+      // time — a person with a work and a personal mailbox can be handed one
+      // set spanning both, and it should still be one button.
+      const byAccount = new Map<number, string[]>();
+      for (const t of kept) byAccount.set(t.accountId, [...(byAccount.get(t.accountId) ?? []), t.threadId]);
+      const undos: { accountId: number; items: { jmapId: string; mailboxIds: string[] }[] }[] = [];
+      for (const [accountId, threadIds] of byAccount) {
+        const r = await api.post<{ undo: { accountId: number; items: { jmapId: string; mailboxIds: string[] }[] } | null }>('/api/mail/actions', {
+          accountId,
+          threadIds,
+          action: p.action,
+          ...(p.mailbox ? { mailboxId: p.mailbox.id } : {}),
+          ...(p.until ? { until: p.until } : {}),
+        });
+        if (r.undo?.items.length) undos.push(r.undo);
+      }
+      setCount(kept.length);
+      setState('done');
+      const done = `${kept.length} conversation${kept.length === 1 ? '' : 's'} ${p.action === 'archive' ? 'archived' : p.action === 'label' ? 'labelled' : p.action === 'snooze' ? 'snoozed' : 'muted'}`;
+      if (undos.length) {
+        toast.toast(done, {
+          action: {
+            label: 'Undo',
+            onClick: async () => {
+              try {
+                for (const u of undos) await api.post('/api/mail/actions', { accountId: u.accountId, action: 'restore', items: u.items });
+                toast.success('Restored');
+                setState('idle');
+              } catch (e) { toast.error(e); }
+              void qc.invalidateQueries({ queryKey: ['threads'] });
+              void qc.invalidateQueries({ queryKey: ['counts'] });
+            },
+          },
+        });
+      } else toast.success(done);
+      void qc.invalidateQueries({ queryKey: ['counts'] });
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['threads'] }), 800);
+    } catch (e) {
+      toast.error(e);
+      setState('idle');
+    }
+  }
+
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head">
+        <Layers size={14} />
+        <span>{state === 'done' ? `${count} done` : `${kept.length} conversation${kept.length === 1 ? '' : 's'}, nothing done yet`}</span>
+      </div>
+      {p.reason ? <div className="assistant-card-row"><span className="faint">Why</span> {p.reason}</div> : null}
+      {p.until ? <div className="assistant-card-row"><span className="faint">Until</span> {new Date(p.until).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</div> : null}
+      {state !== 'done' && (
+        <ul className="assistant-card-list">
+          {p.threads.map((t) => {
+            const gone = dropped.has(key(t));
+            return (
+              <li key={key(t)} className={gone ? 'dropped' : undefined}>
+                <span className="truncate">
+                  <span className="strong">{t.subject}</span>
+                  <span className="faint"> — {t.from}, {t.date}</span>
+                </span>
+                <IconButton
+                  label={gone ? 'Put it back' : 'Leave this one alone'}
+                  className="btn-sm"
+                  onClick={() => setDropped((d) => { const n = new Set(d); if (gone) n.delete(key(t)); else n.add(key(t)); return n; })}
+                >
+                  {gone ? <Plus size={13} /> : <X size={13} />}
+                </IconButton>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="assistant-card-actions">
+        {state === 'done'
+          ? <span className="assistant-card-done"><Check size={13} /> Done — undo is in the toast</span>
+          : <Button size="sm" loading={state === 'busy'} disabled={!kept.length} onClick={() => void run()}>{VERB[p.action]} {kept.length}</Button>}
       </div>
     </div>
   );
@@ -391,11 +683,11 @@ export function AssistantDock() {
               >
                 {status.data && !status.data.enabled
                   ? 'An administrator has not enabled a model for this server.'
-                  : 'It can search your mail, read a conversation, check your calendar and put a draft in front of you. Nothing is sent without you.'}
+                  : 'It can search your mail, read a conversation and its attachments, check your calendar, and put a draft, a meeting or a tidy-up in front of you. Nothing happens without your button.'}
               </Empty>
             ) : !messages.length && !live ? (
               <Empty icon={<Bot size={22} />} title="Ask about anything in here">
-                Try “summarise this thread”, “what am I waiting on?”, or “draft a reply saying Thursday works”.
+                Try “summarise this thread”, “what's the total on that invoice?”, or “archive every newsletter from last month”.
               </Empty>
             ) : null}
 
@@ -404,6 +696,10 @@ export function AssistantDock() {
                 {m.content ? <div className="assistant-bubble">{m.content}</div> : null}
                 {m.proposal?.kind === 'draft' ? <DraftCard p={m.proposal} /> : null}
                 {m.proposal?.kind === 'picture' ? <PictureCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'event' ? <EventCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'commitment' ? <CommitmentCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'rule' ? <RuleCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'triage' ? <TriageCard p={m.proposal} /> : null}
                 {m.references?.length ? <ReferenceList refs={m.references} /> : null}
               </div>
             ))}
@@ -429,7 +725,29 @@ export function AssistantDock() {
               onChange={(e) => setText(e.target.value)}
               // Enter sends, Shift+Enter is a new line. The same bargain the
               // composer makes, so the two do not disagree about a key.
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(text); } }}
+              //
+              // Up-arrow in an EMPTY box recalls what you last asked, the way
+              // every shell does. It matters more here than in a shell: half
+              // the questions in this box arrive by dictation, which produces
+              // long sentences with one wrong word in them, and before this the
+              // only way to fix that word was to say the whole thing again.
+              // Guarded on the box being empty so it never steals the key from
+              // somebody moving the caret through a message they are writing.
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(text); return; }
+                if (e.key === 'ArrowUp' && !text) {
+                  const last = [...messages].reverse().find((m) => m.role === 'user' && m.content.trim());
+                  if (!last) return;
+                  e.preventDefault();
+                  setText(last.content);
+                  // The caret goes to the end rather than the start, because
+                  // the thing being fixed is nearly always the last few words.
+                  requestAnimationFrame(() => {
+                    const el = box.current;
+                    if (el) el.setSelectionRange(el.value.length, el.value.length);
+                  });
+                }
+              }}
             />
             {status.data?.voice.listen && (
               <IconButton

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { CalendarDays, Check, Download, KeyRound, Plus, RefreshCw, Sparkles, Trash2, Wifi, WifiOff, Pencil, Shield, Palette, Mail, Server, Copy, UserCircle, Upload, Monitor, Sun, Moon, Smartphone, Lock, Inbox, Wrench, Fingerprint, ToggleRight, Archive } from 'lucide-react';
 import { api } from '../api';
-import { streamWithWork } from '../lib/work';
+import { postWithWork, streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
 import { ThinkingCard, ThinkingButton } from '../components/Thinking';
@@ -351,6 +351,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
           <div className="form-row"><Field label="Display name"><Input value={f.name} onChange={(e) => set({ name: e.target.value })} /></Field><Field label="Colour"><ColorPicker value={f.color} onChange={(c) => set({ color: c })} /></Field></div>
           <Field label="Signature" hint="Appended to every message sent from this account, including sequences."><div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}><Editor ref={editor} initialHtml={sig.current} minHeight={120} placeholder="Alex Rivera · Tern · +1 555 0100" onChange={(h) => { sig.current = h; }} /></div></Field>
           <Field label="Writing voice for the AI" hint="How this account writes. Given to the model for every draft, reply, responder and campaign sent from it."><Textarea value={f.voice} onChange={(e) => set({ voice: e.target.value })} placeholder="Plain and warm. Short sentences. First names. Never 'I hope this email finds you well'. Sign off with 'Best, Alex'." style={{ minHeight: 80 }} /></Field>
+          <VoiceFromEdits accountId={account.id} onAdd={(line) => set({ voice: [f.voice.trim(), line].filter(Boolean).join(' ') })} />
           <Field label="Messages to keep locally" hint="Newest N messages are synced on the first run; more can be loaded later."><Input type="number" min={100} max={50000} value={f.syncLimit} onChange={(e) => set({ syncLimit: Number(e.target.value) })} /></Field>
         </>
       )}
@@ -892,3 +893,80 @@ function BurnerCard() {
   );
 }
 
+
+
+// ---------- What your edits could teach ----------
+//
+// The box above is a free-text field somebody has to think of filling in, so
+// in practice it is empty or one stale sentence. Meanwhile every AI draft that
+// got rewritten before it went out was a correction — the most specific form of
+// feedback there is — and Tern threw all of them away on send.
+//
+// It proposes and never writes. Reading a habit off a dozen examples can easily
+// be reading a coincidence, so the sentence appears with the number of edits
+// behind it, and the person adds it, edits it, or says no.
+function VoiceFromEdits({ accountId, onAdd }: { accountId: number; onAdd: (line: string) => void }) {
+  const can = useCan('ai.compose');
+  const toast = useToast();
+  const [suggestion, setSuggestion] = useState<{ sentence: string; edits: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const { data, refetch } = useQuery({
+    queryKey: ['voice-suggestion', accountId],
+    queryFn: () => api.get<{ edits: number; minEdits: number; ready?: boolean }>(`/api/ai/voice/suggestion?accountId=${accountId}`),
+    enabled: can,
+    staleTime: 120_000,
+  });
+
+  if (!can || !data || done) return null;
+  // Below the threshold it says how far along it is rather than nothing at all:
+  // a section that appears from nowhere one day is more confusing than a line
+  // that has been counting up.
+  if (!data.ready) {
+    if (!data.edits) return null;
+    return (
+      <div className="help-text">
+        Tern is keeping the {data.edits} AI {data.edits === 1 ? 'draft' : 'drafts'} you have rewritten before sending. At {data.minEdits} it can suggest a line for this box from what you changed.
+      </div>
+    );
+  }
+
+  async function ask() {
+    setBusy(true);
+    try {
+      const r = await postWithWork<{ suggestion: { sentence: string; edits: number } | null }>('ai', '/api/ai/voice/suggestion', { accountId });
+      if (r.suggestion) setSuggestion(r.suggestion);
+      else { toast.toast('Your edits do not point the same way yet — nothing worth adding'); setDone(true); }
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+
+  async function dismiss() {
+    // Clearing the rows it was read from, so the same sentence is not offered
+    // again forever. They exist for this one purpose.
+    try { await api.del('/api/ai/voice/suggestion'); } catch { /* it is a dismissal; nothing depends on it */ }
+    setDone(true);
+    void refetch();
+  }
+
+  if (!suggestion) {
+    return (
+      <div className="row small">
+        <span className="muted">You have rewritten {data.edits} AI drafts before sending them.</span>
+        <Button size="sm" variant="ai" icon={<Sparkles size={13} />} loading={busy} onClick={() => void ask()}>See what they have in common</Button>
+      </div>
+    );
+  }
+
+  return (
+    <Callout>
+      <div className="col gap-8">
+        <div><b>From your last {suggestion.edits} edits:</b> “{suggestion.sentence}”</div>
+        <div className="row gap-4">
+          <Button size="sm" variant="primary" onClick={() => { onAdd(suggestion.sentence); setSuggestion(null); void dismiss(); toast.success('Added above — save the account to keep it'); }}>Add it to the voice</Button>
+          <Button size="sm" variant="ghost" onClick={() => void dismiss()}>No thanks</Button>
+        </div>
+        <div className="small faint">Nothing is saved until you save the account, and you can edit the sentence in the box above first.</div>
+      </div>
+    </Callout>
+  );
+}

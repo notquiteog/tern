@@ -89,6 +89,12 @@ const viewSchema = z.object({
     body: z.string().max(50_000).optional(),
   }).nullish(),
   page: z.string().max(40).nullish(),
+  focus: z.object({
+    kind: z.enum(['contact', 'sequence', 'day']),
+    label: z.string().max(200),
+    ref: z.string().max(320).nullish(),
+    detail: z.string().max(500).nullish(),
+  }).nullish(),
 }).optional();
 
 assistantRouter.post(
@@ -117,6 +123,7 @@ assistantRouter.post(
       thread: b.view?.thread ?? null,
       draft: b.view?.draft ?? null,
       page: b.view?.page ?? null,
+      focus: b.view?.focus ?? null,
     };
 
     // Saved before a token is generated. A turn that fails halfway still shows

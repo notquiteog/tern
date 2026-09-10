@@ -30,6 +30,22 @@ export default function RulesPage() {
     setEditing({ seedFrom: from });
     setParams((p) => { p.delete('from'); return p; }, { replace: true });
   }, [from, setParams]);
+  // A rule the assistant drafted, arriving from its card. It opens in this
+  // editor unsaved and unmodified, which is the whole point: the promise the
+  // plain-English feature makes is that the model writes a draft and then
+  // leaves, and a card that saved its own rule would quietly break it.
+  const hasDraft = params.get('draft');
+  useEffect(() => {
+    if (!hasDraft) return;
+    setParams((p) => { p.delete('draft'); return p; }, { replace: true });
+    try {
+      const raw = sessionStorage.getItem('tern.ruleDraft');
+      sessionStorage.removeItem('tern.ruleDraft');
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (d && Array.isArray(d.conditions) && Array.isArray(d.actions)) setEditing({ seedDraft: d });
+    } catch { /* nothing usable was left for us; open nothing rather than a broken form */ }
+  }, [hasDraft, setParams]);
   const [del, setDel] = useState<any>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['rules'] });
   async function toggle(r: any) { await api.put(`/api/rules/${r.id}`, { enabled: !r.enabled }); invalidate(); }
@@ -73,12 +89,15 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   // written. The name is left blank on purpose: naming it is how somebody
   // decides what the rule is actually for.
   const seedFrom: string | null = rule && rule !== 'new' && rule.seedFrom ? String(rule.seedFrom) : null;
-  const isNew = rule === 'new' || Boolean(seedFrom);
-  const [name, setName] = useState(isNew ? '' : rule.name);
+  // A whole rule handed over by the assistant, as against one condition seeded
+  // from a sender. Both are new rules; this one simply arrives filled in.
+  const seedDraft: any | null = rule && rule !== 'new' && rule.seedDraft ? rule.seedDraft : null;
+  const isNew = rule === 'new' || Boolean(seedFrom) || Boolean(seedDraft);
+  const [name, setName] = useState(seedDraft?.name ?? (isNew ? '' : rule.name));
   const [accountId, setAccountId] = useState<number | ''>(isNew ? '' : rule.account_id ?? '');
-  const [match, setMatch] = useState<'all' | 'any'>(isNew ? 'all' : rule.match);
-  const [conds, setConds] = useState<any[]>(isNew ? [{ field: 'from', op: seedFrom ? 'equals' : 'contains', value: seedFrom ?? '' }] : rule.conditions);
-  const [acts, setActs] = useState<any[]>(isNew ? [{ type: 'archive' }] : rule.actions);
+  const [match, setMatch] = useState<'all' | 'any'>(seedDraft?.match ?? (isNew ? 'all' : rule.match));
+  const [conds, setConds] = useState<any[]>(seedDraft?.conditions ?? (isNew ? [{ field: 'from', op: seedFrom ? 'equals' : 'contains', value: seedFrom ?? '' }] : rule.conditions));
+  const [acts, setActs] = useState<any[]>(seedDraft?.actions ?? (isNew ? [{ type: 'archive' }] : rule.actions));
   const [busy, setBusy] = useState(false);
   const [sentence, setSentence] = useState('');
   const [describing, setDescribing] = useState(false);
@@ -111,7 +130,7 @@ function RuleEditor({ rule, onClose, onSaved }: { rule: any | 'new'; onClose: ()
   }
 
   return (
-    <Modal open onClose={onClose} title={seedFrom ? `New rule for ${seedFrom}` : isNew ? 'New rule' : 'Edit rule'} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} disabled={!name.trim() || !conds.length || !acts.length} onClick={save}>Save</Button></>}>
+    <Modal open onClose={onClose} title={seedFrom ? `New rule for ${seedFrom}` : seedDraft ? 'Rule from the assistant' : isNew ? 'New rule' : 'Edit rule'} size="wide" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={busy} disabled={!name.trim() || !conds.length || !acts.length} onClick={save}>Save</Button></>}>
       {canDescribe && (
         <div className="describe-row">
           <Input

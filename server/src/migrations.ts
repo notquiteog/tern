@@ -1357,4 +1357,73 @@ CREATE INDEX IF NOT EXISTS ai_messages_conversation_idx ON ai_messages(conversat
 CREATE INDEX IF NOT EXISTS ai_messages_user_idx ON ai_messages(user_id);
 `,
   },
+  {
+    // Closing three loops the app already opens: a search you cannot keep, a
+    // draft you rewrote that taught nothing, and a held send that names its
+    // problem without offering the fix.
+    id: '20260910_1600_saved_searches_draft_edits_hold_hits',
+    up: `
+-- A query worth keeping.
+--
+-- The omnibox already parses a rich operator language into removable chips,
+-- and there has never been a way to keep one, so every recurring question is
+-- retyped. The query is stored as the text somebody typed rather than as
+-- parsed fields, deliberately: \`parseSearch\` is the single definition of what
+-- an operator means, and a saved search that stored its own interpretation
+-- would drift away from the search box the first time that parser learned
+-- something new.
+--
+-- Sealed, because a query is a statement about what somebody is looking for
+-- and "invoice from the solicitor" is as revealing as the mail it finds.
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  query TEXT NOT NULL,
+  position INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS saved_searches_user_idx ON saved_searches(user_id, position, id);
+
+-- What the model wrote, beside what was actually sent.
+--
+-- Priority ordering learns from what somebody archives, stars, replies to and
+-- junks — honest signals, things they did rather than things they were asked.
+-- The same argument applies to the signal this table exists for: an AI draft
+-- that was edited before it went out is a person saying precisely what was
+-- wrong with the output, in the most specific form there is, and until now it
+-- was discarded on send.
+--
+-- Both texts are sealed: they are the person's own outgoing mail. Rows exist
+-- only while there are too few to draw a conclusion from — the suggestion pass
+-- clears them once it has offered its sentence — and turning the writing help
+-- capability off deletes them with everything else it made.
+CREATE TABLE IF NOT EXISTS ai_draft_edits (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id BIGINT REFERENCES accounts(id) ON DELETE CASCADE,
+  -- 'compose' | 'reply' | 'rewrite': what the model was asked for. A reply
+  -- being shortened and a fresh draft being rewritten are different habits.
+  mode TEXT NOT NULL DEFAULT 'compose',
+  generated TEXT NOT NULL,
+  sent TEXT NOT NULL,
+  -- How much of it survived, 0 to 1, computed once on write so the pass that
+  -- looks for a pattern does not have to diff every row to find the
+  -- interesting ones. An untouched draft is not evidence of anything.
+  kept REAL NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_draft_edits_user_idx ON ai_draft_edits(user_id, created_at DESC);
+
+-- Why a send was held, in a form something can act on.
+--
+-- \`hold_reason\` is prose for a person to read. These are the same findings as
+-- structured hits, so the review queue can offer the correction rather than
+-- only the complaint: an unfilled merge field has a real value sitting on the
+-- contact record, and a bracketed placeholder is a line to delete. Sealed,
+-- because a hit carries a sample of the message it was found in.
+ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS hold_hits TEXT;
+`,
+  },
 ];

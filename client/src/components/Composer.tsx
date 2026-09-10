@@ -80,6 +80,10 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
   const forwardOfEmailId = useRef<number | null>(seed.forwardOfEmailId ?? null);
   const [ai, setAi] = useState(Boolean(seed.autoAi));
   const [sending, setSending] = useState(false);
+  // What the model last wrote into this draft, if anything did. A ref rather
+  // than state: nothing renders from it, and it must not cause a re-render of
+  // an editor mid-keystroke.
+  const aiGenerated = useRef<{ mode: string; text: string } | null>(null);
   const [schedule, setSchedule] = useState<null | string>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ kind: 'subject' | 'attachment'; opts: SendOpts } | null>(null);
@@ -225,6 +229,11 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
         replyToEmailId: replyToEmailId.current, forwardOfEmailId: forwardOfEmailId.current, forwardBlobIds: forwardOfEmailId.current ? fwdAttachments.map((a) => a.blobId) : null,
         attachmentIds: pgp ? [] : attachments.map((a) => a.id), includeSignature: false, draftId, scheduleAt, undoWindow: useUndo, humanize: Boolean(opts.humanize), contactId: seed.contactId ?? null,
         encrypt: !pgp && encrypt ? 'always' : null, pgp,
+        // What the model wrote, when this started as an AI draft. The server
+        // keeps it beside what is going out only if the two differ, and only
+        // while there are too few examples to say anything — see
+        // `services/voiceLearning.ts`. Absent for a message somebody typed.
+        aiGenerated: aiGenerated.current,
       });
       if (pgp) for (const a of attachments) api.del(`/api/mail/uploads/${a.id}`).catch(() => {});
       const [accStr, tid] = (seed.threadKey ?? '').split(':');
@@ -379,7 +388,18 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
           </div>
         )}
         {ai && <AiPanel context={aiContext} autoRun={Boolean(seed.autoAi)} defaultMode={seed.autoAi ?? undefined} getDraft={() => splitBody(editor.current?.getHtml() ?? '').main} onClose={() => setAi(false)} onSubject={(s) => { setSubject(s); setSubjectShown(true); setDirty(true); }}
-          onInsert={(h) => { const parts = splitBody(editor.current?.getHtml() ?? ''); const next = joinBody({ main: h, signature: parts.signature ?? (account?.signature_html?.trim() || null), quote: quoteShown ? parts.quote : null }); editor.current?.setHtml(next); html.current = next; setDirty(true); }} />}
+          onInsert={(h, mode) => {
+            const parts = splitBody(editor.current?.getHtml() ?? '');
+            const next = joinBody({ main: h, signature: parts.signature ?? (account?.signature_html?.trim() || null), quote: quoteShown ? parts.quote : null });
+            editor.current?.setHtml(next);
+            html.current = next;
+            setDirty(true);
+            // Kept so the send can compare what the model wrote against what
+            // actually went out. Only the last generation, and only the body
+            // it wrote — not the signature or the quoted original, neither of
+            // which the model had anything to do with.
+            aiGenerated.current = { mode, text: h };
+          }} />}
         <div className="compose-foot">
           <span className="send-group">
             <Button variant="primary" icon={<Send size={15} />} loading={sending} onClick={() => send()} title="Send (Ctrl+Enter)">Send</Button>

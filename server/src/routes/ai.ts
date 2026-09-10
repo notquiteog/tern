@@ -30,6 +30,7 @@ import { adminEnabled, requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
 import { invalidateVectorsFrom } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
+import { clearEdits, editCount, suggestVoice, MIN_EDITS } from '../services/voiceLearning.js';
 import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
 import { inspectCertificate, normalizeBaseUrl } from '../util/outbound.js';
@@ -158,6 +159,50 @@ aiRouter.put('/thinking', async (req, res) => {
   }
   await saveThinkingPrefs(req.user!.id, b);
   res.json(await thinkingView(s, req.user!.id));
+});
+
+// ---------- What your edits could teach ----------
+//
+// The writing-voice note on each account is a free-text box somebody has to
+// think of filling in, and in practice it is empty. The evidence to fill it in
+// has been going past all along: every AI draft that got rewritten before it
+// was sent is a correction, and until now they were discarded on send.
+//
+// Two routes and no automation. Nothing is written to the voice note by this —
+// the suggestion is offered with the number of edits behind it, and accepting
+// it is the ordinary account update the person could have made by hand.
+
+aiRouter.get('/voice/suggestion', requireCapability('ai.compose'), async (req, res) => {
+  const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+  const edits = await editCount(req.user!.id);
+  // The count is returned whether or not there is a suggestion, so the
+  // settings page can say "8 of 12 so far" rather than showing nothing and
+  // looking broken.
+  if (edits < MIN_EDITS) { res.json({ edits, minEdits: MIN_EDITS, suggestion: null }); return; }
+  res.json({ edits, minEdits: MIN_EDITS, suggestion: null, ready: true, accountId });
+});
+
+// Working one out costs a generation, so it is a POST behind the work guard
+// rather than something the settings page does on every load.
+aiRouter.post(
+  '/voice/suggestion',
+  requireCapability('ai.compose'),
+  powGuard('ai'),
+  rateLimit({ name: 'voice-suggest', perMinute: 4, message: 'Still reading your edits; give it a moment' }),
+  async (req, res) => {
+    const b = parse(z.object({ accountId: z.number().int().nullable().optional() }), req.body);
+    const suggestion = await suggestVoice(req.user!.id, b.accountId ?? null);
+    res.json({ suggestion, edits: await editCount(req.user!.id), minEdits: MIN_EDITS });
+  },
+);
+
+// Dismissing it clears the rows it was read from.
+//
+// Otherwise the same sentence would be offered again on the next visit,
+// forever, which turns a suggestion into nagging — and the rows exist for this
+// one purpose, so keeping them past a decision serves nobody.
+aiRouter.delete('/voice/suggestion', requireCapability('ai.compose'), async (req, res) => {
+  res.json({ cleared: await clearEdits(req.user!.id) });
 });
 
 aiRouter.get('/memory', requireAdmin, async (_req, res) => {

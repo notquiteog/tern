@@ -10,13 +10,14 @@
 // has to know what an RRULE is.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Loader2, MapPin, Plus, RefreshCw, Trash2, Users } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Loader2, Mail, MapPin, Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { useFeatures } from '../state/features';
 import { FeatureOffNotice } from './Features';
 import { Badge, Button, Callout, Empty, Field, Input, Modal, PageHeader, Segmented, Select, Spinner, Textarea, Toggle } from '../components/ui';
 import { useToast } from '../state/toast';
-import { cls } from '../lib/format';
+import { cls, escapeHtml } from '../lib/format';
+import { useCompose } from '../state/compose';
 
 export interface CalEvent {
   id: number;
@@ -491,6 +492,7 @@ interface FullEvent extends CalEvent {
 
 function EventDetail({ event, onClose, onEdit, onDeleted }: { event: CalEvent; onClose: () => void; onEdit: (scope: EditScope) => void; onDeleted: () => void }) {
   const toast = useToast();
+  const compose = useCompose();
   const [full, setFull] = useState<FullEvent | null>(null);
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState<'change' | 'delete' | null>(null);
@@ -546,7 +548,33 @@ function EventDetail({ event, onClose, onEdit, onDeleted }: { event: CalEvent; o
         {full?.organizer && <div className="small muted">Organised by {full.organizer.name || full.organizer.email}</div>}
         {full?.attendees?.length ? (
           <div>
-            <div className="row gap-8 small strong"><Users size={14} />{full.attendees.length} {full.attendees.length === 1 ? 'guest' : 'guests'}</div>
+            <div className="row gap-8 small strong">
+              <Users size={14} />{full.attendees.length} {full.attendees.length === 1 ? 'guest' : 'guests'}
+              {/* The calendar has fed the mail since ProposeTimes — real
+                  free/busy into a reply — and nothing went the other way. An
+                  event knows exactly who is coming and there was no way to
+                  write to them from it. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                icon={<Mail size={13} />}
+                onClick={() => {
+                  const guests = (full.attendees ?? [])
+                    .filter((a) => a.email && a.email.toLowerCase() !== full.organizer?.email?.toLowerCase())
+                    .map((a) => ({ name: a.name, email: a.email }));
+                  compose.open({
+                    to: guests.length ? guests : (full.attendees ?? []).map((a) => ({ name: a.name, email: a.email })),
+                    subject: event.summary ? `Re: ${event.summary}` : '',
+                    // The meeting it is about, written in so nobody has to
+                    // retype it. Just the line — the body is theirs.
+                    html: `<p></p><p class="faint">${escapeHtml(event.summary || 'Our meeting')} — ${escapeHtml(when)}${event.location ? ` — ${escapeHtml(event.location)}` : ''}</p>`,
+                  });
+                }}
+              >
+                Email them
+              </Button>
+            </div>
             <ul className="cal-guests">
               {full.attendees.slice(0, 25).map((a) => (
                 <li key={a.email} className="small">

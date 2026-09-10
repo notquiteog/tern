@@ -52,7 +52,16 @@ respondersRouter.get('/', async (req, res) => {
     `SELECT r.*, a.email AS account_email,
        (SELECT count(*)::int FROM send_log l WHERE l.responder_id=r.id AND l.status='sent') AS sent_count,
        (SELECT count(*)::int FROM drafts d WHERE d.responder_id=r.id) AS draft_count,
-       (SELECT count(*)::int FROM review_queue q WHERE q.responder_id=r.id AND q.status='pending') AS pending_count
+       (SELECT count(*)::int FROM review_queue q WHERE q.responder_id=r.id AND q.status='pending') AS pending_count,
+       -- How its last twenty decisions went.
+       --
+       -- A responder producing bad drafts gets rejected over and over and
+       -- never hears about it: the queue records the decision and the
+       -- responder's instructions stay exactly as they were. These two
+       -- numbers are the whole of that feedback loop, and they need no model
+       -- and no new table — the answers were already in review_queue.
+       (SELECT count(*)::int FROM (SELECT status FROM review_queue q WHERE q.responder_id=r.id AND q.status<>'pending' ORDER BY q.decided_at DESC LIMIT 20) t WHERE t.status='rejected') AS recent_rejected,
+       (SELECT count(*)::int FROM (SELECT status FROM review_queue q WHERE q.responder_id=r.id AND q.status<>'pending' ORDER BY q.decided_at DESC LIMIT 20) t) AS recent_decided
      FROM responders r LEFT JOIN accounts a ON a.id=r.account_id WHERE r.user_id=$1 ORDER BY r.position, r.id`,
     [req.user!.id],
   );

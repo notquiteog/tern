@@ -155,6 +155,17 @@ test('the raw key is only reachable from files that are meant to have it', () =>
     // else calls, and it reads nobody's row but the owner's, scoped by user_id
     // in every statement.
     'ai/conversation.ts',
+    // The contact digest opens the subject lines of the owner's own
+    // conversations to give the model something to write a paragraph over,
+    // and the calendar objects it scans for meetings with one person. Both
+    // are the owner's rows, scoped by user_id in every statement, and both
+    // are behind capabilities that were already open before it read anything.
+    'services/contactDigest.ts',
+    // The writing-voice pass seals and opens pairs of the owner's own
+    // outgoing mail — what the model wrote, and what they sent instead. Same
+    // shape as summaries.ts: one person's rows, their own key, nobody else's
+    // anything.
+    'services/voiceLearning.ts',
     'routes/mail.ts',
     'routes/review.ts',
     'routes/contacts.ts',

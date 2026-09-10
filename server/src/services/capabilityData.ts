@@ -69,6 +69,19 @@ const ERASE: Partial<Record<Capability, string[]>> = {
     `DELETE FROM ai_messages WHERE user_id=$1`,
     `DELETE FROM ai_conversations WHERE user_id=$1`,
   ],
+  // The pairs of "what the model wrote" and "what went out" that the writing
+  // voice suggestion is read from. They are the person's own outgoing mail
+  // kept for one purpose, and turning writing help off ends that purpose.
+  //
+  // The voice note itself is NOT touched: whatever sentence somebody accepted
+  // is theirs now, sitting in a box they can edit, and deleting a line of
+  // their own configuration because a switch moved would be the switch
+  // reaching further than it said it would.
+  'ai.compose': [`DELETE FROM ai_draft_edits WHERE user_id=$1`],
+  // Suggestions are computed on demand and nothing is stored, so there is
+  // nothing to erase — but a contact field somebody accepted stays, for the
+  // same reason the voice note does: they accepted it, and it is now an
+  // ordinary value on their own record.
 };
 
 // How many rows each capability is holding for this person, for the line
@@ -86,6 +99,7 @@ const COUNT: Partial<Record<Capability, string>> = {
   // Conversations rather than messages: "12 conversations" is a number
   // somebody recognises, and "418 messages" is not the same warning.
   'ai.assistant': `SELECT count(*)::int AS n FROM ai_conversations WHERE user_id=$1`,
+  'ai.compose': `SELECT count(*)::int AS n FROM ai_draft_edits WHERE user_id=$1`,
 };
 
 export async function capabilityFootprint(userId: number): Promise<Partial<Record<Capability, number>>> {

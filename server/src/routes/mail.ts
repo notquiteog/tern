@@ -9,9 +9,10 @@ import { syncManager } from '../workers/syncManager.js';
 import { markDirty, removeDraft } from '../services/draftSync.js';
 import { cleanHtmlLinks, cleanTextLinks } from '../services/links.js';
 import { allowed } from '../services/capabilities.js';
+import { recordEdit } from '../services/voiceLearning.js';
 import { commitmentsForThread } from '../services/commitments.js';
 import { openDraft, openDraftWith, openEmailWith, openEmails, sealDraft } from '../services/mailVault.js';
-import { dataKey, open, seal } from '../services/vault.js';
+import { dataKey, open, openWith, seal, sealWith } from '../services/vault.js';
 
 // The outbox payload is one sealed JSON blob. Everything that reads a queued
 // message goes through here.
@@ -604,6 +605,11 @@ const sendSchema = z.object({
   contactId: z.number().int().nullable().optional(),
   encrypt: z.enum(['always', 'if_possible']).nullable().optional(),
   pgp: z.object({ mode: z.enum(['encrypted', 'signed']), armored: z.string().max(30_000_000).optional(), inner: z.string().max(30_000_000).optional(), signature: z.string().max(20_000).optional() }).nullable().optional(),
+  // What the model wrote, when this message started as an AI draft. The
+  // composer sends it back alongside what is actually going out so the two can
+  // be compared — see `services/voiceLearning.ts`. Absent for a message
+  // somebody typed themselves, which is most of them.
+  aiGenerated: z.object({ mode: z.string().max(20), text: z.string().max(60_000) }).nullable().optional(),
 });
 
 mailRouter.post('/send', async (req, res) => {
@@ -615,6 +621,10 @@ mailRouter.post('/send', async (req, res) => {
   if (!recipients.length) throw badRequest('Add at least one recipient');
   const payload = { to: b.to as any, cc: b.cc as any, bcc: b.bcc as any, subject: b.subject, html: b.html, replyToEmailId: b.replyToEmailId ?? null, forwardOfEmailId: b.forwardOfEmailId ?? null, forwardBlobIds: b.forwardBlobIds ?? null, attachmentIds: b.attachmentIds, includeSignature: b.includeSignature, kind, contactId: b.contactId ?? null, encrypt: b.encrypt ?? null, pgp: b.pgp ?? null } as const;
   if (b.scheduleAt || b.humanize) {
+    // A scheduled or paced send is remembered here rather than when the outbox
+    // drains it: the edit happened now, in front of the person, and the row
+    // that goes out in forty minutes carries no memory of what preceded it.
+    await rememberEdit(req.user!.id, acc.id, b);
     let sendAt = b.scheduleAt ? new Date(b.scheduleAt) : new Date();
     if (Number.isNaN(sendAt.getTime())) throw badRequest('Invalid schedule time');
     if (b.undoWindow && sendAt.getTime() > Date.now() + 120_000) throw badRequest('The undo window cannot be longer than two minutes');
@@ -629,7 +639,69 @@ mailRouter.post('/send', async (req, res) => {
   }
   const { outcome } = await composeAndSend(acc, { ...payload });
   if (b.draftId) await discardDraft(req.user!.id, b.draftId);
+  await rememberEdit(req.user!.id, acc.id, b);
   res.json({ ok: true, messageId: outcome.messageId, threadId: outcome.threadId, via: outcome.via });
+});
+
+/**
+ * Keep what the model wrote beside what went out, when the two differ.
+ *
+ * Behind the writing-help capability, because that is the capability whose
+ * output this is; behind a check that the person actually edited it, because
+ * agreement teaches nothing. It never throws: a message that failed to send
+ * because a learning table was busy would be an absurd trade for a suggestion
+ * nobody has asked for yet.
+ */
+async function rememberEdit(userId: number, accountId: number, b: { aiGenerated?: { mode: string; text: string } | null; html?: string }): Promise<void> {
+  if (!b.aiGenerated?.text) return;
+  if (!(await allowed(userId, 'ai.compose'))) return;
+  await recordEdit(userId, {
+    accountId,
+    mode: b.aiGenerated.mode,
+    generated: b.aiGenerated.text,
+    sent: b.html ?? '',
+  });
+}
+
+// ---------- Saved searches ----------
+//
+// The omnibox parses a rich operator language into removable chips and there
+// has never been a way to keep one, so every recurring question is retyped.
+//
+// The query is stored as the text somebody typed rather than as parsed fields,
+// deliberately: `parseSearch` is the single definition of what an operator
+// means, and a saved search holding its own interpretation would drift away
+// from the search box the first time that parser learned something new. It is
+// sealed, because "invoice from the solicitor" is as revealing as the mail it
+// finds.
+
+mailRouter.get('/searches', async (req, res) => {
+  const rows = await query<any>('SELECT id, name, query, position FROM saved_searches WHERE user_id=$1 ORDER BY position, id', [req.user!.id]);
+  const dek = await dataKey(req.user!.id);
+  res.json({
+    searches: rows
+      .map((r) => ({ id: r.id, name: openWith(dek, r.name) ?? '', query: openWith(dek, r.query) ?? '', position: r.position }))
+      .filter((r) => r.name && r.query),
+  });
+});
+
+mailRouter.post('/searches', async (req, res) => {
+  const b = parse(z.object({ name: z.string().min(1).max(60), query: z.string().min(1).max(500) }), req.body);
+  const dek = await dataKey(req.user!.id);
+  const n = await one<{ n: number }>('SELECT count(*)::int AS n FROM saved_searches WHERE user_id=$1', [req.user!.id]);
+  // A cap, because this lives in the sidebar and a sidebar with forty saved
+  // searches in it is a sidebar nobody can find the inbox in.
+  if ((n?.n ?? 0) >= 30) throw badRequest('You can keep 30 searches; delete one first');
+  const rows = await query<{ id: number }>(
+    'INSERT INTO saved_searches (user_id, name, query, position) VALUES ($1,$2,$3,$4) RETURNING id',
+    [req.user!.id, sealWith(dek, b.name.trim()), sealWith(dek, b.query.trim()), n?.n ?? 0],
+  );
+  res.json({ id: rows[0]!.id });
+});
+
+mailRouter.delete('/searches/:id', async (req, res) => {
+  await query('DELETE FROM saved_searches WHERE id=$1 AND user_id=$2', [idParam(req.params.id), req.user!.id]);
+  res.json({ ok: true });
 });
 
 // ---------- Outbox (scheduled) ----------

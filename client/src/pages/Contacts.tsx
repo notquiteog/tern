@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff, Lock, Reply, Clock } from 'lucide-react';
+import { Download, Filter, Mail, Plus, Search, Tag, Trash2, Upload, UserX, Workflow, X, Ban, ChevronLeft, ChevronRight, Pencil, ShieldOff, Lock, Reply, Clock, Sparkles, CalendarClock, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { useToast } from '../state/toast';
 import { useCompose } from '../state/compose';
+import { useCan } from '../state/features';
+import { useFocusContext } from '../state/assistant';
 import { useContactTags, useSequences } from '../lib/queries';
 import { useDebounced } from '../lib/hooks';
+import { postWithWork, streamWithWork } from '../lib/work';
 import { Avatar, Badge, Button, Confirm, Drawer, Empty, Field, IconButton, Input, Menu, MenuItem, Modal, PageHeader, Select, Spinner, Textarea, Callout } from '../components/ui';
 import { AvatarUploader } from './Settings';
 import { DataTable } from '../components/DataTable';
-import { cls, fmtDate, fmtDateTime, fmtNumber, plural } from '../lib/format';
+import { cls, fmtDate, fmtDateTime, fmtNumber, plural, textToHtml } from '../lib/format';
 
 const STATUS_KIND: Record<string, any> = { active: 'success', replied: 'accent', unsubscribed: 'danger', bounced: 'danger', do_not_contact: 'danger' };
 
@@ -76,6 +79,8 @@ export default function ContactsPage() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const { data: tags = [] } = useContactTags();
+  const canWrite = useCan('ai.compose');
+  const { nudge, busy: nudging } = useNudge();
   const { data, isLoading } = useQuery({ queryKey: ['contacts', dq, tag, status, page, sortKey], queryFn: () => api.get<{ contacts: any[]; total: number; size: number }>(`/api/contacts?q=${encodeURIComponent(dq)}&tag=${encodeURIComponent(tag)}&status=${status}&page=${page}&sort=${sorting.sort}&dir=${sorting.dir}`), placeholderData: (p) => p });
   const { data: stats } = useQuery({ queryKey: ['contact-stats'], queryFn: () => api.get<any>('/api/contacts/stats') });
   const rows = data?.contacts ?? [];
@@ -86,7 +91,29 @@ export default function ContactsPage() {
   const invalidate = () => { qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['contact-stats'] }); qc.invalidateQueries({ queryKey: ['contact-tags'] }); };
 
   async function bulk(action: string, extra: Record<string, unknown> = {}) {
-    try { await api.post('/api/contacts/bulk', { ids: [...selected], action, ...extra }); invalidate(); setSelected(new Set()); toast.success('Done'); } catch (e) { toast.error(e); }
+    const n = selected.size;
+    try {
+      const r = await api.post<{ undo: { action: string; rows: any[] } | null }>('/api/contacts/bulk', { ids: [...selected], action, ...extra });
+      invalidate();
+      setSelected(new Set());
+      const what = action === 'delete' ? 'deleted' : action === 'tag' ? 'tagged' : action === 'untag' ? 'untagged' : 'updated';
+      // The same undo the mail list has always offered, finally on the one
+      // route in the app that could suppress four hundred people on a
+      // mis-click. Delete comes back with no token and no offer, because a
+      // deleted contact takes its enrollments and history with it and an
+      // "Undo" that restored only the name would be a lie.
+      if (r.undo) {
+        toast.toast(`${plural(n, 'contact')} ${what}`, {
+          action: {
+            label: 'Undo',
+            onClick: async () => {
+              try { await api.post('/api/contacts/bulk/undo', r.undo); toast.success('Put back'); } catch (e) { toast.error(e); }
+              invalidate();
+            },
+          },
+        });
+      } else toast.success(`${plural(n, 'contact')} ${what}`);
+    } catch (e) { toast.error(e); }
   }
 
   return (
@@ -142,7 +169,19 @@ export default function ContactsPage() {
                   </span>
                 );
               } },
-              { key: 'act', actions: true, cell: (c) => <><IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton><IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton></> },
+              // "Draft a nudge" appears only on a row that has actually gone
+              // quiet. The list has labelled those since the standing column
+              // was added and nothing acted on the label; putting the button
+              // on every row instead would make it furniture.
+              { key: 'act', actions: true, cell: (c) => {
+                const st = standingOf(c);
+                const quiet = st.kind === 'waiting' && st.days >= QUIET_DAYS;
+                return <>
+                  {quiet && canWrite && <IconButton label={`Draft a nudge — quiet ${st.days} days`} className="btn-sm" disabled={nudging === c.id} onClick={() => void nudge(c, st.days)}>{nudging === c.id ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}</IconButton>}
+                  <IconButton label="Email" className="btn-sm" onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}><Mail size={14} /></IconButton>
+                  <IconButton label="Edit" className="btn-sm" onClick={() => setEditing(c)}><Pencil size={14} /></IconButton>
+                </>;
+              } },
             ]} />
           <div className="row mt-16" style={{ justifyContent: 'flex-end' }}><span className="small muted">{(page - 1) * size + 1}–{Math.min(total, page * size)} of {fmtNumber(total)}</span><IconButton label="Previous" disabled={page <= 1} onClick={() => setParams((p) => { p.set('page', String(page - 1)); return p; })}><ChevronLeft size={16} /></IconButton><IconButton label="Next" disabled={page * size >= total} onClick={() => setParams((p) => { p.set('page', String(page + 1)); return p; })}><ChevronRight size={16} /></IconButton></div>
         </>
@@ -151,7 +190,10 @@ export default function ContactsPage() {
       <ImportWizard open={importOpen} onClose={() => { setImportOpen(false); setParams((p) => { p.delete('import'); return p; }); }} onDone={invalidate} />
       <SuppressionsModal open={suppOpen} onClose={() => setSuppOpen(false)} />
       <EnrollModal open={enrollOpen} onClose={() => setEnrollOpen(false)} contactIds={[...selected]} onDone={() => { setSelected(new Set()); invalidate(); }} />
-      <Confirm open={confirmDelete} onClose={() => setConfirmDelete(false)} danger title={`Delete ${plural(selected.size, 'contact')}?`} message="Their history in sequences and the send log is kept, but the contact records are removed." confirmLabel="Delete" onConfirm={() => bulk('delete')} />
+      {/* Says what actually goes. The old wording promised that sequence
+          history survived; the foreign keys cascade, so it does not, and this
+          is the one action on the page with no undo behind it. */}
+      <Confirm open={confirmDelete} onClose={() => setConfirmDelete(false)} danger title={`Delete ${plural(selected.size, 'contact')}?`} message="This cannot be undone. Their enrollments and anything of theirs waiting in the review queue go with them. Entries already in the send log are kept but stop naming a contact. To stop mailing somebody without losing the record, set them to Do not contact instead." confirmLabel="Delete" onConfirm={() => bulk('delete')} />
       {id && <ContactDrawer id={Number(id)} onClose={() => nav('/contacts')} onEdit={(c) => setEditing(c)} />}
     </div>
   );
@@ -251,6 +293,194 @@ function ContactEditor({ contact, onClose, onSaved }: { contact: any | null | 'n
   );
 }
 
+// ---------- Where the relationship stands ----------
+//
+// Contacts was the page that knew the least about what the rest of the app had
+// worked out. Everything in this card was already indexed — conversations,
+// commitments, meetings, sequence state — and none of it had a way to appear
+// beside the person it was about.
+//
+// The facts come first and stand on their own; the paragraph is a button. A
+// digest that vanished when writing help was switched off would make this an AI
+// feature, and it is not one: it is a query that should have been here all
+// along, with an optional sentence on top.
+
+interface Digest {
+  standing: 'new' | 'replied' | 'waiting';
+  quietDays: number | null;
+  threads: number;
+  lastMessageAt: string | null;
+  commitments: { id: number; kind: 'owed' | 'awaiting'; text: string; dueAt: string | null; threadId: string; accountId: number }[];
+  meetings: { summary: string; startsAt: string; past: boolean }[];
+  sequences: { name: string; status: string; step: number }[];
+  sends: { total: number; replied: number; bounced: number };
+}
+
+function RelationshipCard({ id, contact }: { id: number; contact: any }) {
+  const nav = useNavigate();
+  const toast = useToast();
+  const canWrite = useCan('ai.compose');
+  const { data } = useQuery({ queryKey: ['contact-digest', id], queryFn: () => api.get<{ digest: Digest }>(`/api/contacts/${id}/digest`) });
+  const d = data?.digest;
+  const [summary, setSummary] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (!d) return null;
+  // Nothing has ever happened with this person and nothing is outstanding.
+  // A card that says "0 conversations, nothing outstanding, no meetings" is
+  // three facts pretending to be an answer.
+  const empty = !d.threads && !d.commitments.length && !d.meetings.length && !d.sequences.length && !d.sends.total;
+  if (empty) return null;
+
+  async function write() {
+    setBusy(true);
+    try {
+      const r = await postWithWork<{ summary: string }>('ai', `/api/contacts/${id}/digest/summary`, {});
+      setSummary(r.summary);
+    } catch (e) { toast.error(e); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card mb-16" style={{ padding: 12 }}>
+      <div className="card-title" style={{ marginBottom: 8 }}>
+        <h4>Where this stands</h4>
+        {canWrite && !summary && <Button size="sm" variant="ai" icon={<Sparkles size={13} />} loading={busy} onClick={() => void write()}>Sum it up</Button>}
+      </div>
+      {summary && <div className="small mb-12" style={{ lineHeight: 1.55 }}>{summary}</div>}
+      <div className="row wrap gap-4 mb-8">
+        {d.standing === 'new' && <Badge>never contacted</Badge>}
+        {d.standing === 'replied' && <Badge kind="success"><Reply size={11} /> they replied last</Badge>}
+        {d.standing === 'waiting' && <Badge kind={(d.quietDays ?? 0) >= QUIET_DAYS ? 'warning' : undefined}><Clock size={11} /> waiting {d.quietDays}d</Badge>}
+        {d.threads > 0 && <Badge>{plural(d.threads, 'conversation')}</Badge>}
+        {d.sends.total > 0 && <Badge>{d.sends.replied}/{d.sends.total} replied</Badge>}
+        {d.sends.bounced > 0 && <Badge kind="danger">{d.sends.bounced} bounced</Badge>}
+      </div>
+      {d.commitments.length > 0 && (
+        <ul className="timeline mb-8">
+          {d.commitments.map((c) => (
+            <li key={c.id} className="clickable" style={{ cursor: c.threadId ? 'pointer' : 'default' }} onClick={() => c.threadId && nav(`/mail/all/t/${encodeURIComponent(`${c.accountId}:${c.threadId}`)}`)}>
+              <span className={cls('tl-dot', c.kind === 'awaiting' && 'reply')} />
+              <div className="flex-1">
+                <div className="small">{c.kind === 'owed' ? 'You owe them' : 'Waiting on them'}: {c.text}</div>
+                {c.dueAt && <div className="small faint">due {fmtDate(c.dueAt, { always: true })}</div>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {d.meetings.map((m) => (
+        <div key={`${m.startsAt}${m.summary}`} className="small muted row gap-4"><CalendarClock size={12} />{m.past ? 'Last met' : 'Next'}: {m.summary} · {fmtDate(m.startsAt, { always: true })}</div>
+      ))}
+      {d.sequences.length > 0 && <div className="small muted mt-8">In {d.sequences.map((s) => `${s.name} (${s.status.replace('_', ' ')})`).join(', ')}</div>}
+    </div>
+  );
+}
+
+// ---------- Details read off their own sign-off ----------
+//
+// Suggestions, never writes. A signature is read with a pattern rather than a
+// model, so this says the same thing every time it runs — but a line that
+// pattern-matches as a job title is sometimes a department somebody was
+// forwarding about, and the difference between "probably" and "certainly" is
+// what the accept button is for.
+function SuggestionsCard({ id, onAccepted }: { id: number; onAccepted: () => void }) {
+  const can = useCan('enrich');
+  const toast = useToast();
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const [taken, setTaken] = useState<Set<string>>(new Set());
+  const { data } = useQuery({
+    queryKey: ['contact-suggestions', id],
+    queryFn: () => api.get<{ suggestions: any[] }>(`/api/contacts/${id}/suggestions`),
+    enabled: can,
+  });
+  const list = (data?.suggestions ?? []).filter((s) => !taken.has(s.field));
+  if (!can || !list.length) return null;
+
+  async function accept(s: any) {
+    try {
+      await api.post(`/api/contacts/${id}/suggestions/accept`, { field: s.field, value: s.value });
+      setTaken((t) => new Set(t).add(s.field));
+      void qc.invalidateQueries({ queryKey: ['contact', id] });
+      onAccepted();
+      toast.success(`${s.field[0].toUpperCase()}${s.field.slice(1)} saved`);
+    } catch (e) { toast.error(e); }
+  }
+
+  return (
+    <div className="card mb-16" style={{ padding: 12 }}>
+      <div className="card-title" style={{ marginBottom: 8 }}><h4>From their sign-off</h4></div>
+      {list.map((s) => (
+        <div key={s.field} className="row mb-8" style={{ alignItems: 'flex-start' }}>
+          <div className="flex-1">
+            <div className="small"><span className="faint">{s.field}</span> <span className="strong">{s.value}</span></div>
+            <div className="small faint">
+              read from <a style={{ cursor: 'pointer' }} onClick={() => nav(`/mail/all/t/${encodeURIComponent(`${s.source.accountId}:${s.source.threadId}`)}`)}>{s.source.subject}</a>, {fmtDate(s.source.date, { always: true })}
+            </div>
+          </div>
+          <Button size="sm" onClick={() => void accept(s)}>Use it</Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------- A nudge for somebody who has gone quiet ----------
+//
+// The list has computed and labelled "Quiet 12d" since the standing column was
+// added, and nothing acted on it. This is the button: it opens the composer on
+// the conversation that went quiet, with a follow-up already written from what
+// was actually said in it.
+//
+// It replies into the existing thread rather than starting a fresh one, which
+// is the same bargain sequences strike with their follow-ups — a nudge under
+// the original subject is a nudge, and a new email about the same thing is a
+// second email about the same thing.
+export function useNudge() {
+  const compose = useCompose();
+  const toast = useToast();
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const nudge = async (contact: any, days: number | null) => {
+    setBusy(contact.id);
+    try {
+      const r = await api.get<{ threads: any[] }>(`/api/contacts/${contact.id}`);
+      const latest = r.threads?.[0];
+      const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ');
+      const instruction = [
+        `Write a short, warm follow-up to ${name || contact.email}.`,
+        latest
+          ? 'Reply in the conversation below. Refer to what was actually said in it and ask again, lightly, about whatever was left open.'
+          : 'There is no previous conversation to refer to, so keep it to two sentences and do not invent shared history.',
+        days ? `They have not replied for ${days} days.` : '',
+        'Do not apologise for following up, do not say "just checking in", and do not add a new ask. Three sentences at most.',
+      ].filter(Boolean).join(' ');
+
+      let out = '';
+      await streamWithWork('ai', '/api/ai/draft', {
+        mode: latest ? 'reply' : 'compose',
+        instruction,
+        length: 'short',
+        contactId: contact.id,
+        threadKey: latest ? `${latest.account_id}:${latest.thread_id}` : undefined,
+        accountId: latest?.account_id ?? undefined,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }, { onEvent: (ev, d) => { if (ev === 'done') out = d.text; if (ev === 'error') toast.error(d.error); } });
+      if (!out.trim()) { toast.error('The model came back with nothing; try again'); return; }
+      compose.open({
+        accountId: latest?.account_id ?? null,
+        kind: latest ? 'reply' : 'new',
+        to: [{ name, email: contact.email }],
+        contactId: contact.id,
+        threadKey: latest ? `${latest.account_id}:${latest.thread_id}` : null,
+        subject: latest ? '' : `Following up`,
+        html: textToHtml(out),
+      });
+    } catch (e) { toast.error(e); } finally { setBusy(null); }
+  };
+  return { nudge, busy };
+}
+
 function ContactDrawer({ id, onClose, onEdit }: { id: number; onClose: () => void; onEdit: (c: any) => void }) {
   const nav = useNavigate();
   const compose = useCompose();
@@ -258,12 +488,26 @@ function ContactDrawer({ id, onClose, onEdit }: { id: number; onClose: () => voi
   const toast = useToast();
   const { data, isLoading } = useQuery({ queryKey: ['contact', id], queryFn: () => api.get<any>(`/api/contacts/${id}`) });
   const c = data?.contact;
+  const canWrite = useCan('ai.compose');
+  const { nudge, busy: nudging } = useNudge();
+  const standing = c ? standingOf(c) : null;
+  const quiet = standing?.kind === 'waiting' && standing.days >= QUIET_DAYS;
   const refreshAll = () => { qc.invalidateQueries({ queryKey: ['contact', id] }); qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['threads'] }); qc.invalidateQueries({ queryKey: ['thread'] }); };
+  // So the assistant knows who is on screen. Without it, "what do I owe them?"
+  // in the dock beside an open contact card has nothing to attach "them" to.
+  useFocusContext(c ? {
+    kind: 'contact',
+    label: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+    ref: c.email,
+    detail: [c.title, c.company].filter(Boolean).join(', ') || null,
+  } : null);
   return (
-    <Drawer open onClose={onClose} title={c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email : 'Contact'} actions={c && <><Button size="sm" icon={<Mail size={14} />} onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}>Email</Button><Button size="sm" icon={<Pencil size={14} />} onClick={() => onEdit(c)}>Edit</Button></>}>
+    <Drawer open onClose={onClose} title={c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email : 'Contact'} actions={c && <>{quiet && canWrite && <Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={nudging === c.id} onClick={() => void nudge(c, standing.days)}>Draft a nudge</Button>}<Button size="sm" icon={<Mail size={14} />} onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}>Email</Button><Button size="sm" icon={<Pencil size={14} />} onClick={() => onEdit(c)}>Edit</Button></>}>
       {isLoading || !c ? <div className="center" style={{ padding: 40 }}><Spinner /></div> : (
         <>
           <div className="mb-16"><AvatarUploader src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} name={[c.first_name, c.last_name].join(' ') || c.email} email={c.email} onUpload={async (blob) => { await api.upload(`/api/avatars/contact/${c.id}`, blob, blob.type || 'image/webp'); refreshAll(); toast.success('Photo saved'); }} onRemove={async () => { await api.del(`/api/avatars/contact/${c.id}`); refreshAll(); }} /></div>
+          <RelationshipCard id={id} contact={c} />
+          <SuggestionsCard id={id} onAccepted={refreshAll} />
           <div className="row mb-16"><div className="col" style={{ gap: 2 }}><div className="strong">{c.email}</div><div className="small muted">{c.title}{c.title && c.company ? ' at ' : ''}{c.company}</div><div className="row wrap gap-4"><Badge kind={STATUS_KIND[c.status]}>{c.status.replace('_', ' ')}</Badge>{data.suppression && <Badge kind="danger"><UserX size={12} /> suppressed: {data.suppression.reason}</Badge>}</div></div></div>
           <dl className="kv mb-16">
             {c.phone && <><dt>Phone</dt><dd>{c.phone}</dd></>}

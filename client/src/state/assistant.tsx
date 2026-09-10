@@ -24,10 +24,26 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 export interface ThreadContext { accountId: number; threadId: string }
 export interface DraftContext { to?: string[]; subject?: string; body?: string }
 
+/**
+ * What the page is about, where it is about one thing.
+ *
+ * `page` says which screen; this says which *thing on it*. The difference is
+ * the one between "they are on the contacts page" — which answers nothing —
+ * and "they are looking at Dana Okafor", which is what makes "what do I owe
+ * them?" a question with a referent.
+ */
+export interface FocusContext {
+  kind: 'contact' | 'sequence' | 'day';
+  label: string;
+  ref?: string | null;
+  detail?: string | null;
+}
+
 export interface ViewContext {
   thread?: ThreadContext | null;
   draft?: DraftContext | null;
   page?: string | null;
+  focus?: FocusContext | null;
 }
 
 interface Ctx {
@@ -53,6 +69,7 @@ interface Ctx {
    */
   registerDraft: (get: (() => DraftContext | null) | null) => void;
   registerPage: (p: string | null) => void;
+  registerFocus: (f: FocusContext | null) => void;
 }
 
 const C = createContext<Ctx>(null as any);
@@ -68,6 +85,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const thread = useRef<ThreadContext | null>(null);
   const draft = useRef<(() => DraftContext | null) | null>(null);
   const page = useRef<string | null>(null);
+  const focus = useRef<FocusContext | null>(null);
 
   const show = useCallback((prompt?: string) => {
     if (prompt) pending.current = prompt;
@@ -83,10 +101,11 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Ctx>(() => ({
     open, show, hide, toggle, takePending,
-    view: () => ({ thread: thread.current, draft: draft.current?.() ?? null, page: page.current }),
+    view: () => ({ thread: thread.current, draft: draft.current?.() ?? null, page: page.current, focus: focus.current }),
     registerThread: (t) => { thread.current = t; },
     registerDraft: (get) => { draft.current = get; },
     registerPage: (p) => { page.current = p; },
+    registerFocus: (f) => { focus.current = f; },
   }), [open, show, hide, toggle, takePending]);
 
   return <C.Provider value={value}>{children}</C.Provider>;
@@ -141,4 +160,24 @@ export function usePageContext(name: string | null): void {
     return () => registerPage(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
+}
+
+/**
+ * Announce the one thing this screen is about, while it is showing it.
+ *
+ * Keyed on the contents rather than on the object, like `useThreadContext` and
+ * for the same reason: a parent that re-renders with a fresh object literal
+ * would otherwise churn the registration on every keystroke elsewhere on the
+ * page. The cleanup matters just as much here — a closed contact drawer that
+ * left its registration behind would have the assistant confidently answering
+ * about somebody who is no longer on screen.
+ */
+export function useFocusContext(f: FocusContext | null): void {
+  const { registerFocus } = useAssistant();
+  const key = f ? `${f.kind}:${f.label}:${f.ref ?? ''}:${f.detail ?? ''}` : '';
+  useEffect(() => {
+    registerFocus(f);
+    return () => registerFocus(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 }

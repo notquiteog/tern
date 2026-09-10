@@ -6,6 +6,11 @@ import { badRequest, notFound } from '../errors.js';
 import { guessMapping, parseCsv, toCsv } from '../util/csv.js';
 import { openEmailWith } from '../services/mailVault.js';
 import { dataKey } from '../services/vault.js';
+import { requireCapability } from '../services/capabilities.js';
+import { powGuard } from '../services/workGuard.js';
+import { rateLimit } from '../util/rateLimit.js';
+import { digestFor, summarise } from '../services/contactDigest.js';
+import { suggestFor } from '../services/enrich.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(requireAuth);
@@ -98,6 +103,65 @@ contactsRouter.get('/:id', async (req, res) => {
   res.json({ contact: c, sends, enrollments, threads: threads.filter((t) => t.latest), suppression: suppressed });
 });
 
+// ---------- Where the relationship stands ----------
+//
+// Assembly, not a new reading of anything: every source behind this was filled
+// in under a capability the person already turned on, and each is asked only if
+// it still is. It is a GET because it is a query — nothing is generated, nothing
+// is stored, and asking twice costs two index scans.
+contactsRouter.get('/:id/digest', async (req, res) => {
+  const digest = await digestFor(req.user!.id, idParam(req.params.id));
+  if (!digest) throw notFound('Contact not found');
+  res.json({ digest });
+});
+
+// The paragraph over those facts, which is the optional half.
+//
+// Separate from the digest above and carrying the work guard, because this one
+// reaches the model and the one above does not. A person with writing help
+// switched off gets the facts and no button, rather than a page that half
+// disappears.
+contactsRouter.post(
+  '/:id/digest/summary',
+  requireCapability('ai.compose'),
+  powGuard('ai'),
+  rateLimit({ name: 'contact-digest', perMinute: 15, message: 'Too many summaries at once; wait a moment' }),
+  async (req, res) => {
+    // Express widens `req.params` on the multi-handler overload; the id is a
+    // single segment by the route's own shape.
+    const id = idParam(String(req.params.id));
+    const digest = await digestFor(req.user!.id, id);
+    if (!digest) throw notFound('Contact not found');
+    res.json({ summary: await summarise(req.user!.id, id, digest) });
+  },
+);
+
+// ---------- Details read off their own sign-off ----------
+
+contactsRouter.get('/:id/suggestions', requireCapability('enrich'), async (req, res) => {
+  res.json({ suggestions: await suggestFor(req.user!.id, idParam(req.params.id)) });
+});
+
+// Accepting one. It is an ordinary field update and goes through the same
+// column list the editor uses; what makes it worth its own route is that it
+// refuses to overwrite a value somebody typed in, which is the promise the
+// suggestion card makes.
+contactsRouter.post('/:id/suggestions/accept', requireCapability('enrich'), async (req, res) => {
+  const id = idParam(req.params.id);
+  const b = parse(z.object({
+    field: z.enum(['title', 'company', 'phone', 'website']),
+    value: z.string().min(1).max(300),
+  }), req.body);
+  const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
+  if (!c) throw notFound('Contact not found');
+  if (String(c[b.field] ?? '').trim()) throw badRequest(`Their ${b.field} is already filled in; edit the contact to change it`);
+  const rows = await query<any>(
+    `UPDATE contacts SET ${b.field}=$3, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *`,
+    [id, req.user!.id, b.value.trim()],
+  );
+  res.json({ contact: rows[0] });
+});
+
 contactsRouter.post('/', async (req, res) => {
   const b = parse(contactSchema, req.body);
   const rows = await query<any>(
@@ -146,9 +210,37 @@ contactsRouter.delete('/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// A bulk change, and the means to put it back.
+//
+// Undo has covered every action in the mail list since the beginning — archive,
+// delete, junk, snooze, label, move — and stopped at the mailbox. This route
+// could unsubscribe four hundred contacts on a mis-click, which suppresses them
+// AND ends every sequence they are in, and there was no way back.
+//
+// Three of the four actions here are exactly reversible, and the way to reverse
+// them is to know what each row was before. That is what `undo` carries: the
+// prior value per contact, applied back by `/bulk/undo` below.
+//
+// Delete is not one of them, and is deliberately left as it was. A contact row
+// cascades: enrollments, queued reviews and the conversation links all go with
+// it, and re-inserting the contact afterwards would bring back a name with none
+// of its history attached — an undo that appears to work and quietly does not.
+// Making delete reversible means a soft-delete column threaded through every
+// query that reads a contact, which is a larger change than this one and wants
+// deciding on its own. The confirmation says what goes instead.
 contactsRouter.post('/bulk', async (req, res) => {
   const b = parse(z.object({ ids: z.array(z.number().int()).min(1).max(5000), action: z.enum(['delete', 'tag', 'untag', 'status']), tag: z.string().max(60).optional(), status: z.enum(['active', 'unsubscribed', 'do_not_contact']).optional() }), req.body);
   const uid = req.user!.id;
+  // Read before the write, and only for the actions that can be put back.
+  // Scoped by user in the same statement that reads it, so an id list from a
+  // hostile client cannot widen what is captured any more than what is changed.
+  const before = b.action === 'status'
+    ? (await query<{ id: number; status: string }>('SELECT id, status FROM contacts WHERE id = ANY($1) AND user_id=$2', [b.ids, uid]))
+      .map((r) => ({ id: r.id, status: r.status }))
+    : b.action === 'tag' || b.action === 'untag'
+      ? (await query<{ id: number; tags: string[] }>('SELECT id, tags FROM contacts WHERE id = ANY($1) AND user_id=$2', [b.ids, uid]))
+        .map((r) => ({ id: r.id, tags: r.tags ?? [] }))
+      : [];
   switch (b.action) {
     case 'delete': await query('DELETE FROM contacts WHERE id = ANY($1) AND user_id=$2', [b.ids, uid]); break;
     case 'tag': if (!b.tag) throw badRequest('tag required'); await query(`UPDATE contacts SET tags = (SELECT array_agg(DISTINCT t) FROM unnest(tags || ARRAY[$3]::text[]) t), updated_at=now() WHERE id = ANY($1) AND user_id=$2`, [b.ids, uid, b.tag]); break;
@@ -165,7 +257,44 @@ contactsRouter.post('/bulk', async (req, res) => {
       break;
     }
   }
-  res.json({ ok: true });
+  res.json({ ok: true, undo: before.length ? { action: b.action, rows: before } : null });
+});
+
+// Putting one back.
+//
+// A status restored to 'active' has to undo the two side effects that came with
+// changing it — the suppression written and the enrollments closed — or the
+// contact comes back looking active while still being suppressed, which is the
+// worst of both. The enrollments cannot be un-ended in general (a sequence that
+// has moved on has moved on), so this restores the row and the suppression and
+// says nothing it cannot deliver: the toast offers "Undo", not "as you were".
+contactsRouter.post('/bulk/undo', async (req, res) => {
+  const b = parse(z.object({
+    action: z.enum(['tag', 'untag', 'status']),
+    rows: z.array(z.object({
+      id: z.number().int(),
+      status: z.enum(['active', 'unsubscribed', 'bounced', 'replied', 'do_not_contact']).optional(),
+      tags: z.array(z.string().max(60)).optional(),
+    })).min(1).max(5000),
+  }), req.body);
+  const uid = req.user!.id;
+  let restored = 0;
+  for (const r of b.rows) {
+    if (b.action === 'status') {
+      if (!r.status) continue;
+      const rows = await query<{ email: string }>('UPDATE contacts SET status=$3, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING email', [r.id, uid, r.status]);
+      if (!rows.length) continue;
+      restored++;
+      if (r.status === 'active') {
+        await query(`DELETE FROM suppressions WHERE user_id=$1 AND lower(email)=lower($2) AND reason IN ('manual','import')`, [uid, rows[0]!.email]);
+      }
+    } else {
+      if (!r.tags) continue;
+      const rows = await query('UPDATE contacts SET tags=$3, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id', [r.id, uid, r.tags]);
+      restored += rows.length;
+    }
+  }
+  res.json({ restored });
 });
 
 // ---------- CSV import ----------

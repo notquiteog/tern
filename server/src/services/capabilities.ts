@@ -52,6 +52,7 @@ export const CAPABILITIES = [
   'calendar',
   'links',
   'import',
+  'enrich',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -80,8 +81,9 @@ export interface CapabilityMeta {
 export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
   'ai.compose': {
     id: 'ai.compose', label: 'Writing help',
-    what: 'Drafting, replying, rewriting and quick replies send the conversation you have open to the model on this server.',
+    what: 'Drafting, replying, rewriting and quick replies send the conversation you have open to the model on this server. When you rewrite one of its drafts before sending it, both versions are kept — encrypted, and only until there are enough to suggest a line for your writing voice.',
     readsMail: true, usesAi: true, heavy: false,
+    erases: 'the drafts it kept to learn how you write',
   },
   'ai.summaries': {
     id: 'ai.summaries', label: 'Conversation summaries',
@@ -189,6 +191,16 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
     id: 'import', label: 'Import an archive',
     what: 'Reads an mbox file you upload and files it into your encrypted cache. Nothing leaves this server.',
     readsMail: true, usesAi: false, heavy: true,
+  },
+  enrich: {
+    id: 'enrich', label: 'Fill in contacts from their mail',
+    // Its own switch rather than a corner of one of the others, because it
+    // reads mail for a purpose none of them cover: a contact's job title is
+    // sitting in the signature of a message already in the cache, and going
+    // and looking for it is a new reason to open somebody's correspondence
+    // however small the thing being fetched is.
+    what: 'Reads the sign-off at the foot of messages people have sent you, to fill in the job title, company, phone number and website on their contact card. It only ever suggests: nothing is written to a contact until you accept it, and you can see the message each suggestion came from. No model is involved and nothing leaves this server.',
+    readsMail: true, usesAi: false, heavy: false,
   },
 };
 

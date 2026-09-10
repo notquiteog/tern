@@ -491,8 +491,11 @@ async function runEnrollment(enr: any): Promise<void> {
       await query(`DELETE FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='pending'`, [enr.id, step.id]);
       const heldReview = await sealReview(seq.user_id, { subject, body_html: html });
       await query(
-        `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model, hold_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [seq.user_id, enr.id, acc.id, contact.id, step.id, heldReview.subject, heldReview.body_html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason],
+        `INSERT INTO review_queue (user_id, enrollment_id, account_id, contact_id, step_id, subject, body_html, ai_model, hold_reason, hold_hits) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        // The same findings as structured hits, so the queue can offer the
+        // correction rather than only the complaint. See the responder hold
+        // site below for the reasoning.
+        [seq.user_id, enr.id, acc.id, contact.id, step.id, heldReview.subject, heldReview.body_html, step.ai_personalize && seq.ai_mode !== 'off' ? (await getAiSettings()).model : 'template', reason, await seal(seq.user_id, JSON.stringify(hits))],
       );
       log.warn('sequence step held for review', { enrollment: enr.id, step: step.id, reason });
       await parkForReview(enr.id, seq, acc);
@@ -790,9 +793,14 @@ async function runResponderJob(job: any): Promise<string> {
     const reason = `Held for review: ${describeHits(hits)}`;
     const held = await sealReview(acc.user_id, { subject: gen.subject, body_html: gen.html, to_addr: gen.to, context: (email.body_text || email.preview || '').slice(0, 2000) });
     await query(
-      `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context, hold_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11,$12)`,
-      [acc.user_id, acc.id, contact?.id ?? null, held.subject, held.body_html, gen.model, responder.id, email.id, email.thread_id, held.to_addr, held.context, reason],
+      `INSERT INTO review_queue (user_id, account_id, contact_id, subject, body_html, ai_model, kind, responder_id, reply_to_email_id, thread_id, to_addr, context, hold_reason, hold_hits)
+       VALUES ($1,$2,$3,$4,$5,$6,'reply',$7,$8,$9,$10,$11,$12,$13)`,
+      // The prose reason is for a person to read; the hits are the same
+      // findings in a form the review page can act on — an unfilled merge
+      // field has a real value on the contact record, and a bracketed
+      // placeholder is a line to delete. Sealed, because a hit carries a
+      // sample of the message it was found in.
+      [acc.user_id, acc.id, contact?.id ?? null, held.subject, held.body_html, gen.model, responder.id, email.id, email.thread_id, held.to_addr, held.context, reason, await seal(acc.user_id, JSON.stringify(hits))],
     );
     const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [acc.user_id]);
     publish({ type: 'review', userId: acc.user_id, count: pending?.n ?? 0 });

@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../errors.js';
 import { getAccount, getUserAccount } from '../services/accounts.js';
 import { BriefIncompleteError, previewCampaign, renderStep } from '../workers/scheduler.js';
 import { publish } from '../events.js';
+import { describeWindow, nextWindowOpen } from '../services/sending.js';
 import { campaignMetrics } from '../services/campaigns.js';
 import { requireCapability } from '../services/capabilities.js';
 
@@ -212,13 +213,44 @@ sequencesRouter.get('/:id/preview', async (req, res) => {
   if (!contact) throw notFound('Contact not found');
   const acc = s.account_id ? await getUserAccount(req.user!.id, s.account_id) : null;
   const steps = await query<any>('SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY position, id', [id]);
+  // When each step would actually land.
+  //
+  // The editor previewed the steps and never the run: five emails against a
+  // real contact, on the dates the sending policy would really choose. Merge
+  // mistakes were findable per step; "these three arrive on the same Tuesday
+  // morning" and "the last one lands on Boxing Day" were not findable at all
+  // until the campaign was live.
+  //
+  // Nothing is guessed. The waits are the steps' own, and each date is pushed
+  // to the next open moment of the account's send window exactly as
+  // `runEnrollment` would push it. The randomised delay is not added: it is
+  // seconds to minutes, and showing a projection to the second would imply a
+  // precision that does not exist.
+  const window = acc?.send_window ?? null;
+  let at = window ? nextWindowOpen(window, new Date()) : new Date();
   const out = [];
   for (const st of steps) {
-    if (st.kind === 'wait') { out.push({ step: st, kind: 'wait' }); continue; }
+    if (st.kind === 'wait') {
+      at = new Date(at.getTime() + ((st.wait_days ?? 0) * 86_400_000) + ((st.wait_hours ?? 0) * 3_600_000));
+      if (window) at = nextWindowOpen(window, at);
+      out.push({ step: st, kind: 'wait', at: at.toISOString() });
+      continue;
+    }
     const r = await renderStep(acc ?? ({ name: req.user!.display_name, email: 'you@example.com', id: 0 } as any), s, st, contact);
-    out.push({ step: st, kind: 'email', subject: r.subject, html: r.html, brief: r.brief });
+    out.push({ step: st, kind: 'email', subject: r.subject, html: r.html, brief: r.brief, at: at.toISOString() });
   }
-  res.json({ preview: out });
+  res.json({
+    preview: out,
+    // Said once rather than on every row, and said plainly: a projection that
+    // does not mention the reply rule would be describing a run that almost
+    // never happens.
+    schedule: {
+      window: window ? describeWindow(window) : null,
+      tz: window?.tz ?? null,
+      stopsOnReply: s.stop_on_reply,
+      contact: contact.id ? { id: contact.id, email: contact.email, name: [contact.first_name, contact.last_name].filter(Boolean).join(' ') } : null,
+    },
+  });
 });
 
 // The third step of the golden path: see what the model actually wrote for the

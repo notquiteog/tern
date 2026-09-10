@@ -379,6 +379,12 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .nav-item.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .1); }
 .nav-item { transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
 .nav-item.active { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .18), 0 1px 10px rgba(var(--accent-rgb), .12); }
+/* Forgetting a saved search. Hidden until the row is hovered or focused, the
+   way a label's context menu is: it is a rare action next to a common one, and
+   an always-visible × invites the wrong click. */
+.nav-item-x { margin-left: auto; display: none; align-items: center; justify-content: center; width: 18px; height: 18px; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); cursor: pointer; flex: none; }
+.nav-item:hover .nav-item-x, .nav-item:focus-within .nav-item-x { display: flex; }
+.nav-item-x:hover { background: var(--bg-hover); color: var(--text); }
 /* The accent edge that marks the section you are in, drawn rather than
    implied by the fill alone. */
 .nav-item.active::before { content: ""; position: absolute; left: -6px; top: 50%; width: 3px; height: 16px; border-radius: 3px; transform: translateY(-50%); background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .55); }
@@ -1916,6 +1922,14 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .review-card { transition: box-shadow var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease); }
 .review-card.focused { border-color: rgba(var(--accent-rgb), .5); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .14); }
 .review-card.held { border-left: 3px solid var(--warning); }
+/* The corrections the guard's finding implies, offered rather than described.
+   One row per hit, the offending text first so it can be matched against the
+   draft above it. */
+.review-fixes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.review-fixes code { font-size: 12px; }
+.review-fixes .row { gap: 8px; align-items: center; }
+/* "Not like that": a sentence of steering, and one button. */
+.review-redo { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sunken); }
 /* The message being answered, as a way into the conversation. It is a button
    the width of the card because the whole block is the target — a chevron on
    its own is a smaller thing to hit than the two lines beside it. */
@@ -2750,7 +2764,25 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .assistant-card-row .faint { margin-right: 6px; }
 .assistant-card-body { padding: 8px 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
 .assistant-card-image { display: block; width: 100%; height: auto; max-height: 300px; object-fit: contain; background: var(--bg-sunken); }
-.assistant-card-actions { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.assistant-card-actions { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+/* A proposal that has been accepted says so where its button was, rather than
+   sitting there looking pressable. Pressing "Add to calendar" twice should not
+   be a thing anybody can do by accident. */
+.assistant-card-done { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--success-text, var(--text-2)); }
+.assistant-card-note { padding: 0 10px 8px; font-size: 11.5px; color: var(--text-3, var(--text-2)); }
+/* A clash, or anything else the card knows and the person would want before
+   they press the button. One line, in the card, not a separate toast. */
+.assistant-card-warn { display: flex; gap: 6px; align-items: flex-start; margin: 8px 10px 0; padding: 7px 8px; border-radius: 7px; font-size: 12px; line-height: 1.45; background: var(--warning-bg, var(--bg-sunken)); color: var(--warning-text, var(--text-2)); }
+.assistant-card-warn svg { flex: none; margin-top: 1px; }
+/* Every conversation in a triage set, in full. The list scrolls rather than
+   truncating: "and 9 more" would be asking somebody to approve what they
+   cannot see, which is the one thing this card exists to prevent. */
+.assistant-card-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.assistant-card-list li { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; font-size: 12.5px; border-top: 1px solid var(--border-soft, var(--border)); }
+.assistant-card-list li:first-child { border-top: 0; }
+.assistant-card-list li > span { flex: 1; min-width: 0; }
+.assistant-card-list li.dropped { opacity: 0.45; }
+.assistant-card-list li.dropped .strong { text-decoration: line-through; }
 
 /* What it read. Collapsed by default — it is an audit trail rather than an
    answer — and one click from being checked. */

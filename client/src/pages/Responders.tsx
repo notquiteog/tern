@@ -46,6 +46,19 @@ export default function RespondersPage() {
                 <div className="small muted mt-8">{(r.conditions ?? []).length ? `If ${r.match} of: ${r.conditions.map((c: any) => `${c.field} ${c.op.replace('_', ' ')} "${c.value ?? ''}"`).join(' · ')}` : 'Every inbound message'}{r.only_contacts ? ' · contacts only' : ''}{r.skip_lists ? ' · skips lists and notifications' : ''} · {r.tone}, {r.length} · cap {r.daily_cap}/day · once per thread per {r.cooldown_hours}h{r.humanize && r.mode === 'send' ? ' · sends with natural delay' : ''}</div>
                 {r.instructions && <div className="small mt-8" style={{ fontStyle: 'italic' }}>"{r.instructions}"</div>}
                 <div className="small faint mt-8">{r.hits} matched · {r.draft_count} drafts · {r.sent_count} sent{r.pending_count ? ` · ${r.pending_count} awaiting review` : ''}</div>
+                {/* How its last twenty decisions went.
+                    A responder producing bad drafts got rejected over and over
+                    and never heard about it: the queue recorded the decision
+                    and these instructions stayed exactly as they were. The
+                    numbers were already in the review queue; nothing here is
+                    new work, and it is only drawn once the verdict is clear
+                    enough to act on. */}
+                {r.recent_decided >= 5 && r.recent_rejected / r.recent_decided > 0.5 && (
+                  <div className="small mt-8" style={{ color: 'var(--warning-text)' }}>
+                    <AlertTriangle size={12} /> You rejected {r.recent_rejected} of its last {r.recent_decided}. Its instructions are below — changing them is what changes what it writes.
+                    <button type="button" className="link-btn" style={{ marginLeft: 6 }} onClick={() => setEditing(r)}>Edit them</button>
+                  </div>
+                )}
               </div>
               <div className="row gap-4">
                 <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test(r)}>Try it</Button>

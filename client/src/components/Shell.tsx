@@ -4,8 +4,8 @@ import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useCan, useFeatures } from '../state/features';
 import { NaturalSearchButton, SearchDictate } from './SearchExtras';
-import { useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask, Newspaper, ClipboardCheck } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Bookmark, CalendarDays, Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask, Newspaper, ClipboardCheck } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { adoptServerMailPrefs } from '../state/mailPrefs';
 import { buildSearchQuery, EMPTY_SEARCH, parseSearchQuery, searchChips, withoutChip, type SearchFields } from '../lib/search';
@@ -15,7 +15,7 @@ import { useCompose } from '../state/compose';
 import { useToast } from '../state/toast';
 import { useHotkeys, useServerEvents } from '../lib/hooks';
 import { useAccountFilter, useAccounts, useCounts, useMailboxes, type Mailbox } from '../lib/queries';
-import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Input, ColorPicker, Confirm } from './ui';
+import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Field, Input, ColorPicker, Confirm } from './ui';
 import { ComposeDock } from './Compose';
 import { CommandPalette } from './CommandPalette';
 import { AssistantDock } from './Assistant';
@@ -97,6 +97,16 @@ export function Shell({ children }: { children: ReactNode }) {
     'g i': () => nav('/mail/inbox'), 'g s': () => nav('/mail/starred'), 'g t': () => nav('/mail/sent'), 'g d': () => nav('/mail/drafts'), 'g a': () => nav('/mail/all'),
     'g c': () => nav('/contacts'), 'g q': () => nav('/sequences'), 'g h': () => nav('/home'), 'g r': () => nav('/review'),
   }, [filter]);
+
+  // The query the person is about to keep, held while the naming dialog is up.
+  const [saving, setSaving] = useState<string | null>(null);
+  const [saveName, setSaveName] = useState('');
+  const { data: savedSearches } = useQuery({
+    queryKey: ['saved-searches'],
+    queryFn: () => api.get<{ searches: { id: number; name: string; query: string }[] }>('/api/mail/searches'),
+    staleTime: 300_000,
+  });
+  const searches = savedSearches?.searches ?? [];
 
   const visibleAccounts = filter === 'all' ? accounts : accounts.filter((a) => String(a.id) === filter);
   const labels = useMemo(() => mailboxes.filter((m) => !m.role && visibleAccounts.some((a) => a.id === m.account_id)).sort((a, b) => a.name.localeCompare(b.name)), [mailboxes, visibleAccounts]);
@@ -183,6 +193,10 @@ export function Shell({ children }: { children: ReactNode }) {
               nothing unless the person has turned the capability on. */}
           <SearchDictate onText={(t) => setText(t)} />
           <NaturalSearchButton text={text} onQuery={(query) => { setText(''); runSearch(query); }} />
+          {/* Keeping the query you are looking at. The omnibox has always been
+              able to express these and never able to remember one, so every
+              recurring question was retyped. */}
+          {q && <IconButton label="Keep this search" size={14} className="btn-sm" onClick={(e) => { e.preventDefault(); setSaving(q); }}><Bookmark size={14} /></IconButton>}
           {q || text ? <IconButton label="Clear" size={14} onClick={() => { setQ(''); setText(''); nav(loc.pathname); }}><X size={14} /></IconButton> : <span className="kbd-hint desktop-only"><Kbd>/</Kbd></span>}
           <IconButton label="Search options" size={14} className={cls('btn-sm', advanced && 'active')} onClick={(e) => { e.preventDefault(); setAdvanced((a) => !a); }}><SlidersHorizontal size={14} /></IconButton>
           {advanced && <AdvancedSearch initial={q} onClose={() => setAdvanced(false)} onSearch={(query) => { setAdvanced(false); setQ(query); nav(query ? `/mail/all?q=${encodeURIComponent(query)}` : '/mail/inbox'); }} />}
@@ -254,6 +268,35 @@ export function Shell({ children }: { children: ReactNode }) {
             {labels.length === 0 && <div className="small faint" style={{ padding: '2px 10px 6px' }}>No labels yet</div>}
             {labels.map((m) => <LabelLink key={m.id} m={m} count={counts?.labelUnread?.[`${m.account_id}:${m.jmap_id}`]} showAccount={filter === 'all' && accounts.length > 1} accountColor={accounts.find((a) => a.id === m.account_id)?.color} onContext={(x, y) => setLabelCtx({ x, y, m })} dropProps={dropProps({ action: 'label', mailbox: m })} />)}
           </div>
+          {searches.length > 0 && (
+            <div className="nav-section">
+              <div className="nav-section-title">Saved searches</div>
+              {searches.map((sv) => (
+                <NavLink
+                  key={sv.id}
+                  to={`/mail/all?q=${encodeURIComponent(sv.query)}`}
+                  title={sv.query}
+                  className={cls('nav-item', q === sv.query && 'active')}
+                >
+                  <Bookmark size={17} />
+                  <span className="truncate">{sv.name}</span>
+                  <button
+                    type="button"
+                    className="nav-item-x"
+                    aria-label={`Forget ${sv.name}`}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      await api.del(`/api/mail/searches/${sv.id}`);
+                      void qc.invalidateQueries({ queryKey: ['saved-searches'] });
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </NavLink>
+              ))}
+            </div>
+          )}
           <div className="nav-section">
             <div className="nav-section-title">Outreach</div>
             {navItem('/home', <Home size={17} />, 'Overview')}
@@ -305,6 +348,36 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>, document.body)}
       {labelEdit && <LabelEdit m={labelEdit} onClose={() => setLabelEdit(null)} />}
       <Confirm open={Boolean(labelDelete)} onClose={() => setLabelDelete(null)} danger title={`Delete label "${labelDelete?.name}"?`} message="Messages keep their other labels and stay in their folders; only the label goes." confirmLabel="Delete" onConfirm={async () => { if (!labelDelete) return; await api.del(`/api/mail/mailboxes/${labelDelete.account_id}/${encodeURIComponent(labelDelete.jmap_id)}`); qc.invalidateQueries({ queryKey: ['mailboxes'] }); qc.invalidateQueries({ queryKey: ['threads'] }); toast.success('Label deleted'); if (loc.pathname.includes(`mailbox:${labelDelete.account_id}:${labelDelete.jmap_id}`)) nav('/mail/inbox'); }} />
+      {/* Naming a search. It shows the query it is about to keep, because a
+          saved search is only useful if you can tell later what it does — and
+          the operators are the part that says so. */}
+      <Modal
+        open={Boolean(saving)}
+        onClose={() => { setSaving(null); setSaveName(''); }}
+        title="Keep this search"
+        footer={<>
+          <Button onClick={() => { setSaving(null); setSaveName(''); }}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!saveName.trim()}
+            onClick={async () => {
+              try {
+                await api.post('/api/mail/searches', { name: saveName.trim(), query: saving });
+                void qc.invalidateQueries({ queryKey: ['saved-searches'] });
+                toast.success('Kept in the sidebar');
+                setSaving(null); setSaveName('');
+              } catch (e) { toast.error(e); }
+            }}
+          >
+            Keep it
+          </Button>
+        </>}
+      >
+        <Field label="Call it">
+          <Input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)} maxLength={60} placeholder="Unanswered from clients" />
+        </Field>
+        <div className="help-text"><code>{saving}</code></div>
+      </Modal>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
       <ShortcutsHelp open={help} onClose={() => setHelp(false)} />
     </div>

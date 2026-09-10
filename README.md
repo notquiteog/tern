@@ -46,6 +46,9 @@ Nothing leaves your server except the mail itself.
   **AI summary** above each conversation.
 - The search box is an omnibox: every operator you type becomes a chip you
   can take off one at a time, and Backspace in an empty box removes the last.
+  A query worth keeping gets a name and its own place in the sidebar under
+  **Saved searches**, so a recurring question is asked once rather than
+  retyped.
 - Settings split in two: **Settings** is about you (profile, mailboxes,
   mail apps, appearance, security, encryption); **Admin** is the workspace
   (users and sign-up, the mail server, the AI model, branding, audit log).
@@ -77,11 +80,26 @@ Nothing leaves your server except the mail itself.
 **Outreach**
 - Contacts with CSV import (column mapping, dedupe, custom merge fields,
   tags, consent source), a suppression list, and a per-contact timeline.
+- **Where a relationship stands**, on the contact itself: every conversation,
+  what is outstanding in both directions, when you last met and when you are
+  next due to, and how the sequences went — assembled from what Tern had
+  already indexed and never had a way to show beside the person it was about.
+  The facts stand on their own; a paragraph over them is a button.
+- Somebody who has **gone quiet** has always been findable in the list and was
+  never actionable. Now the row offers a nudge, written from what was actually
+  said and landing in the conversation that went quiet rather than as a fresh
+  email.
+- A bulk change to a selection — tags, or a status that suppresses people and
+  ends their sequences — is **undoable**, like everything in the mail list.
 - Templates: a 25-piece starter library, merge fields with fallbacks,
   filters, conditionals and variations, validation, contact-aware preview,
   test-send, import and export.
 - Sequences: email and wait steps, same-thread follow-ups, automatic stop on
   reply, bounce detection, one-click unsubscribe with `List-Unsubscribe`.
+- A **dry run** against a real contact before it goes live: every step with
+  their merge values, on the dates the send window would actually choose, so
+  "these three land on the same Tuesday" is findable before anybody receives
+  them rather than afterwards.
 - Per-account sending policy: daily cap, send window in a timezone, and a
   **toggleable randomised delay** between automated sends.
 - Inbox rules that run as mail arrives.
@@ -92,24 +110,57 @@ Nothing leaves your server except the mail itself.
   or a sequence step that still contains a merge field, a placeholder such
   as "[Your Name]", echoed prompt text or an "as an AI" line is held in the
   review queue instead of being sent.
+- **A held draft is not a dead end.** The queue knows precisely what the filter
+  caught, so it offers the correction rather than only the complaint: an
+  unfilled `{{company}}` is filled from the contact record it was written for,
+  a bracketed placeholder is a line to delete, and anything that genuinely
+  needs rewriting gets **"Not like that"** — a sentence of steering, sent to
+  the model along with the reason it was held, so the second attempt fixes the
+  actual failure instead of rolling the dice on the same prompt. A whole group
+  can be approved or rejected at once; approving skips the held ones and
+  rejecting does not, which is the difference between the two.
 - In the composer: draft, reply, rewrite, fix grammar, shorten, expand,
   subject lines. In a thread: one-click AI reply (written inline, addressed
   to the right person), **Quick replies** (three one-line suggestions to pick
   from) and summarise.
 - **A conversation with tools** (`⌘/Ctrl J`): ask it to find the thread where
-  the price was agreed, summarise what you are reading, work out what you owe
-  anyone, check whether Thursday is free, draft the reply, and draw a picture
-  to go in it. It reads only what a question needs, it says which messages it
-  read, and it hands you drafts and pictures rather than sending or attaching
-  either. With a voice configured it will read its answers aloud and take the
-  next question from the microphone, so a turn is spoken rather than typed.
+  the price was agreed, read the invoice attached to it, summarise what you
+  are reading, work out what you owe anyone, check whether Thursday is free,
+  draft the reply, and draw a picture to go in it. It reads only what a
+  question needs, it says which messages it read, and it hands you drafts and
+  pictures rather than sending or attaching either. With a voice configured it
+  will read its answers aloud and take the next question from the microphone,
+  so a turn is spoken rather than typed.
+- **It has verbs now, and every one of them ends in a card with your button
+  on it.** Put that meeting in the calendar, note what you just promised
+  somebody, turn a complaint into a draft rule, or gather up forty newsletters
+  and archive them in one go. Nothing happens until you press the button, the
+  card shows the *whole* of what it proposes — every conversation in a
+  tidy-up, never "and nine more" — and the only mailbox actions it can offer
+  are the four that Undo already covers. It still cannot send, attach, delete
+  or junk anything.
+- **Two searches, told apart.** Meaning search answers "the thread where we
+  agreed the price"; the operator search answers "every unread message from
+  Dana with an attachment", which is a question with a definite answer that a
+  nearest-neighbour search cannot give. Both are offered, and the operator one
+  works with the meaning index switched off.
 - **AI responders**: answer incoming mail automatically as a suggested draft
   in the thread, through the review queue, or sent without a human in the
   loop, with list and auto-reply detection, per-thread cooldown, daily caps
-  and the account's send pacing.
+  and the account's send pacing. One whose drafts you keep rejecting says so
+  on its own card — "you rejected 14 of its last 20" — beside the instructions
+  that are the thing to change.
 - **AI campaigns**: a brief plus an audience becomes a personalised email
   for every contact, reviewed or automatic, with a same-thread follow-up.
 - Sequence steps can be personalised per contact by the model.
+- **The writing voice fills itself in.** Every account has a note telling the
+  model how it writes, and in practice it stays empty because it is a box
+  somebody has to think of filling in — while the evidence goes past all day.
+  A draft you rewrite before sending is the most specific correction there is,
+  so both versions are kept, encrypted, until there are enough to say
+  something; then Tern offers one sentence for the box, with the number of
+  edits behind it. It proposes and never writes, the rows are cleared once
+  you have decided, and turning writing help off deletes them.
 - **System prompt and tuning in the UI**: edit the standing instructions,
   temperature, top-p, top-k, min-p, repeat penalty, context window and
   length; a playground to try changes; a writing-voice note per account.
@@ -238,10 +289,20 @@ build. A test then walks the source for the one hole types cannot close.
   leaving the domain, and a conversation whose sender changes partway through.
   One calm line naming the specific reason, never a row of badges.
 - **Search inside attachments.** PDF, Word, Excel and PowerPoint text, read on
-  arrival, sealed beside the message and folded into the same blind index.
+  arrival, sealed beside the message and folded into the same blind index —
+  and readable by the assistant, so "what is the total on that invoice" is
+  answered from the file rather than from the message that carried it.
 - **Commitments.** What you said you would do and what you are waiting on,
   pulled out of your own conversations and closed automatically when the mail
-  settles them.
+  settles them. Reschedule and Nudge sit in the conversation the promise came
+  out of as well as on the ledger page, because that is where you are when you
+  realise it is going to be late.
+- **Fill in contacts from their mail** (off). A job title and a company sitting
+  in somebody's sign-off, read off a message already in the cache and offered
+  for the blank fields on their contact card. No model: a signature has a shape
+  and reading it is pattern matching, so the answer is the same every time. It
+  only ever suggests, it shows the message each suggestion came from, and it
+  never touches a field you filled in yourself.
 - **The brief.** A page, not a daily notification: it shows what is stored,
   says when it was written and whether the mailbox has moved since, and
   regenerates only when you press the button.
@@ -261,8 +322,10 @@ build. A test then walks the source for the one hole types cannot close.
   your own key like everything else. What it buys the rest of the app is that
   Tern stops proposing times you are already busy — the composer, the
   invitation card, the assistant and the daily brief all read real free/busy.
-  Only *when* you are busy, never what you are doing. See
-  [docs/CALENDAR.md](docs/CALENDAR.md).
+  Only *when* you are busy, never what you are doing. It goes the other way
+  too: the assistant can put an entry in front of you to accept (and says so
+  when it would clash), and an event with guests on it has a button to write
+  to them. See [docs/CALENDAR.md](docs/CALENDAR.md).
 - **Pictures and video** (off, and needs an image host). Make a picture — or a
   few seconds of video — from a sentence, in the composer, and put it in the
   message or attach it. Filed as an ordinary attachment: the same metadata
