@@ -61,6 +61,14 @@ const ERASE: Partial<Record<Capability, string[]>> = {
     `DELETE FROM ai_jobs WHERE user_id=$1 AND kind='responder' AND status='pending'`,
   ],
   import: [`DELETE FROM mail_imports WHERE user_id=$1 AND status IN ('pending','running')`],
+  // The whole transcript, and every draft and picture proposed inside it. The
+  // messages go with the conversation by cascade; this names both anyway,
+  // because a row orphaned by a cascade that was later relaxed would be a
+  // mailbox quoted in clear that nobody is looking for.
+  'ai.assistant': [
+    `DELETE FROM ai_messages WHERE user_id=$1`,
+    `DELETE FROM ai_conversations WHERE user_id=$1`,
+  ],
 };
 
 // How many rows each capability is holding for this person, for the line
@@ -75,6 +83,9 @@ const COUNT: Partial<Record<Capability, string>> = {
   brief: `SELECT count(*)::int AS n FROM briefs WHERE user_id=$1`,
   calendar: `SELECT (SELECT count(*) FROM calendar_events WHERE user_id=$1)
                   + (SELECT count(*) FROM calendar_objects WHERE user_id=$1) AS n`,
+  // Conversations rather than messages: "12 conversations" is a number
+  // somebody recognises, and "418 messages" is not the same warning.
+  'ai.assistant': `SELECT count(*)::int AS n FROM ai_conversations WHERE user_id=$1`,
 };
 
 export async function capabilityFootprint(userId: number): Promise<Partial<Record<Capability, number>>> {

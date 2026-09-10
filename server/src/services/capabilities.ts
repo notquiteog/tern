@@ -39,6 +39,7 @@ export const CAPABILITIES = [
   'ai.campaigns',
   'ai.playground',
   'ai.media',
+  'ai.assistant',
   // New.
   'semantic',
   'triage',
@@ -109,6 +110,18 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
     what: 'Makes a picture or a short video from a sentence you type, to put in a message. Your sentence goes to whichever image host the administrator has configured — which is somebody else’s hardware unless they say otherwise — and the file comes back here. Nothing from your mailbox is sent.',
     readsMail: false, usesAi: true, heavy: false,
   },
+  'ai.assistant': {
+    id: 'ai.assistant', label: 'The assistant',
+    // The longest entry here, and it earns the length: this is the only
+    // feature in Tern that keeps what you said to the model, and the only one
+    // that can read across your whole mailbox in one go rather than reading
+    // the one conversation you have open. Somebody deciding whether to turn it
+    // on is entitled to both of those facts in the sentence they read, not in
+    // a document they would have to go and find.
+    what: 'A conversation with the assistant, where it can look things up for you — search your mail by meaning, read a conversation, find a contact, check your calendar — and put a draft or a picture in front of you. It only reads what a question actually needs. Unlike everything else here, the conversation is kept so you can come back to it: it is encrypted with your own key, listed under the assistant, and you can delete any of it or all of it. It never sends a message and never attaches anything; that stays your click.',
+    readsMail: true, usesAi: true, heavy: true,
+    erases: 'every conversation you have had with the assistant',
+  },
   semantic: {
     id: 'semantic', label: 'Meaning search',
     what: 'Reads each message once to build a search index of what it is about, so you can search for an idea rather than a word. The index is rotated with your own key before it is stored, and the words themselves are never in it.',
@@ -151,8 +164,14 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
     erases: 'your saved brief',
   },
   voice: {
-    id: 'voice', label: 'Dictation',
-    what: 'Speak into any text box. The recording is transcribed by a model on this server, is never written to disk, and is discarded the moment the text comes back.',
+    id: 'voice', label: 'Speech',
+    // Both directions under one switch, and named as one thing rather than
+    // two. "Dictation" and "the assistant reading a reply aloud" are the same
+    // decision — audio between this box and a model server — and splitting
+    // them would be a second switch to explain and a second one to forget.
+    // The sentence says which direction each half sends, because those are
+    // genuinely different things to agree to.
+    what: 'Speak into any text box, and let the assistant answer out loud. A recording you make is transcribed by a model on this server, is never written to disk, and is discarded the moment the text comes back. When the assistant speaks, its reply is sent to whichever voice the administrator has configured and the sound comes straight back; neither is stored.',
     readsMail: false, usesAi: true, heavy: true,
   },
   calendar: {

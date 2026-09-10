@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
-import { badRequest, HttpError, notFound } from '../errors.js';
+import { badRequest, forbidden, HttpError, notFound } from '../errors.js';
 import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
+import { mayChooseThinking, saveThinkingPrefs, thinkingView } from '../ai/thinking.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
@@ -16,7 +17,7 @@ import {
   saveMediaSettings, startVideo, videoEndpoint, cancelVideoJob, getVideoJob, listVideoJobs,
   watchVideoJob, type DeliveredUpload, type GeneratedMedia, type MediaSettings,
 } from '../ai/media.js';
-import { scrubMedia } from '../services/scrub.js';
+import { fileGenerated } from '../services/generated.js';
 import { getCommitment } from '../services/commitments.js';
 import { config } from '../config.js';
 import { getUserAccount, listAccounts } from '../services/accounts.js';
@@ -29,7 +30,7 @@ import { adminEnabled, requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
 import { invalidateVectorsFrom } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
-import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
+import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
 import { inspectCertificate, normalizeBaseUrl } from '../util/outbound.js';
 
@@ -130,6 +131,35 @@ async function concurrencyView(s: AiSettings, models: Awaited<ReturnType<typeof 
 
 // The live meter. Polled by Admin → AI model every few seconds, so it stays
 // small: one read of /proc/meminfo and one /api/ps.
+// ---------- Reasoning, per person ----------
+//
+// Not admin-gated as a route, because the whole point is that it is the
+// person's own. It is gated on the CONTENT instead: the reply says whether
+// their choice counts, and the save refuses when it does not. Hiding the
+// control in the client is presentation; refusing the write is the rule.
+
+aiRouter.get('/thinking', async (req, res) => {
+  res.json(await thinkingView(await getAiSettings(), req.user!.id));
+});
+
+aiRouter.put('/thinking', async (req, res) => {
+  const b = parse(z.object({
+    thinking: z.enum(['default', 'off', 'on']).optional(),
+    effort: z.enum(['default', 'low', 'medium', 'high']).optional(),
+  }), req.body);
+  const s = await getAiSettings();
+  // Checked here and not only in the browser. A person who could still POST
+  // this after an admin turned personal choices off would be a person whose
+  // preference outlived the decision to disallow it — and `effectiveSettings`
+  // would go on ignoring it, which is the worst of both: a stored setting that
+  // does nothing and says nothing.
+  if (!(await mayChooseThinking(req.user!.id, s))) {
+    throw forbidden('An administrator has not enabled personal reasoning settings on this server', 'thinking_not_allowed');
+  }
+  await saveThinkingPrefs(req.user!.id, b);
+  res.json(await thinkingView(s, req.user!.id));
+});
+
 aiRouter.get('/memory', requireAdmin, async (_req, res) => {
   const s = await getAiSettings();
   const host = await hostMemory();
@@ -217,6 +247,10 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
     // storable, whichever end it would fail at.
     embedProvider: z.enum(['same', 'ollama', 'openai', 'gemini', 'voyage']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
+    // Whether anybody but an admin may choose their own reasoning settings.
+    // Deliberately not in TUNING_SHAPE and not a preset field: a preset is a
+    // set of sampling values for a model, and this is a policy about people.
+    userThinking: z.boolean().optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
@@ -291,9 +325,15 @@ aiRouter.get('/voice', requireAdmin, async (_req, res) => {
   const v = await getVoiceSettings();
   const { apiKey, ...safe } = v;
   const health = v.baseUrl ? await voiceHealth(v) : { ok: false, error: 'No transcriber address is set' };
+  // Asked separately, because the two halves fail separately: a speaches
+  // container with Whisper pulled and Kokoro not is reachable, authenticated
+  // and unable to say a word, and one health line covering both would report
+  // that as working.
+  const speechHealthResult = v.speech ? await speechHealth(v) : { ok: false, error: 'The voice is off' };
   res.json({
-    settings: { ...safe, hasApiKey: Boolean(apiKey) },
+    settings: { ...safe, hasApiKey: Boolean(apiKey), hasSpeechApiKey: Boolean(v.speechApiKey) },
     health,
+    speechHealth: speechHealthResult,
     local: v.baseUrl ? await isLocalReach(v.baseUrl) : true,
     defaults: (({ apiKey: _k, ...d }) => d)(voiceDefaults()),
     envUrl: config.whisperUrl || null,
@@ -314,28 +354,56 @@ const voiceBody = z.object({
   apiKey: z.string().max(500).nullable().optional(),
   model: z.string().max(120).optional(),
   language: z.string().max(8).optional(),
+  // The voice, which is the same class of thing again pointed the other way.
+  // `speechProvider: 'same'` shares the transcriber's whole connection, which
+  // is the ordinary case — speaches serves Whisper and Kokoro from one port —
+  // and anything else gets its own address, key, certificate rule and proxy.
+  speech: z.boolean().optional(),
+  speechProvider: z.enum(['same', 'openai']).optional(),
+  speechBaseUrl: z.string().url().max(300).or(z.literal('')).optional(),
+  speechApiKey: z.string().max(500).nullable().optional(),
+  speechTlsInsecure: z.boolean().optional(),
+  speechUseTor: z.boolean().optional(),
+  speechModel: z.string().max(160).optional(),
+  speechVoice: z.string().max(80).optional(),
+  speechSpeed: z.number().min(0.5).max(2).optional(),
 });
 
 aiRouter.put('/voice', requireAdmin, async (req, res) => {
   const b = parse(voiceBody, req.body);
-  const patch: Partial<VoiceSettings> = { ...b, apiKey: undefined };
+  const patch: Partial<VoiceSettings> = { ...b, apiKey: undefined, speechApiKey: undefined };
   // Blank means "leave the stored key alone", null means "clear it". A form
   // that posted the key back would have to be given it first, and a stored
   // key is never sent to a browser.
   if (b.apiKey === null) patch.apiKey = '';
   else if (b.apiKey) patch.apiKey = b.apiKey;
   else delete patch.apiKey;
+  // The voice's own key, under the same rule. Written out rather than shared
+  // with the block above because there are two keys and exactly one of them is
+  // `apiKey`; a clever helper here would be a place to conflate them.
+  if (b.speechApiKey === null) patch.speechApiKey = '';
+  else if (b.speechApiKey) patch.speechApiKey = b.speechApiKey;
+  else delete patch.speechApiKey;
   const next = await saveVoiceSettings(patch);
   const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.voice_updated',$2)`, [
     req.user!.id,
-    JSON.stringify({ ...b, apiKey: b.apiKey ? '(set)' : b.apiKey === null ? '(cleared)' : undefined }),
+    JSON.stringify({
+      ...b,
+      apiKey: b.apiKey ? '(set)' : b.apiKey === null ? '(cleared)' : undefined,
+      speechApiKey: b.speechApiKey ? '(set)' : b.speechApiKey === null ? '(cleared)' : undefined,
+    }),
   ]);
   // `isLocalReach` resolves the address, which with Tor on would announce the
   // transcriber's hostname to this machine's resolver — outside the proxy the
   // admin chose. Skipped, and reported as non-local, which is what routing
   // through Tor makes it.
-  res.json({ settings: { ...safe, hasApiKey: Boolean(apiKey) }, local: next.useTor ? false : (next.baseUrl ? await isLocalReach(next.baseUrl) : true), health: await voiceHealth(next) });
+  res.json({
+    settings: { ...safe, hasApiKey: Boolean(apiKey), hasSpeechApiKey: Boolean(next.speechApiKey) },
+    local: next.useTor ? false : (next.baseUrl ? await isLocalReach(next.baseUrl) : true),
+    health: await voiceHealth(next),
+    speechHealth: next.speech ? await speechHealth(next) : { ok: false, error: 'The voice is off' },
+  });
 });
 
 // Try an address before saving it, so a wrong one is a message on the form
@@ -343,9 +411,24 @@ aiRouter.put('/voice', requireAdmin, async (req, res) => {
 aiRouter.post('/voice/test', requireAdmin, async (req, res) => {
   const b = parse(voiceBody.partial(), req.body);
   const current = await getVoiceSettings();
-  const trial = { ...current, ...b, apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey) };
+  const trial: VoiceSettings = {
+    ...current,
+    ...b,
+    apiKey: b.apiKey === null ? '' : (b.apiKey || current.apiKey),
+    // Both keys resolved the same way: `null` clears, blank keeps what is
+    // stored, anything else is the new one being tried.
+    speechApiKey: b.speechApiKey === null ? '' : (b.speechApiKey || current.speechApiKey),
+  };
   if (!trial.baseUrl) throw badRequest('Give the transcriber address first');
-  res.json({ health: await voiceHealth(trial), local: trial.useTor ? false : await isLocalReach(trial.baseUrl) });
+  res.json({
+    health: await voiceHealth(trial),
+    local: trial.useTor ? false : await isLocalReach(trial.baseUrl),
+    // A real synthesis of one word, not a reachability probe — see
+    // `speechHealth`. Only when the voice is actually being turned on, so an
+    // admin editing the transcriber does not pay for a clip they did not ask
+    // for on every keystroke of the test button.
+    speechHealth: trial.speech ? await speechHealth(trial) : undefined,
+  });
 });
 
 // ---------- Pictures and video ----------
@@ -511,18 +594,6 @@ aiRouter.get('/media/status', async (req, res) => {
  * somebody's sentence. Stripping it here means it does not travel with the
  * message.
  */
-async function fileGenerated(userId: number, media: GeneratedMedia): Promise<DeliveredUpload & { content_type: string }> {
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  const dot = media.filename.lastIndexOf('.');
-  const ext = dot > 0 ? media.filename.slice(dot) : '';
-  const filename = `${dot > 0 ? media.filename.slice(0, dot) : media.filename}-${stamp}${ext}`;
-  const scrub = scrubMedia(media.data, media.contentType, filename);
-  const rows = await query<any>(
-    'INSERT INTO uploads (user_id, filename, content_type, size, data) VALUES ($1,$2,$3,$4,$5) RETURNING id, filename, content_type, size',
-    [userId, filename, media.contentType, scrub.data.length, scrub.data],
-  );
-  return { ...rows[0], contentType: rows[0].content_type };
-}
 
 aiRouter.post('/media/image', requireCapability('ai.media'), powGuard('ai'),
   rateLimit({ name: 'ai-image', perMinute: 8, message: 'Too many pictures at once; wait a moment' }),

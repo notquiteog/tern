@@ -334,6 +334,10 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 .menu-item.danger { color: var(--danger-text); }
 .menu-item .shortcut { margin-left: auto; color: var(--text-3); font-size: 12px; }
 .menu-sep { height: 1px; background: var(--border); margin: 5px 0; }
+/* A rule inside a card, for a card that covers two related settings — the
+   transcriber and the voice are one connection's worth of decisions and two
+   separate things to turn on. */
+.card-sep { height: 1px; background: var(--border); margin: 4px 0; }
 .menu-label { padding: 6px 10px 3px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); font-weight: 600; }
 .toast-stack { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 100; align-items: center; pointer-events: none; }
 .toast { pointer-events: auto; display: flex; align-items: center; gap: 12px; background: #1c1f2b; color: #fff; padding: 10px 14px 10px 16px; border-radius: 10px; box-shadow: var(--shadow-2); font-size: 13.5px; animation: rise .16s ease-out; max-width: min(90vw, 560px); }
@@ -2713,4 +2717,64 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
   .search > svg, .search .btn-icon.btn-sm > svg { width: 24px; height: 24px; }
   .search .btn-icon.btn-sm { width: 40px; height: 40px; }
   .topbar .avatar { width: 46px; height: 46px; }
+}
+
+/* ---------- The assistant ----------
+   A dock on the right, above the page and below the compose windows: a draft
+   the assistant proposes opens a composer, and that composer has to land on
+   top of the panel that suggested it rather than behind it. The compose dock
+   is z-index 60, so this is 55. */
+.assistant-dock {
+  position: fixed; top: var(--topbar-h, 56px); right: 0; bottom: 0; width: 400px; z-index: 55;
+  display: flex; flex-direction: column;
+  background: var(--bg-elev); border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, .07);
+}
+.assistant-head { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.assistant-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; margin-right: auto; }
+
+.assistant-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.assistant-msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
+.assistant-msg.user { align-items: flex-end; }
+.assistant-bubble { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.5; border-radius: 12px; padding: 8px 11px; max-width: 92%; }
+.assistant-msg.user .assistant-bubble { background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }
+.assistant-msg.assistant .assistant-bubble { background: var(--bg-sunken); border-bottom-left-radius: 4px; }
+
+.assistant-doing { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.assistant-doing .spin, .assistant-compose .spin { animation: spin 1s linear infinite; }
+
+/* A proposal: the model's output, held one step short of doing anything. */
+.assistant-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-elev); }
+.assistant-card-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; font-size: 12px; font-weight: 600; color: var(--text-2); background: var(--bg-sunken); border-bottom: 1px solid var(--border); }
+.assistant-card-row { padding: 5px 10px 0; font-size: 12.5px; }
+.assistant-card-row .faint { margin-right: 6px; }
+.assistant-card-body { padding: 8px 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
+.assistant-card-image { display: block; width: 100%; height: auto; max-height: 300px; object-fit: contain; background: var(--bg-sunken); }
+.assistant-card-actions { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
+
+/* What it read. Collapsed by default — it is an audit trail rather than an
+   answer — and one click from being checked. */
+.assistant-refs { font-size: 12px; }
+.assistant-refs-toggle { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0; color: var(--text-2); cursor: pointer; font-size: 12px; }
+.assistant-refs-toggle:hover { color: var(--text); text-decoration: underline; }
+.assistant-refs ul { margin: 5px 0 0; padding-left: 14px; display: flex; flex-direction: column; gap: 3px; }
+.assistant-refs a { color: var(--text); }
+
+.assistant-compose { display: flex; align-items: flex-end; gap: 6px; padding: 10px; border-top: 1px solid var(--border); }
+.assistant-input { flex: 1; resize: none; min-height: 36px; max-height: 160px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13.5px; background: var(--bg-elev); color: var(--text); field-sizing: content; }
+.assistant-input:focus { outline: none; border-color: var(--accent); }
+.assistant-compose .recording { color: var(--danger); }
+.assistant-speaking { display: flex; align-items: center; gap: 6px; padding: 6px 12px 10px; font-size: 12px; color: var(--text-2); }
+.assistant-speaking button { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 12px; }
+
+.assistant-list { flex: 1; overflow-y: auto; padding: 6px; }
+.assistant-list-row { display: flex; align-items: center; gap: 4px; }
+.assistant-list-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; background: none; border: 0; padding: 8px 10px; border-radius: 8px; cursor: pointer; text-align: left; color: var(--text); font-size: 13px; }
+.assistant-list-open:hover { background: var(--bg-hover); }
+.assistant-list-open .faint { font-size: 11.5px; }
+
+/* On a phone the dock is the screen. A 400px panel on a 390px viewport is a
+   panel with the app peeking out of one edge, which reads as a bug. */
+@media (max-width: 640px) {
+  .assistant-dock { width: 100%; top: 0; z-index: 70; }
 }

@@ -29,11 +29,27 @@
 //
 // ── What this file will not do ──────────────────────────────────────────────
 //
-// Generate into an automated send. Everything here is reached from a composer
-// with a person in front of it. The hard filter in `ai/sendGuard.ts` reads
-// text and can say whether a draft still contains a merge field; nothing
-// reads a picture and says whether it is fit to put in front of a stranger,
-// so a sequence step does not get to make one.
+// Generate into an automated send. The hard filter in `ai/sendGuard.ts` reads
+// text and can say whether a draft still contains a merge field or a
+// placeholder; nothing reads a picture and says whether it is fit to put in
+// front of a stranger. So a sequence step, a responder and every other path
+// that puts mail on the wire without a person looking first does not get to
+// make one, and that is not going to change while the asymmetry holds.
+//
+// The rule is therefore about the PERSON, not about the composer, and it is
+// worth stating that way round because the two came apart. This was originally
+// written as "everything here is reached from a composer", which was true when
+// the composer was the only caller. The assistant is now a second one: it can
+// draw a picture inside a conversation, because somebody is sitting there
+// having asked for it in the last few seconds. What it cannot do — see
+// `ai/tools.ts` — is attach the result to anything. It hands back a card, and
+// putting that card in a message is the person's own click, which lands them
+// in the composer, which is where a message gets looked at one more time
+// before it goes.
+//
+// So the invariant survives intact and is narrower than its first wording: no
+// picture reaches a stranger without a human having seen it. What changed is
+// that "a human saw it" no longer implies "a composer made it".
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';

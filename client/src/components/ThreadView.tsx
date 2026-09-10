@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlarmClock, Archive, Clock, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText, Link2Off, Wrench } from 'lucide-react';
+import { AlarmClock, Archive, Clock, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Download, Forward, MailOpen, MoreHorizontal, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Star, Tag, Trash2, Inbox, Printer, Contact, Workflow, ExternalLink, Bot, Send, Pencil, X, BellOff, Bell, Ban, ListFilter, ChevronsDownUp, ChevronsUpDown, MailX, Zap, FileText, Link2Off, Wrench, MessageSquare } from 'lucide-react';
 import { api } from '../api';
 import { streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from './AiThinking';
 import { useCompose, seedFromDraft, type ComposeSeed, type ForwardAttachment } from '../state/compose';
+import { useAssistant, useThreadContext } from '../state/assistant';
+import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
 import { useHotkeys, useMediaQuery } from '../lib/hooks';
 import { useMailboxes } from '../lib/queries';
@@ -39,6 +41,11 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   const [params, setParams] = useSearchParams();
   const { data: mailboxes = [] } = useMailboxes();
   const { data, isLoading, error } = useQuery({ queryKey: ['thread', accountId, threadId], queryFn: () => api.get<any>(`/api/mail/threads/${accountId}/${encodeURIComponent(threadId)}`) });
+  // Tell the assistant what is on screen, so "summarise this" and "reply
+  // saying Thursday works" have a subject without the person naming one. The
+  // hook unregisters on the way out, so a closed conversation stops being
+  // "this" the moment it closes.
+  useThreadContext({ accountId, threadId });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [summary, setSummary] = useState<string | null>(null);
   // The model's working-out, shown while it happens: one trace for the
@@ -248,6 +255,15 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
           {!phone && (onPrev || onNext) && <span className="row" style={{ gap: 0 }}><IconButton label="Newer conversation ([)" disabled={!hasPrev} onClick={onPrev}><ChevronLeft size={17} /></IconButton><IconButton label="Older conversation (])" disabled={!hasNext} onClick={onNext}><ChevronRight size={17} /></IconButton></span>}
           <Button size="sm" variant="ai" icon={<Bot size={14} />} onClick={aiReply} aria-label="AI reply"><span className="btn-label">AI reply</span></Button>
           <Button size="sm" variant="ai" icon={<Sparkles size={14} />} onClick={summarize} loading={summarizing} aria-label="Summarize"><span className="btn-label">Summarize</span></Button>
+          {/* Deliberately beside "Summarize" rather than replacing it. The two
+              are different things: that one writes a fixed one-shot summary of
+              this thread, which is what most people want most of the time and
+              costs one generation. This one opens a conversation about it, for
+              the questions a summary does not answer — "what did they say about
+              the price", "when did I promise this", "reply agreeing but push it
+              a week". Collapsing them would make the cheap common case pay for
+              the expensive rare one. */}
+          <AskAboutThis />
         </div>
       </div>
       <div className="thread-head">
@@ -562,5 +578,27 @@ function DraftCard({ draft, onResume, onDiscard }: { draft: any; onResume: () =>
       <div className="small mt-8 truncate">{text || <span className="faint">(empty)</span>}</div>
       <div className="row mt-8 gap-4" onClick={(e) => e.stopPropagation()}><Button size="sm" icon={<Pencil size={13} />} onClick={onResume}>Resume</Button><Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={onDiscard}>Discard</Button></div>
     </div>
+  );
+}
+
+
+/**
+ * "Ask" on an open conversation.
+ *
+ * It opens the panel with nothing typed rather than with a question already
+ * asked, and that is the considered choice: the useful questions about a
+ * thread are too varied to guess at, and a button that fires off "summarise
+ * this" would spend a generation on the one question the button next to it
+ * already answers. What it does is put the cursor in the box with the
+ * conversation already registered as the subject, so four words are enough.
+ */
+function AskAboutThis() {
+  const assistant = useAssistant();
+  const can = useCan('ai.assistant');
+  if (!can) return null;
+  return (
+    <Button size="sm" variant="ai" icon={<MessageSquare size={14} />} onClick={() => assistant.show()} aria-label="Ask the assistant about this conversation">
+      <span className="btn-label">Ask</span>
+    </Button>
   );
 }

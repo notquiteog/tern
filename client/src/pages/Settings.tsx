@@ -7,6 +7,7 @@ import { api } from '../api';
 import { streamWithWork } from '../lib/work';
 import { AiThinking, useAiThinking } from '../components/AiThinking';
 import { useAuth } from '../state/auth';
+import { ThinkingCard, ThinkingButton } from '../components/Thinking';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { useToast } from '../state/toast';
 import { useAccounts, useAiStatus, type Account } from '../lib/queries';
@@ -414,7 +415,7 @@ export function AiPlayground({ enabled }: { enabled: boolean }) {
   }
   return (
     <div className="card mb-16">
-      <div className="card-title"><h2>Playground</h2><span className="small muted">Uses the saved system prompt and tuning</span></div>
+      <div className="card-title"><h2>Playground</h2><span className="small muted">Uses the saved system prompt and tuning</span><span className="ml-auto"><ThinkingButton /></span></div>
       <div className="row mb-8"><Select className="input-sm" style={{ width: 150 }} value={playMode} onChange={(e) => setPlayMode(e.target.value as any)}><option value="compose">Draft</option><option value="reply">Reply</option><option value="rewrite">Rewrite</option><option value="subject">Subject line</option></Select><Input className="input-sm" value={playInstruction} onChange={(e) => setPlayInstruction(e.target.value)} placeholder="Instruction" /><DictateButton className="btn-sm" title="Say the instruction" onText={(t) => setPlayInstruction((v) => appendDictated(v, t))} /></div>
       {(playMode === 'rewrite' || playMode === 'subject' || playMode === 'reply') && <DictateBox className="mb-8" title="Dictate the draft" onText={(t) => setPlayDraft((v) => appendDictated(v, t))}><Textarea value={playDraft} onChange={(e) => setPlayDraft(e.target.value)} placeholder={playMode === 'reply' ? 'Paste the message you are replying to' : 'Paste the draft to work on'} style={{ minHeight: 70 }} /></DictateBox>}
       <div className="row"><Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={testing} onClick={test} disabled={!enabled}>Run</Button></div>
@@ -458,13 +459,14 @@ function AiSettings() {
     <div style={{ maxWidth: 820 }}>
       <PageHeader title="AI assistant" sub="Drafts, replies, rewrites, summaries and per-contact personalisation, generated on this server." actions={admin ? <NavLink className="btn" to="/admin/ai"><Server size={15} />Model and provider</NavLink> : undefined} />
       <div className="card mb-16"><AiStatusLine data={data} admin={admin} /></div>
+      <ThinkingCard />
       <DictationCard />
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
       <div className="card">
         <div className="card-title"><h2>What the assistant never does on its own</h2></div>
         <ul className="tips">
           <li><b>Automated mail is checked before it leaves.</b> A responder in send mode or a sequence step that still contains a merge field, a placeholder like "[Your Name]", echoed prompt text or an "as an AI" line is held in <NavLink to="/review">AI review</NavLink> instead of being sent.</li>
-          <li><b>Every request is a fresh conversation.</b> Nothing from other people's mail or earlier requests is carried over.</li>
+          <li><b>Every request is a fresh conversation</b>, with one deliberate exception. Drafting, replies, summaries and the rest carry nothing from earlier requests or from anybody else's mail. A conversation you open with the assistant does have a past — that is what makes it a conversation — and it is stored encrypted with your own key, listed under the assistant, and deletable there or by turning the capability off.</li>
           <li><b>Encrypted mail stays closed.</b> The assistant does not see inside messages encrypted to your key.</li>
         </ul>
         {!admin && <div className="help-text mt-8">Only admins change the model and provider. Ask an admin if drafting is unavailable.</div>}

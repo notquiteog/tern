@@ -22,7 +22,7 @@ import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability } from './capabilities.js';
 import { badRequest } from '../errors.js';
-import { outboundFetch } from '../util/outbound.js';
+import { outboundFetch, type OutboundResponse } from '../util/outbound.js';
 import { endpointHeaders, transportFor, type ModelEndpoint } from '../ai/endpoint.js';
 
 const log = logger('voice');
@@ -76,6 +76,38 @@ export interface VoiceSettings {
   model: string;
   /** ISO code, or empty to let the model detect the language. */
   language: string;
+
+  // ---------- Speaking, which is the other direction ----------
+  //
+  // Dictation turns a person into text. This turns the assistant back into
+  // sound, which is what makes a spoken conversation a conversation rather
+  // than a microphone button. It is separate from everything above because it
+  // is a different model, usually a different container, and an install may
+  // very reasonably want one and not the other: transcription is useful on its
+  // own, and an install with no assistant has nothing to read aloud.
+
+  /** Off means the assistant never offers to speak. */
+  speech: boolean;
+  /**
+   * Where the synthesiser is.
+   *
+   * `same` shares the transcriber's connection ENTIRELY — address, key,
+   * certificate rule and proxy — which is the ordinary case, because speaches
+   * serves Whisper and Kokoro from one container on one port. Inheriting the
+   * address without the proxy is the specific bug `ai/endpoint.ts` was written
+   * to stop happening again, so inheritance takes everything or nothing.
+   */
+  speechProvider: 'same' | 'openai';
+  speechBaseUrl: string;
+  speechApiKey: string;
+  speechTlsInsecure: boolean;
+  speechUseTor: boolean;
+  /** The voice model, e.g. `speaches-ai/Kokoro-82M`. Empty uses the server's default. */
+  speechModel: string;
+  /** Which voice it speaks in. Empty uses the server's default. */
+  speechVoice: string;
+  /** How fast, 0.5 to 2. 1 is the model's own pace. */
+  speechSpeed: number;
 }
 
 const VOICE_DEFAULTS: VoiceSettings = {
@@ -90,6 +122,19 @@ const VOICE_DEFAULTS: VoiceSettings = {
   useTor: false,
   model: '',
   language: '',
+  // Off until an admin says otherwise, even when a transcriber is already
+  // configured. A speaches container serves both, but a whisper.cpp one
+  // serves only the first, and turning this on by inheritance would put a
+  // "speak" button on a server with nothing behind it.
+  speech: false,
+  speechProvider: 'same',
+  speechBaseUrl: '',
+  speechApiKey: '',
+  speechTlsInsecure: false,
+  speechUseTor: false,
+  speechModel: '',
+  speechVoice: '',
+  speechSpeed: 1,
 };
 
 let cache: { at: number; value: VoiceSettings } | null = null;
@@ -102,6 +147,9 @@ export async function getVoiceSettings(): Promise<VoiceSettings> {
   // whatever the flag says: a switch that is on with nowhere to send audio
   // is a microphone button that fails when it is pressed.
   if (!value.baseUrl) value.enabled = false;
+  // Same rule one level down: speech set to share a connection that is not
+  // there is speech with nowhere to send text.
+  if (!speechAddress(value)) value.speech = false;
   cache = { at: Date.now(), value };
   return value;
 }
@@ -111,6 +159,9 @@ export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<
   const next: VoiceSettings = { ...current, ...patch };
   next.baseUrl = String(next.baseUrl ?? '').trim().replace(/\/+$/, '');
   if (!next.baseUrl) next.enabled = false;
+  next.speechBaseUrl = String(next.speechBaseUrl ?? '').trim().replace(/\/+$/, '');
+  next.speechSpeed = Math.min(2, Math.max(0.5, Number(next.speechSpeed) || 1));
+  if (!speechAddress(next)) next.speech = false;
   await query(
     `INSERT INTO settings (key, value, updated_at) VALUES ('voice', $1, now())
      ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
@@ -491,4 +542,173 @@ export function cleanTranscript(raw: string): string {
     .trim();
   if (HALLUCINATIONS.some((re) => re.test(t))) return '';
   return t;
+}
+
+// ---------- Speaking ----------
+//
+// The other half of a spoken conversation. Dictation has existed here since
+// F9 and turns a person into text; this turns an answer back into sound, and
+// the pair is what makes turn-taking possible at all.
+//
+// ── The same rules as the recording, in the same order ──────────────────────
+//
+// Nothing is written to disk. The synthesised clip exists as one Buffer, is
+// handed to the response, and is not stored, cached or logged — only its
+// length is. That matters slightly less than it does for a recording, since
+// the words were the assistant's rather than the person's, but only slightly:
+// the assistant's answer quotes their mail, so an audio file of it is a
+// readable copy of the same material in a format nothing else here would have
+// sealed.
+//
+// ── Why the text is capped ──────────────────────────────────────────────────
+//
+// Because synthesis is priced and paced by the character on every host worth
+// pointing at, and an assistant that has just read a forty-message thread can
+// produce an answer that costs a minute of audio nobody listens past the first
+// sentence of. The cap is generous for a spoken reply and firm.
+
+/**
+ * The clip, off the wire.
+ *
+ * `OutboundResponse` deliberately exposes a stream rather than a body helper,
+ * because that is the one shape both of its two transports can offer — see
+ * `util/outbound.ts`. A synthesised sentence is small, so this reads it whole
+ * with a ceiling: a server answering with something enormous is a server
+ * misbehaving, and filling this process's memory on its say-so is not a
+ * failure worth having.
+ */
+const MAX_SPEECH_BYTES = 24 * 1024 * 1024;
+
+async function readAudio(res: OutboundResponse): Promise<Buffer> {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const parts: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > MAX_SPEECH_BYTES) throw badRequest('The voice sent back far more audio than a reply can be');
+      parts.push(Buffer.from(value));
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(parts);
+}
+
+/** As many characters as will be read aloud in one go. */
+export const MAX_SPEECH_CHARS = 4000;
+
+/** Where the synthesiser lives, honouring `same`. */
+function speechAddress(v: VoiceSettings): string {
+  return (v.speechProvider === 'same' ? v.baseUrl : v.speechBaseUrl) || '';
+}
+
+/**
+ * The synthesiser as a connection.
+ *
+ * `same` returns the transcriber's connection whole, for the reason
+ * `embedEndpoint` returns the language model's whole: the failure being
+ * avoided is inheriting an address and silently not inheriting the proxy, so
+ * an admin who routed speech over Tor is told it is on while it is not.
+ */
+export function ttsEndpoint(v: VoiceSettings): ModelEndpoint {
+  if (v.speechProvider === 'same') {
+    return { ...sttEndpoint(v), id: 'stt', label: 'the voice', inheritedFrom: 'stt' };
+  }
+  return {
+    id: 'stt',
+    label: 'the voice',
+    provider: 'openai',
+    baseUrl: v.speechBaseUrl,
+    apiKey: v.speechApiKey,
+    tlsInsecure: Boolean(v.speechTlsInsecure),
+    useTor: Boolean(v.speechUseTor),
+    inheritedFrom: null,
+  };
+}
+
+export async function speechConfigured(): Promise<boolean> {
+  const v = await getVoiceSettings();
+  return Boolean(v.speech && speechAddress(v));
+}
+
+export interface Spoken { audio: Buffer; contentType: string; ms: number }
+
+/**
+ * An answer, read aloud.
+ *
+ * The capability is `voice` — the same one dictation asks for. Two switches
+ * for "audio goes to a model server" would be two things to explain and one
+ * more to forget, and the metadata for that capability names both directions.
+ */
+export async function speak(userId: number, text: string, opts: { signal?: AbortSignal } = {}): Promise<Spoken> {
+  await assertCapability(userId, 'voice');
+  const cfg = await getVoiceSettings();
+  const address = speechAddress(cfg);
+  if (!cfg.speech || !address) throw badRequest('This server has no voice set up. An administrator can add one under Admin → AI model.');
+  const say = String(text ?? '').trim();
+  if (!say) throw badRequest('There was nothing to say');
+
+  const started = Date.now();
+  const e = ttsEndpoint(cfg);
+  const res = await outboundFetch(`${address}/v1/audio/speech`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
+    body: JSON.stringify({
+      // Empty means "whatever the server was started with", which is the
+      // bundled case, exactly as it is for the transcriber's model field.
+      ...(cfg.speechModel ? { model: cfg.speechModel } : { model: 'tts-1' }),
+      input: say.slice(0, MAX_SPEECH_CHARS),
+      ...(cfg.speechVoice ? { voice: cfg.speechVoice } : { voice: 'alloy' }),
+      // Opus in an Ogg container: a quarter the bytes of the WAV these servers
+      // default to, and playable in every browser that can record one.
+      response_format: 'opus',
+      ...(cfg.speechSpeed && cfg.speechSpeed !== 1 ? { speed: cfg.speechSpeed } : {}),
+    }),
+    signal: opts.signal ?? AbortSignal.timeout(120_000),
+  }, transportFor(e)).catch((err) => { throw badRequest(`The voice could not be reached: ${(err as Error).message}`); });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw badRequest(`The voice answered HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
+  }
+  const audio = await readAudio(res);
+  if (!audio.length) throw badRequest('The voice returned nothing');
+  const ms = Date.now() - started;
+  // Length, not content — the same line dictation logs, for the same reason.
+  log.info('spoke a reply', { user: userId, chars: say.length, bytes: audio.length, ms });
+  // Stated rather than read back off the response: `opus` was asked for above,
+  // and `OutboundResponse` carries no headers to read it from anyway.
+  return { audio, contentType: 'audio/ogg', ms };
+}
+
+/** Whether the configured voice answers, for the connection test on the admin page. */
+export async function speechHealth(s?: VoiceSettings): Promise<{ ok: boolean; error?: string }> {
+  const cfg = s ?? (await getVoiceSettings());
+  const address = speechAddress(cfg);
+  if (!address) return { ok: false, error: 'no address' };
+  const e = ttsEndpoint(cfg);
+  try {
+    // A real synthesis of one word, because reachability is not the question
+    // an admin is asking. A server can be up, authenticated and missing the
+    // voice model entirely, and only a request that asks it to speak finds out.
+    const res = await outboundFetch(`${address}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
+      body: JSON.stringify({
+        model: cfg.speechModel || 'tts-1',
+        input: 'Hello.',
+        voice: cfg.speechVoice || 'alloy',
+        response_format: 'opus',
+      }),
+      signal: AbortSignal.timeout(30_000),
+    }, transportFor(e));
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 160)}` };
+    const bytes = (await readAudio(res)).length;
+    return bytes > 0 ? { ok: true } : { ok: false, error: 'answered with no audio' };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
 }

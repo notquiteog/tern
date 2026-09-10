@@ -5,6 +5,7 @@ import { Button, IconButton } from './ui';
 import { useAiStatus } from '../lib/queries';
 import { useMailPrefs } from '../state/mailPrefs';
 import { AiThinking, useAiThinking } from './AiThinking';
+import { ThinkingButton } from './Thinking';
 import { DictateButton, appendDictated } from './Dictate';
 import { textToHtml } from '../lib/format';
 
@@ -66,7 +67,13 @@ export function AiPanel({ context, onInsert, onSubject, onClose, defaultMode, ge
     <div className="ai-panel">
       <div className="row">
         <span className="ai-status"><Sparkles size={15} /> AI assistant {ai?.settings?.model ? <span className="faint">· {ai.settings.model}</span> : null}</span>
-        <IconButton label="Close" className="btn-sm ml-auto" onClick={onClose}><X size={14} /></IconButton>
+        {/* The trade this governs — accuracy against about seventy seconds —
+            is felt right here, at the moment somebody is waiting for a draft,
+            rather than on a settings page they visited once. */}
+        <span className="ml-auto row gap-4">
+          <ThinkingButton />
+          <IconButton label="Close" className="btn-sm" onClick={onClose}><X size={14} /></IconButton>
+        </span>
       </div>
       {unavailable ? (
         <div className="small">{!ai.settings.enabled ? 'AI drafting is turned off.' : !ai.health.ok ? `The model server is not reachable (${ai.health.error}).` : `Model "${ai.settings.model}" is not downloaded yet.`} An admin can fix this in Settings → AI.</div>

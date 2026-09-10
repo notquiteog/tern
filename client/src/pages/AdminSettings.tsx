@@ -644,8 +644,16 @@ function AiVoiceCard() {
   async function test() {
     setTesting(true);
     try {
-      const r = await api.post<any>('/api/ai/voice/test', { baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model || undefined, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) });
-      setTested({ ...r.health });
+      const r = await api.post<any>('/api/ai/voice/test', {
+        baseUrl: f.baseUrl, apiKey: key || undefined, model: f.model || undefined,
+        tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor),
+        // The voice half too, so one button answers both questions — and so a
+        // "reachable" badge beside a voice that cannot speak is not possible.
+        speech: Boolean(f.speech), speechProvider: f.speechProvider, speechBaseUrl: f.speechBaseUrl || undefined,
+        speechApiKey: f.speechApiKey || undefined, speechModel: f.speechModel || undefined, speechVoice: f.speechVoice || undefined,
+        speechTlsInsecure: Boolean(f.speechTlsInsecure), speechUseTor: Boolean(f.speechUseTor),
+      });
+      setTested({ ...r.health, speechHealth: r.speechHealth });
     } catch (e) { toast.error(e); } finally { setTesting(false); }
   }
 
@@ -742,6 +750,98 @@ function AiVoiceCard() {
       <Confirm open={Boolean(del)} onClose={() => setDel(null)} danger title={`Delete ${del?.id}?`} confirmLabel="Delete model"
         message={<>The weights are removed from the transcriber and can only come back by downloading them again.{del?.inUse && <><br /><br /><b>This is the model dictation is set to use.</b> The setting is cleared with it, so the transcriber falls back to its own default.</>}</>}
         onConfirm={() => { const id = del!.id; setDel(null); return doDeleteVoice(id); }} />
+
+      {/* ---------- The other direction ---------- */}
+      <div className="card-sep mt-16" />
+      <div className="card-title">
+        <h3>The assistant&rsquo;s voice</h3>
+        <div className="row">
+          <Toggle
+            checked={Boolean(f.speech)}
+            disabled={f.speechProvider === 'same' ? !f.baseUrl : !f.speechBaseUrl}
+            onChange={(v) => { setF({ ...f, speech: v }); void save({ speech: v }); }}
+          />
+          <span className="small">{f.speech ? 'On' : 'Off'}</span>
+        </div>
+      </div>
+      <p className="muted small">
+        Reading the assistant&rsquo;s answers aloud, so a conversation can be spoken rather than typed. It
+        wants something serving OpenAI&rsquo;s <code>/v1/audio/speech</code> — <b>speaches</b> with a Kokoro
+        model is the usual answer, and it serves transcription from the same port, which is why this
+        shares the connection above by default. The bundled whisper.cpp does <b>not</b> speak: it
+        transcribes only, so an install running that needs a second server here.
+      </p>
+      <p className="muted small">
+        Nothing is stored. The reply goes to whichever server this points at and the sound comes
+        straight back to the browser that asked; neither is written down here. What is sent is the
+        assistant&rsquo;s answer, which quotes the person&rsquo;s mail — so on somebody else&rsquo;s
+        hardware, that is where it goes.
+      </p>
+      <div className="row gap-8 mt-8">
+        <Field label="Where it lives" className="flex-1">
+          <Select value={f.speechProvider ?? 'same'} onChange={(e) => { setF({ ...f, speechProvider: e.target.value }); setTested(null); }}>
+            <option value="same">The same server as the transcriber</option>
+            <option value="openai">A server of its own</option>
+          </Select>
+        </Field>
+        {f.speechProvider !== 'same' && (
+          <Field label="Address" className="flex-1">
+            <Input value={f.speechBaseUrl ?? ''} onChange={(e) => { setF({ ...f, speechBaseUrl: e.target.value }); setTested(null); }} placeholder="http://speaches:8000" />
+          </Field>
+        )}
+      </div>
+      <div className="row gap-8">
+        <Field label="Voice model" hint="Empty uses the server's own default" className="flex-1">
+          <Input value={f.speechModel ?? ''} onChange={(e) => setF({ ...f, speechModel: e.target.value })} placeholder="speaches-ai/Kokoro-82M" />
+        </Field>
+        <Field label="Voice" hint="Which of that model's voices" className="flex-1">
+          <Input value={f.speechVoice ?? ''} onChange={(e) => setF({ ...f, speechVoice: e.target.value })} placeholder="af_heart" />
+        </Field>
+        <Field label="Speed" hint="1 is the model's own pace">
+          <Input type="number" min={0.5} max={2} step={0.1} value={f.speechSpeed ?? 1} onChange={(e) => setF({ ...f, speechSpeed: Number(e.target.value) })} style={{ width: 90 }} />
+        </Field>
+      </div>
+      {f.speechProvider !== 'same' && (
+        <>
+          <Field label="API key" hint="Only if that server wants one">
+            <Input type="password" value={f.speechApiKey === undefined ? '' : f.speechApiKey ?? ''} onChange={(e) => setF({ ...f, speechApiKey: e.target.value })} placeholder={data.settings.hasSpeechApiKey ? '•••••••• (stored)' : ''} />
+          </Field>
+          <div className="mt-8">
+            {/^https:/i.test(f.speechBaseUrl ?? '') && (
+              <div className="row">
+                <Toggle checked={Boolean(f.speechTlsInsecure)} onChange={(v) => { setF({ ...f, speechTlsInsecure: v }); setTested(null); }} />
+                <span className="small">Trust this server&rsquo;s certificate even if it cannot be verified</span>
+              </div>
+            )}
+            <div className="row">
+              <Toggle checked={Boolean(f.speechUseTor)} onChange={(v) => { setF({ ...f, speechUseTor: v }); setTested(null); }} />
+              <span className="small">Reach the voice through Tor</span>
+            </div>
+          </div>
+        </>
+      )}
+      <div className="row mt-8 gap-8">
+        <Button
+          variant="primary"
+          onClick={() => save({
+            speech: Boolean(f.speech), speechProvider: f.speechProvider, speechBaseUrl: f.speechBaseUrl,
+            speechApiKey: f.speechApiKey || undefined, speechModel: f.speechModel, speechVoice: f.speechVoice,
+            speechSpeed: Number(f.speechSpeed) || 1,
+            speechTlsInsecure: Boolean(f.speechTlsInsecure), speechUseTor: Boolean(f.speechUseTor),
+          })}
+        >
+          Save the voice
+        </Button>
+        {data.settings.hasSpeechApiKey && <Button size="sm" variant="ghost" onClick={() => save({ speechApiKey: null })}>Clear key</Button>}
+        {/* The health line for this half is a real synthesis of one word, not a
+            reachability probe: a server can be up, authenticated and missing
+            the voice model entirely, and only asking it to speak finds out. */}
+        {(tested as any)?.speechHealth || data.speechHealth ? (
+          ((tested as any)?.speechHealth ?? data.speechHealth).ok
+            ? <Badge kind="success">the voice answers</Badge>
+            : <Badge kind="warning">{((tested as any)?.speechHealth ?? data.speechHealth).error ?? 'no voice'}</Badge>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1064,7 +1164,26 @@ function AiAdminSettings() {
             <Field label="Thinking budget (tokens)" hint="Room for the working-out, on top of the reply length. If the model spends it all and writes nothing, Tern asks again with thinking off rather than showing an error, and the log says how much reasoning it wanted."><Input type="number" min={0} max={8192} value={f.thinkingBudget ?? 1500} onChange={(e) => setF({ ...f, thinkingBudget: Number(e.target.value) })} /></Field>
           </div>
         )}
-        <Button variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget })}>Save tuning</Button>
+        {/* Who the two settings above apply to.
+            Kept beside them rather than on a permissions page, because it is
+            only meaningful next to the thing it delegates — and it is the one
+            control here that is about people rather than about a model. */}
+        <div className="row mt-8">
+          <Toggle checked={Boolean(f.userThinking)} onChange={(v) => { setF({ ...f, userThinking: v }); void save({ userThinking: v }); }} />
+          <div className="flex-1">
+            <div className="strong small">Let people choose their own reasoning settings</div>
+            <div className="help-text">
+              Off, everyone on this server gets exactly what is set above. On, each person can turn thinking
+              on or off for themselves and pick how hard, from Settings → AI assistant or from the button
+              beside any AI panel; anyone who has not chosen still gets your setting.
+              {' '}Worth knowing before you turn it on: reasoning multiplies the time one request occupies the
+              model, and on a box this size that time comes out of everybody else&rsquo;s queue — which is why
+              it is your decision rather than simply offered. Admins can always choose for themselves, since
+              they can change the setting above anyway.
+            </div>
+          </div>
+        </div>
+        <Button className="mt-8" variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget, userThinking: f.userThinking })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">

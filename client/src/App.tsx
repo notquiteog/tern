@@ -5,6 +5,7 @@ import { ToastProvider } from './state/toast';
 import { ComposeProvider } from './state/compose';
 import { PgpProvider } from './state/pgp';
 import { FeaturesProvider } from './state/features';
+import { AssistantProvider } from './state/assistant';
 import { Shell } from './components/Shell';
 import BriefPage from './pages/Brief';
 import CommitmentsPage from './pages/Commitments';
@@ -79,7 +80,14 @@ export default function App() {
         <FeaturesProvider>
           <PgpProvider>
             <ComposeProvider>
-              <Gate />
+              {/* Inside ComposeProvider, because a draft the assistant
+                  proposes opens a composer, and outside the router, because
+                  the panel survives navigation — a question asked about one
+                  conversation is still worth reading after you have moved on
+                  to the next. */}
+              <AssistantProvider>
+                <Gate />
+              </AssistantProvider>
             </ComposeProvider>
           </PgpProvider>
         </FeaturesProvider>

@@ -527,10 +527,90 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
 // prompt and one user message built from this task's inputs alone. Nothing
 // from earlier requests, other users or previous outputs is ever carried
 // over. The transport refuses anything else so this cannot regress.
+//
+// This is still true of every task in the app — drafting, summaries,
+// responders, campaigns, rules, the brief, reply intent. The assistant is the
+// one deliberate exception, and it does not get here by relaxing this rule.
+// It has a rule of its own, directly below, because "the guard did not apply"
+// and "a different guard applied" are very different things to find in a
+// codebase a year from now.
 export function assertFreshConversation(messages: ChatMessage[]): void {
   const roles = messages.map((m) => m.role);
   if (roles.length !== 2 || roles[0] !== 'system' || roles[1] !== 'user') {
     throw new Error(`AI requests must be a fresh conversation (system + user), got: ${roles.join(', ') || 'nothing'}`);
+  }
+}
+
+/**
+ * The assistant's transcript rule — the second of the two, and the only place
+ * in Tern where a conversation is allowed to have a past.
+ *
+ * ── Why there is an exception at all ────────────────────────────────────────
+ *
+ * Because a person asked for one. A conversation you can ask a follow-up
+ * question in cannot be built out of single-turn requests: "now make it
+ * shorter" means nothing without the thing it refers to, and a tool loop is
+ * by construction system → user → assistant(asks for a tool) → tool(answers)
+ * → assistant, which is four turns before anybody has said anything twice.
+ *
+ * ── Why it is a rule rather than an absence of one ──────────────────────────
+ *
+ * The easy version of this feature deletes the guard on the agent's path and
+ * moves on. That version cannot tell a conversation from a pile of messages,
+ * which matters because the pile is attacker-shaped: a tool result is text
+ * that came from somewhere else — a mailbox, a contact, a web of quoted
+ * replies — and the difference between "a tool answered the call the model
+ * just made" and "something inserted a turn claiming a tool said so" is the
+ * whole security boundary of a tool-calling agent.
+ *
+ * So the shape is checked, and checked strictly:
+ *
+ *   - Exactly one system message, first. Not several joined, not one in the
+ *     middle: an instruction arriving mid-transcript is the classic way to
+ *     talk a model out of the rules it opened with.
+ *   - The first thing after it is the person. A transcript that opens with an
+ *     assistant turn is one where somebody else has put words in its mouth.
+ *   - A `tool` message answers a call made by the assistant message directly
+ *     before it, matched on `toolCallId`. A tool result with no call, a
+ *     result answering a call from an earlier turn, and two results for one
+ *     call are all refused — those are the three shapes a smuggled result
+ *     takes.
+ *   - Every call the assistant made is answered before it speaks again, so a
+ *     turn cannot be dropped to hide what the model asked for.
+ *
+ * What this deliberately does NOT check is content. Nothing here reads the
+ * text; it reads the shape. Whether a tool should have been called at all is
+ * the tool's own business — see `ai/tools.ts`, where each one carries the
+ * capability it needs — and whether the answer is fit to send is the person's,
+ * which is why nothing the assistant produces leaves the box without a click.
+ */
+export function assertAgentTranscript(messages: ChatMessage[]): void {
+  const shape = (): string => messages.map((m) => m.role).join(', ') || 'nothing';
+  if (messages.length < 2) throw new Error(`An assistant transcript needs a system prompt and a first message, got: ${shape()}`);
+  if (messages[0]!.role !== 'system') throw new Error(`An assistant transcript must open with its system prompt, got: ${shape()}`);
+  if (messages[1]!.role !== 'user') throw new Error(`An assistant transcript must open with the person's own message, got: ${shape()}`);
+
+  // Calls the assistant has made and nobody has answered yet. It is emptied
+  // as results arrive, so "did every call get an answer" is a size check at
+  // the point the model is about to speak again.
+  let awaiting = new Set<string>();
+  for (let i = 1; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role === 'system') throw new Error('An assistant transcript carries one system prompt, at the front; a later one would be an instruction arriving mid-conversation.');
+    if (m.role === 'tool') {
+      const id = String(m.toolCallId ?? '');
+      if (!id) throw new Error('A tool result must say which call it answers.');
+      if (!awaiting.has(id)) throw new Error(`A tool result answers a call the assistant did not just make (${id}).`);
+      awaiting.delete(id);
+      continue;
+    }
+    // An assistant or user turn: everything the assistant asked for must
+    // already have come back.
+    if (awaiting.size) throw new Error(`The assistant asked for ${awaiting.size} tool result(s) that never arrived.`);
+    if (m.role === 'assistant') {
+      awaiting = new Set((m.toolCalls ?? []).map((c) => c.id));
+      if (awaiting.size !== (m.toolCalls ?? []).length) throw new Error('Two tool calls in one turn share an id.');
+    }
   }
 }
 

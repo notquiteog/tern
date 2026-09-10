@@ -39,6 +39,7 @@ import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { useCompose } from '../state/compose';
 import { useFeatures } from '../state/features';
+import { useAssistant } from '../state/assistant';
 import { useToast } from '../state/toast';
 import { setAppearance } from '../state/theme';
 import { cls, fmtDate } from '../lib/format';
@@ -96,6 +97,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const toast = useToast();
   const { user } = useAuth();
   const { can } = useFeatures();
+  const assistant = useAssistant();
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -124,6 +126,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: 'act:newseq', group: 'Actions', label: 'New sequence', icon: <Plus size={15} />, run: () => nav('/sequences?new=1') },
       { id: 'act:campaign', group: 'Actions', label: 'New AI campaign', icon: <Sparkles size={15} />, run: () => nav('/sequences?campaign=1') },
       { id: 'act:dark', group: 'Actions', label: 'Toggle dark mode', icon: <Moon size={15} />, run: () => setAppearance({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }) },
+      ...(can('ai.assistant') ? [{ id: 'act:assistant', group: 'Actions', label: 'Ask the assistant', icon: <Bot size={15} />, hint: '⌘J', run: () => assistant.show() } as Item] : []),
 
       go('Inbox', '/mail/inbox', <Inbox size={15} />, 'g i'),
       go('Starred', '/mail/starred', <Star size={15} />, 'g s'),
@@ -327,6 +330,24 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       run: () => nav(`/mail/all?q=${encodeURIComponent(term)}`),
     });
 
+    // The other thing a palette full of words can be: a question.
+    //
+    // It sits after the exact answers and before the inferred ones, which is
+    // the same bargain the meaning rows strike — a row that costs a generation
+    // never displaces one that costs a lookup. Offered only for something that
+    // reads like a question, because "dana" is a name to look up and "what did
+    // dana say about the invoice" is not.
+    if (can('ai.assistant') && looksLikeAQuestion(term)) {
+      out.push({
+        id: 'assistant:ask',
+        group: 'Assistant',
+        label: `Ask the assistant: “${term}”`,
+        sub: 'It can search your mail, read a conversation and draft a reply',
+        icon: <Bot size={15} />,
+        run: () => assistant.show(term),
+      });
+    }
+
     for (const h of meaning.filter((h) => !threads.some((t) => t.thread_id === h.threadId))) {
       out.push({
         id: `sem:${h.emailId}`,
@@ -339,7 +360,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }
 
     return out;
-  }, [term, threadVerbs, commands, threads, contacts, templates, sequences, commitments, meaning, nav]);
+  }, [term, threadVerbs, commands, threads, contacts, templates, sequences, commitments, meaning, nav, can, assistant]);
 
   // Grouped for drawing, still one flat list for the keyboard: arrowing down
   // walks past a heading rather than stopping on it.
@@ -413,4 +434,26 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       </div>
     </div>
   );
+}
+
+
+/**
+ * Whether what was typed is a question rather than a name.
+ *
+ * The palette is mostly used to jump somewhere, and offering to spend a
+ * generation on every two-letter fragment somebody types on the way to their
+ * inbox would be both expensive and noisy. So the assistant row appears for
+ * things that look like they want an answer: several words, or an opening
+ * question word, or a question mark.
+ *
+ * Deliberately loose in the permissive direction. A false positive is one
+ * extra row the person ignores; a false negative is a feature they never find.
+ */
+export function looksLikeAQuestion(term: string): boolean {
+  const t = term.trim();
+  if (t.length < 6) return false;
+  if (t.includes('?')) return true;
+  if (/^(what|who|when|where|why|how|which|is|are|do|does|did|can|could|should|would|will|draft|write|reply|summar|find|show|tell|remind)\b/i.test(t)) return true;
+  // Four words is a sentence rather than a name; three is "dana okafor invoice".
+  return t.split(/\s+/).length >= 4;
 }

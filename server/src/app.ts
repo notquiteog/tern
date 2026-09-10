@@ -32,6 +32,7 @@ import { passkeysRouter } from './routes/passkeys.js';
 import { featuresRouter, adminFeaturesRouter } from './routes/features.js';
 import { discoverRouter } from './routes/discover.js';
 import { assistRouter } from './routes/assist.js';
+import { assistantRouter } from './routes/assistant.js';
 import { vaultRouter } from './routes/vault.js';
 
 const log = logger('http');
@@ -95,6 +96,7 @@ export function createApp(): express.Express {
   app.use('/api/pgp', pgpRouter);
   app.use('/api/passkeys', passkeysRouter);
   app.use('/api/ai', aiRouter);
+  app.use('/api/assistant', assistantRouter);
   app.use('/api/features', featuresRouter);
   app.use('/api/discover', discoverRouter);
   app.use('/api/assist', assistRouter);

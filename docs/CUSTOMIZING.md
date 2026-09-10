@@ -172,6 +172,55 @@ the transport refuses anything that is not that shape. The assistant panel
 only sends the editor's contents for the modes that edit a draft (rewrite,
 polish, shorten, expand, subject).
 
+### Reasoning, and who decides it
+
+Admin → AI model sets whether reasoning models think before answering
+(`allowThinking`), how hard (`thinkEffort`) and how much room the working-out
+gets (`thinkingBudget`). Those are the server's defaults and, on their own, the
+whole story.
+
+Beside them is **Let people choose their own reasoning settings**, off by
+default. Turning it on lets each person override the first two for themselves,
+from Settings → AI assistant or from the button beside any AI panel; the budget
+stays yours, because it is a memory decision rather than a preference. Anyone
+who has not chosen keeps getting your default.
+
+It is a switch rather than simply a feature because reasoning multiplies the
+time one request occupies the model, and the model is shared: on a 4.5 GB box
+sized for four people, one person choosing "thorough" is felt by the other
+three. Admins can always choose for themselves, since they can change the
+server default anyway.
+
+The preference is applied on the server, at the two points every generation
+passes through, so it covers everything that runs in a person's name —
+drafting, replies, summaries, the brief, plain-English rules, conversations,
+and the automatic replies and sequence steps that go out under their account.
+Work done for somebody else uses that person's setting. Turning the switch back
+off returns everybody to the server default at once, including people who had
+already chosen; their choice is remembered and applies again if you turn it
+back on.
+
+**The conversational assistant is the one exception, and it is deliberate.**
+A conversation you can ask a follow-up question in cannot be built out of
+single-turn requests — "now make it shorter" means nothing without the turn
+before it — so a conversation you open under **Ask the assistant** does have a
+past, and that past is stored. What is true of it instead:
+
+- It is stored encrypted with your own key, like your mail, and scoped to you
+  by every query that reads it.
+- You can see every conversation, delete any of them, or delete all of them,
+  under the panel's own list.
+- Turning the capability off in Settings → Features erases the lot.
+- It is off until you turn it on, like everything else that reads your mail.
+- The transport does not simply stop checking. It applies a second rule —
+  `assertAgentTranscript` — which is stricter about shape than the first: one
+  system prompt at the front and never later, the person's own turn first, and
+  a tool result only ever where it answers a call the assistant just made. That
+  last clause is the security boundary: a tool result is text from a mailbox,
+  and a message body must not be able to fabricate one.
+
+Everything else in the app still goes through the single-turn path unchanged.
+
 - **Provider**: Ollama (bundled or elsewhere), Anthropic's Messages API, or
   any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional
   API key. The **Start from** row above the fields fills in the shape and the

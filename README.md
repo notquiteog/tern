@@ -96,6 +96,13 @@ Nothing leaves your server except the mail itself.
   subject lines. In a thread: one-click AI reply (written inline, addressed
   to the right person), **Quick replies** (three one-line suggestions to pick
   from) and summarise.
+- **A conversation with tools** (`⌘/Ctrl J`): ask it to find the thread where
+  the price was agreed, summarise what you are reading, work out what you owe
+  anyone, check whether Thursday is free, draft the reply, and draw a picture
+  to go in it. It reads only what a question needs, it says which messages it
+  read, and it hands you drafts and pictures rather than sending or attaching
+  either. With a voice configured it will read its answers aloud and take the
+  next question from the microphone, so a turn is spoken rather than typed.
 - **AI responders**: answer incoming mail automatically as a suggested draft
   in the thread, through the review queue, or sent without a human in the
   loop, with list and auto-reply detection, per-thread cooldown, daily caps
@@ -120,6 +127,20 @@ Nothing leaves your server except the mail itself.
   because turning the setting on for one that cannot is the usual reason no
   working-out appears. One-line inbox summaries never think, whatever the
   setting says: they are not worth a reasoning budget.
+- **Reasoning is each person's own setting**, once an admin allows it. The
+  trade is accuracy against latency — roughly seventy seconds a draft against
+  under one — and which you want depends on whether you are triaging fifty
+  messages or composing one difficult reply. Admin → AI model sets the
+  server's default and, separately, whether anybody else may override it; that
+  second switch is off by default, because reasoning multiplies the time one
+  request occupies a shared model. With it on, each person turns thinking on
+  or off and picks how hard, from Settings → AI assistant or the button beside
+  any AI panel. It is applied once, on the server, at the two places every
+  generation passes through, so it governs **every** feature that runs in your
+  name — drafts, replies, summaries, the brief, conversations, and the
+  automatic replies that go out while you are away — rather than only the
+  screen it was set from. Withdraw the admin switch and everyone snaps back to
+  the server's default immediately, saved preferences included.
 - **One model at a time.** Choosing a different model unloads the previous
   one instead of leaving it to time out beside its replacement, which on a
   4.5 GB box is the difference between working and being killed. Changing
@@ -192,7 +213,7 @@ and every feature that reaches the model, is off for a new account. **Settings
 → Features** is one page with one switch each, a sentence saying what is read
 and what is kept, and a mark for *reads your mail* and *uses the model*.
 Turning one off erases what it made — the index, the scores, the flags, the
-extracted text — rather than pausing it. **Admin → Features** is the same list
+extracted text, the assistant's conversations — rather than pausing it. **Admin → Features** is the same list
 for the whole install, which is the switch to reach for when the box is
 struggling; it takes effect within about twenty seconds and leaves everybody's
 own choice alone.
@@ -252,14 +273,42 @@ build. A test then walks the source for the one hole types cannot close.
   through `/v1/images/generations` (OpenAI, Together, Fireworks, NanoGPT, a
   local ComfyUI or SwarmUI behind their shims) or through `/v1/chat/completions`
   (OpenRouter, Google), and video through `/v1/videos`, which is a job rather
-  than a request — closing the composer does not lose one. Only ever from a
-  composer with a person in front of it: a sequence step cannot generate a
-  picture, because nothing can read one and say it is fit to send.
-- **Dictation** (optional container). Speak into any text box. The recording
-  never touches disk on either side and the transcript is never stored. The
-  transcriber can be the bundled whisper.cpp container or one on another
-  machine, set in Admin → AI model with a key and a connection test — as can
-  the language model, for a box too small to hold one.
+  than a request — closing the composer does not lose one. Only ever with a
+  person in front of it: a sequence step and a responder cannot generate a
+  picture, because nothing can read one and say it is fit to send. The
+  assistant can draw one when you ask it to in a conversation, and still
+  cannot attach it — it hands you the picture and you attach it yourself.
+- **The assistant** (off, and needs a model that can call tools). A
+  conversation, in a panel beside whatever you are reading. It can search your
+  mail by meaning, read a conversation, look somebody up, check your calendar
+  and your commitments, read your templates, put a **draft** in front of you
+  and **draw a picture** for a message. It knows what you are looking at, so
+  "summarise this" and "reply saying Thursday works" need no more words than
+  that. It cites what it read, so an answer can be checked against the mail it
+  came from.
+
+  **It never sends and never attaches.** Every tool that produces something
+  another person would receive hands back a card with your button on it; the
+  draft opens in the ordinary composer and goes out under the ordinary rules,
+  pacing and signature. Unlike everything else here the conversation is kept —
+  encrypted with your key, listed, deletable one at a time or all at once, and
+  erased entirely when you turn the capability off. `⌘/Ctrl J` opens it, and
+  the command palette will hand it a question you have half-typed.
+
+  Needs a model that reliably calls tools: `qwen3.5:9b` or `gemma4:12b` and up.
+  Below that floor models answer in prose where a tool call was needed, with no
+  error anywhere — see [docs/SETUP.md](docs/SETUP.md).
+- **Speech** (optional container). Speak into any text box, and let the
+  assistant answer out loud, so a conversation can be spoken rather than typed.
+  A recording never touches disk on either side and the transcript is never
+  stored; a spoken reply is streamed to the browser and not written down
+  either. Transcription needs the bundled whisper.cpp container or one on
+  another machine; the voice needs something serving `/v1/audio/speech` —
+  **speaches** with a Kokoro model serves both from one port, which is why the
+  voice shares that connection by default. Both are set in Admin → AI model
+  with a key and a connection test, and the voice's test is a real synthesis
+  rather than a ping, because a server can be reachable and still have no voice
+  model. As can the language model, for a box too small to hold one.
 - **Link cleaning.** Tracking parameters stripped from links you are shown and
   links you send, and redirect wrappers unwrapped by reading the destination
   they carry — never by following them.

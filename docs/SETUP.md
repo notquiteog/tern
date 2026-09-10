@@ -109,6 +109,17 @@ smaller model treats the fence as a suggestion. It does not error; it just
 gradually does something other than what was asked, which is harder to notice
 than a failure and more annoying to debug.
 
+**The conversational assistant is the one feature with a real floor rather than
+a soft one**, and it fails in a way worth recognising. Calling a tool is a
+decision followed by a shape: the model has to work out that a question needs
+looking something up, pick the right one of eight tools, and emit the call in a
+format the server can parse. Below the floor the first step is what goes — it
+answers the question out of thin air, in prose, confidently, without calling
+anything. There is no error anywhere, on either side, because nothing failed:
+the model simply did not use the tools it was offered. If the assistant seems
+to be making things up about your mailbox rather than reading it, check the
+model before you check the wiring.
+
 **The floor is a warning, never a wall.** Nothing refuses a smaller model, the
 installer offers whatever fits, and you can point **Settings → AI** at a bigger
 model — or at a hosted provider — later without reinstalling. What the floor

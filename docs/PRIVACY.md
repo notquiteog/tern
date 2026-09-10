@@ -143,6 +143,46 @@ drops what the previous one built. If the index service is unreachable at that
 moment the erase is not abandoned — the change still goes through, the failure
 is logged loudly, and `./bin/tern vectors-sweep` clears whatever was left.
 
+### The assistant is the exception, and here is exactly how far it goes
+
+Everything above is true of every feature except one. A conversation with the
+assistant is *kept*, because a conversation you cannot ask a follow-up question
+in is not a conversation. This is the only place in Tern where what was said to
+a model outlives the request, so it is worth being precise about what that
+means.
+
+**What is stored**: your messages, the assistant's replies, and the results of
+the tools it ran on your behalf — which include real paragraphs of your mail,
+because that is what it went and read. Also any draft or picture it proposed.
+
+**How**: every one of those columns is sealed with your own data key, exactly
+as your mail is, in `ai_conversations` and `ai_messages`. Three columns are
+left readable — the role (one of three words), the tool's name (one of eight
+known strings) and a random call id — because they carry no content and are
+what lets a transcript be put back in order and checked for shape without
+opening it first.
+
+**What is not stored**: the model's working-out. A reasoning model's thinking
+is streamed to your browser so a slow answer looks like something happening,
+and then it is gone. It is not part of the answer and storing it would double
+the size of a transcript with the part nobody wants to read back.
+
+**What you can do about it**: every conversation is listed in the panel, any
+one of them can be deleted, all of them can be deleted at once, and turning
+*The assistant* off in Settings → Features erases the lot in the same request.
+
+**What the model was asked to do with it** is your own setting, where an
+administrator has allowed that. Reasoning — the model working an answer out
+before writing it — is a trade of speed for accuracy, and it is applied once on
+the server to everything done in your name. The working-out itself is never
+stored, on any path.
+
+**Spoken replies** are not stored either. The text of an answer goes to
+whichever voice the administrator configured and the audio comes straight back
+to your browser; nothing is written down on this server, and nothing is cached
+on the way — the response carries `no-store`, because a clip of the assistant
+reading your mail is a copy of that mail in a form nothing here could reach to
+delete.
 
 ## What each person can do
 

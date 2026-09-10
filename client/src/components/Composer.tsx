@@ -16,6 +16,7 @@ import { AddressInput } from './AddressInput';
 import { Editor, type EditorHandle } from './Editor';
 import { AiPanel } from './AiPanel';
 import { GenerateMediaButton } from './GenerateMedia';
+import { useDraftContext } from '../state/assistant';
 import { DictateButton } from './Dictate';
 import { Avatar, Button, IconButton, Menu, MenuItem, Modal, Input, Field } from './ui';
 import { cls, fmtBytes, localDateTimeValue, textToHtml, type Addr } from '../lib/format';
@@ -62,6 +63,16 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
   const [showCc, setShowCc] = useState(Boolean(seed.cc?.length));
   const [showBcc, setShowBcc] = useState(Boolean(seed.bcc?.length));
   const [subject, setSubject] = useState(seed.subject ?? '');
+  // What the assistant means by "this" while a composer is open. Read at the
+  // moment a question is sent rather than stored, because the body lives in
+  // the editor rather than in state — see `useDraftContext`. The signature and
+  // the quoted original are stripped: asked to shorten a reply, the model
+  // should be looking at the reply.
+  useDraftContext(() => ({
+    to: to.map((a) => a.email),
+    subject,
+    body: bodyText(splitBody(editor.current?.getHtml() ?? html.current).main),
+  }));
   const [subjectShown, setSubjectShown] = useState(variant === 'window' || seed.kind === 'forward' || seed.kind === 'new');
   const [attachments, setAttachments] = useState<Upload[]>(seed.attachments ?? []);
   const [fwdAttachments, setFwdAttachments] = useState<ForwardAttachment[]>(seed.forwardAttachments ?? []);

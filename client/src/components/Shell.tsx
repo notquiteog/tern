@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BrandLogo, useAppName } from './Brand';
 import { SW_UPDATED_EVENT } from '../pwa';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { useFeatures } from '../state/features';
+import { useCan, useFeatures } from '../state/features';
 import { NaturalSearchButton, SearchDictate } from './SearchExtras';
 import { useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Archive, BookOpen, Bot, UserCircle, ChevronDown, Clock, Contact, FileText, Home, Inbox, KeyRound, Layers, LogOut, Menu as MenuIcon, Moon, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Tag, Trash2, Users, Workflow, X, ListFilter, Mailbox as MailboxIcon, AlarmClock, Monitor, Keyboard, RefreshCw, SlidersHorizontal, Paperclip, Wrench, VenetianMask, Newspaper, ClipboardCheck } from 'lucide-react';
@@ -18,6 +18,8 @@ import { useAccountFilter, useAccounts, useCounts, useMailboxes, type Mailbox } 
 import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Input, ColorPicker, Confirm } from './ui';
 import { ComposeDock } from './Compose';
 import { CommandPalette } from './CommandPalette';
+import { AssistantDock } from './Assistant';
+import { useAssistant } from '../state/assistant';
 import { api } from '../api';
 import { adoptServerAppearance, getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
 import { Background } from './Background';
@@ -45,6 +47,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const { data: mailboxes = [] } = useMailboxes();
   const { data: counts } = useCounts();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const assistant = useAssistant();
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
   const [labelCtx, setLabelCtx] = useState<{ x: number; y: number; m: Mailbox } | null>(null);
@@ -87,6 +90,10 @@ export function Shell({ children }: { children: ReactNode }) {
     '/': () => searchRef.current?.focus(),
     '?': () => setHelp(true),
     'mod+k': () => setPalette(true),
+    // Chosen because it is free on every screen and next to nothing else:
+    // `a` alone is archive in the thread list, and `g` is the prefix for
+    // going somewhere. Nothing in the app used `mod+j`.
+    'mod+j': () => assistant.toggle(),
     'g i': () => nav('/mail/inbox'), 'g s': () => nav('/mail/starred'), 'g t': () => nav('/mail/sent'), 'g d': () => nav('/mail/drafts'), 'g a': () => nav('/mail/all'),
     'g c': () => nav('/contacts'), 'g q': () => nav('/sequences'), 'g h': () => nav('/home'), 'g r': () => nav('/review'),
   }, [filter]);
@@ -191,6 +198,11 @@ export function Shell({ children }: { children: ReactNode }) {
             </Menu>
           )}
           <IconButton label="Check for new mail" className="desktop-only" onClick={refreshAll}><RefreshCw size={17} /></IconButton>
+          {/* Absent rather than disabled when the person has not turned the
+              assistant on — the same rule the picture button follows. A
+              control with nothing behind it is a promise the install has not
+              made. */}
+          <AssistantButton />
           <Menu align="right" width={300} trigger={(open) => <IconButton label="Appearance" onClick={open}>{theme === 'dark' ? <Moon size={17} /> : theme === 'light' ? <Sun size={17} /> : <Monitor size={17} />}</IconButton>}>
             {(close) => <div style={{ padding: 8 }}>
               <div className="menu-label">Theme</div>
@@ -284,6 +296,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <NavLink to="/settings"><Settings size={20} />Settings</NavLink>
       </nav>
       <ComposeDock />
+      <AssistantDock />
       {labelCtx && createPortal(
         <div className="menu ctx-menu" style={{ top: Math.min(labelCtx.y, window.innerHeight - 160), left: Math.min(labelCtx.x, window.innerWidth - 230) }} onClick={(e) => e.stopPropagation()}>
           <div className="menu-label">{labelCtx.m.name}</div>
@@ -385,7 +398,7 @@ function AdvancedSearch({ initial, onSearch, onClose }: { initial: string; onSea
 
 
 function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const rows: [string, string][] = [['c', 'Compose'], ['/', 'Search'], ['⌘/Ctrl K', 'Command palette'], ['j / k', 'Next / previous conversation'], ['o or Enter', 'Open conversation'], ['u or Esc', 'Back to list'], ['x', 'Select conversation'], ['e', 'Archive'], ['#', 'Delete'], ['!', 'Mark as junk'], ['s', 'Star'], ['r / a / f', 'Reply / reply all / forward (inline)'], ['⌘/Ctrl Enter', 'Send the message being written'], ['Shift+I / Shift+U', 'Mark read / unread'], ['b', 'Snooze'], ['m', 'Mute / unmute'], ['] / [', 'Older / newer conversation'], ['g i', 'Inbox'], ['g s', 'Starred'], ['g t', 'Sent'], ['g d', 'Drafts'], ['g a', 'All mail'], ['g c', 'Contacts'], ['g q', 'Sequences'], ['g h', 'Overview'], ['?', 'This help']];
+  const rows: [string, string][] = [['c', 'Compose'], ['/', 'Search'], ['⌘/Ctrl K', 'Command palette'], ['⌘/Ctrl J', 'Ask the assistant'], ['j / k', 'Next / previous conversation'], ['o or Enter', 'Open conversation'], ['u or Esc', 'Back to list'], ['x', 'Select conversation'], ['e', 'Archive'], ['#', 'Delete'], ['!', 'Mark as junk'], ['s', 'Star'], ['r / a / f', 'Reply / reply all / forward (inline)'], ['⌘/Ctrl Enter', 'Send the message being written'], ['Shift+I / Shift+U', 'Mark read / unread'], ['b', 'Snooze'], ['m', 'Mute / unmute'], ['] / [', 'Older / newer conversation'], ['g i', 'Inbox'], ['g s', 'Starred'], ['g t', 'Sent'], ['g d', 'Drafts'], ['g a', 'All mail'], ['g c', 'Contacts'], ['g q', 'Sequences'], ['g h', 'Overview'], ['?', 'This help']];
   return (
     <Modal open={open} onClose={onClose} title="Keyboard shortcuts" size="wide">
       <div className="shortcut-grid">{rows.map(([k, v]) => <div key={k}><span>{v}</span><Kbd>{k}</Kbd></div>)}</div>
@@ -396,4 +409,23 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
 export function useBoxParam(): string {
   const { box } = useParams();
   return box ?? 'inbox';
+}
+
+
+/**
+ * The assistant's button, which knows whether there is an assistant.
+ *
+ * Hidden rather than greyed out when the capability is off. Somebody who has
+ * not turned it on has not agreed to a model reading their mail, and a control
+ * that exists to tell them so on every click is worse than no control.
+ */
+function AssistantButton() {
+  const assistant = useAssistant();
+  const can = useCan('ai.assistant');
+  if (!can) return null;
+  return (
+    <IconButton label="Ask the assistant" title="Ask the assistant (⌘/Ctrl J)" className={cls(assistant.open && 'active')} onClick={assistant.toggle}>
+      <Bot size={17} />
+    </IconButton>
+  );
 }

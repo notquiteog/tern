@@ -4,7 +4,8 @@
 // model than run it. Nothing here is in the mail path: if the model is down,
 // drafting is unavailable and everything else keeps working.
 import { config } from '../config.js';
-import { assertFreshConversation } from './prompts.js';
+import { assertAgentTranscript, assertFreshConversation } from './prompts.js';
+import { effectiveSettings } from './thinking.js';
 import { one, query } from '../db.js';
 import { clampNumCtx, recommendModel, recommendNumCtx } from './models.js';
 import { defaultTuningFor, matchesPreset, PRESET_FIELDS } from './presets.js';
@@ -73,6 +74,19 @@ export interface AiSettings {
   allowThinking: boolean;
   thinkEffort: 'low' | 'medium' | 'high';
   thinkingBudget: number;
+  /**
+   * Whether anybody other than an admin may override the two settings above
+   * for themselves. Off, and `allowThinking`/`thinkEffort` are the whole story
+   * for everyone, exactly as they were before this existed.
+   *
+   * Admin-gated rather than simply offered, and the reason is arithmetic
+   * rather than paternalism: reasoning multiplies the time a shared model
+   * spends on one request, and on the box this runs on that time is taken from
+   * everybody else in the queue. An admin who has sized a 4.5 GB VPS for four
+   * people gets to decide whether any of them may quadruple that. See
+   * `ai/thinking.ts` for how the three-way resolution composes.
+   */
+  userThinking: boolean;
   systemPrompt: string;
   topP: number;
   topK: number;
@@ -150,6 +164,8 @@ const BASE_DEFAULTS: AiSettings = {
   // (gpt-oss and friends) honour it, but on the model Tern ships with this
   // setting is inert and the tuning panel should not promise otherwise.
   thinkEffort: 'low',
+  // Off: an install that upgrades into this behaves exactly as it did.
+  userThinking: false,
   // How much reasoning a generation may spend before the ceiling stops it.
   //
   // This was 3,000, and the first attempt at fixing it — 6,000 — was wrong
@@ -431,7 +447,35 @@ export function isValidKeepAlive(v: string): boolean {
   return /^\d+(\.\d+)?(ns|us|µs|ms|s|m|h)$/.test(t);
 }
 
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
+/**
+ * One tool the model may ask for, in the one shape all three providers can be
+ * given it in.
+ *
+ * `parameters` is JSON Schema, which is what Ollama, the OpenAI shape and
+ * Anthropic all take — the differences between them are where the schema is
+ * nested, not what it is, so the adapters below rename fields and nothing
+ * more. Keep the schema small: a model deciding between nine tools reads
+ * every description on every turn, and a paragraph each is a paragraph each
+ * for the whole conversation.
+ */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: { type: 'object'; properties: Record<string, unknown>; required?: string[] };
+}
+
+/** A model's request to run one, as it comes back off any of the three wires. */
+export interface ToolCall { id: string; name: string; arguments: Record<string, unknown> }
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  /** On an assistant turn: what it asked to run. */
+  toolCalls?: ToolCall[];
+  /** On a tool turn: which call this answers, and which tool answered. */
+  toolCallId?: string;
+  name?: string;
+}
 
 // Who this generation is for and which capability they turned on to get it.
 // Required, and checked before a single byte leaves the process: the gate is
@@ -705,7 +749,11 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   // Before anything else, and before the prompt is looked at: is this person
   // allowed to have asked?
   await assertCapability(opts.consent.userId, opts.consent.capability);
-  const s = await getAiSettings();
+  // Resolved here, once, rather than at each of the dozen places below that
+  // read `allowThinking` or `thinkEffort`. See the header of `ai/thinking.ts`:
+  // this is what makes "every interaction honours the setting" a property of
+  // the shape rather than of somebody having remembered.
+  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId);
   if (!s.enabled) throw new Error('AI drafting is turned off in Settings → AI');
   const model = opts.model || s.model;
   const session = beginSession();
@@ -1011,6 +1059,397 @@ export async function chat(opts: ChatOptions): Promise<string> {
   let out = '';
   for await (const piece of chatStream(opts)) out += piece;
   return out.trim();
+}
+
+
+// ---------- The assistant's transport ----------
+//
+// One turn of a tool-calling conversation, on whichever of the three wires
+// this install is pointed at.
+//
+// ── Why this is not `chatStream` with a flag ────────────────────────────────
+//
+// Because the two have opposite invariants. `chatStream` asserts a fresh
+// single-turn conversation and would refuse this on its second turn, and that
+// assertion is a stated property of every other feature rather than an
+// implementation detail — see `assertFreshConversation`. Giving the assistant
+// its own entry point keeps that guarantee literally true everywhere it was
+// true before, and puts the weaker rule where a reader can see which paths
+// take it.
+//
+// The other reason is that tool calls arrive differently on all three wires
+// and the differences are not cosmetic. Ollama hands back whole call objects
+// and supplies no ids; the OpenAI shape streams the arguments as a run of
+// partial JSON fragments that have to be concatenated before they parse; and
+// Anthropic announces a call in one event and then streams its arguments as
+// `partial_json` under a separate content block. Threading all of that
+// through the draft path's generator would have made the draft path harder to
+// read for a feature it does not have.
+
+/** What comes off the wire during one assistant turn. */
+export type AgentChunk =
+  | { kind: 'text'; text: string }
+  | { kind: 'call'; call: ToolCall };
+
+export interface AgentOptions {
+  /** The whole transcript so far. Checked by `assertAgentTranscript`. */
+  messages: ChatMessage[];
+  /** What the model may ask for this turn. May be empty, which forbids tools. */
+  tools: ToolSpec[];
+  consent: AiConsent;
+  signal?: AbortSignal;
+  temperature?: number;
+  owner?: string | number;
+  onThinking?: (piece: string) => void;
+}
+
+/**
+ * Arguments as the model actually sends them, which is not always as the
+ * schema asked.
+ *
+ * Every wire here can deliver a call whose arguments are a JSON *string*
+ * rather than an object — the OpenAI shape always does, and both of the
+ * others do it intermittently when a small model has been told to answer in
+ * JSON and takes that instruction one level too literally. A tool that
+ * received a string where it expected an object would fail its own validation
+ * and report a wrong reason, so the parse happens once, here.
+ *
+ * A fragment that will not parse comes back as `{}` rather than throwing: the
+ * loop in `ai/agent.ts` turns an empty argument set into a tool error the
+ * model can read and retry from, which is a better outcome than an exception
+ * that ends the conversation.
+ */
+export function readArguments(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t) return {};
+    try {
+      const parsed = JSON.parse(t);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch { return {}; }
+  }
+  return {};
+}
+
+// Ollama does not give a call an id, and the transcript rule needs one to
+// match a result to the call it answers. Generated here so that the id is
+// unique within the process rather than within a turn: two conversations
+// running at once must not produce the same one.
+let nextCallId = 1;
+function callId(prefix: string): string { return `${prefix}_${Date.now().toString(36)}_${nextCallId++}`; }
+
+/** The OpenAI shape's tool list. Anthropic's differs by one field name. */
+export function openAiTools(tools: ToolSpec[]): unknown[] {
+  return tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+}
+
+/**
+ * The transcript in Ollama's and the OpenAI shape's message format.
+ *
+ * The two are close enough to share this: both take a flat list with a `tool`
+ * role. They differ in how a call is addressed — OpenAI matches a result to a
+ * call by `tool_call_id`, Ollama by the tool's name — so both fields go out
+ * and each server reads the one it knows.
+ */
+export function toFlatMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((m) => {
+    if (m.role === 'tool') return { role: 'tool', content: m.content, tool_call_id: m.toolCallId, tool_name: m.name };
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      return {
+        role: 'assistant',
+        content: m.content,
+        tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments) } })),
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+/**
+ * The transcript in Anthropic's format, where a tool call and its result are
+ * content blocks rather than roles.
+ *
+ * Two things about this API make it the odd one out. The system prompt is a
+ * top-level string and the role is refused outright, exactly as
+ * `toAnthropicMessages` already handles for the draft path. And a tool RESULT
+ * is a `user` turn carrying a `tool_result` block — not a `tool` role, which
+ * does not exist here — so consecutive results are merged into one user turn
+ * rather than sent as several, which this API also refuses.
+ */
+export function toAnthropicAgent(messages: ChatMessage[]): { system: string; messages: { role: 'user' | 'assistant'; content: unknown[] }[] } {
+  const system: string[] = [];
+  const out: { role: 'user' | 'assistant'; content: unknown[] }[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') { system.push(m.content); continue; }
+    if (m.role === 'tool') {
+      const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
+      const last = out[out.length - 1];
+      // Several results for one assistant turn belong in one user message.
+      if (last?.role === 'user' && (last.content[0] as any)?.type === 'tool_result') last.content.push(block);
+      else out.push({ role: 'user', content: [block] });
+      continue;
+    }
+    if (m.role === 'assistant') {
+      const content: unknown[] = [];
+      if (m.content.trim()) content.push({ type: 'text', text: m.content });
+      for (const c of m.toolCalls ?? []) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments });
+      // An assistant turn with neither text nor calls cannot be sent; it also
+      // cannot have happened, so dropping it is safe and keeps the alternation
+      // this API requires.
+      if (content.length) out.push({ role: 'assistant', content });
+      continue;
+    }
+    out.push({ role: 'user', content: [{ type: 'text', text: m.content }] });
+  }
+  return { system: system.filter(Boolean).join('\n\n'), messages: out };
+}
+
+/**
+ * One turn: whatever the model says, and whatever it asks to run.
+ *
+ * Text is yielded as it arrives so the conversation types itself out. Calls
+ * are yielded at the END of the turn, once their arguments are whole — a
+ * half-parsed argument list is not something to start running.
+ */
+export async function* agentStream(opts: AgentOptions): AsyncGenerator<AgentChunk> {
+  assertAgentTranscript(opts.messages);
+  // Before the prompt is looked at: is this person allowed to have asked?
+  await assertCapability(opts.consent.userId, opts.consent.capability);
+  // Same resolution as `chatStream`, for the same reason. A conversation is
+  // where the latency/accuracy trade is felt most sharply — a person watching
+  // a reply arrive notices seventy seconds of silence in a way that somebody
+  // pressing "draft" and looking away does not.
+  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId);
+  if (!s.enabled) throw new Error('The assistant is turned off in Admin → AI model');
+  const model = s.model;
+  const session = beginSession();
+  try {
+    if (s.provider === 'anthropic') { yield* anthropicAgent(s, model, opts); return; }
+    if (s.provider === 'openai') { yield* openaiAgent(s, model, opts); return; }
+    // Ollama shares one loaded model with everything else on this install, so
+    // unlike the two hosted paths it queues for a slot. A tool loop can be
+    // several turns long, and each turn takes its own slot rather than holding
+    // one across the whole conversation: a person waiting on a draft should
+    // not be behind somebody else's five-step research.
+    const release = await acquireSlot(slotPlan(s.concurrency), 'interactive', String(opts.owner ?? 'assistant'), opts.signal);
+    try { yield* ollamaAgent(s, model, opts); } finally { release(); }
+  } finally {
+    // The transcript is NOT emptied here, unlike every other path through this
+    // file. It belongs to the loop in `ai/agent.ts`, which needs it for the
+    // next turn and drops it when the conversation's turn is over. The wipe
+    // policy still applies to the model's own KV cache, which is the half of
+    // `endSession` that matters once a conversation is stored anyway.
+    endSession(session, undefined, s);
+  }
+}
+
+async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
+  const think = s.allowThinking && (await modelCanThink(s.baseUrl, model));
+  const ctx = clampNumCtx(s.numCtx, await modelContextLimit(s.baseUrl, model));
+  const predict = predictTokens({
+    numCtx: ctx,
+    promptChars: opts.messages.reduce((n, m) => n + m.content.length, 0),
+    replyTokens: s.maxTokens,
+    thinkingTokens: think ? s.thinkingBudget : 0,
+  });
+  const res = await outboundFetch(`${s.baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+    body: JSON.stringify({
+      model,
+      messages: toFlatMessages(opts.messages),
+      ...(opts.tools.length ? { tools: openAiTools(opts.tools) } : {}),
+      stream: true,
+      think: think ? s.thinkEffort : false,
+      keep_alive: keepAliveValue(s.keepAlive),
+      options: {
+        num_ctx: ctx,
+        ...(predict.numPredict !== undefined ? { num_predict: predict.numPredict } : {}),
+        ...samplingOptions(s, opts.temperature),
+      },
+    }),
+    signal: opts.signal,
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 404 && /not found/i.test(body) && /model/i.test(body)) throw new Error(`Model "${model}" is not downloaded. Pull it in Admin → AI model.`);
+    if (res.status === 503) throw new Error(busyMessage());
+    throw new Error(`Ollama returned HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const calls: ToolCall[] = [];
+  for await (const line of ndjson(res.body, opts.signal)) {
+    let j: any;
+    try { j = JSON.parse(line); } catch { continue; }
+    if (j.error) throw new Error(String(j.error));
+    if (j.message?.thinking) opts.onThinking?.(String(j.message.thinking));
+    // Ollama sends whole call objects rather than fragments, and sends no id.
+    for (const c of j.message?.tool_calls ?? []) {
+      const name = String(c.function?.name ?? '').trim();
+      if (name) calls.push({ id: callId('oll'), name, arguments: readArguments(c.function?.arguments) });
+    }
+    const piece = j.message?.content;
+    if (piece) yield { kind: 'text', text: String(piece) };
+    if (j.done) break;
+  }
+  for (const c of calls) yield { kind: 'call', call: c };
+}
+
+async function* openaiAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
+  const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
+    body: JSON.stringify({
+      model,
+      messages: toFlatMessages(opts.messages),
+      ...(opts.tools.length ? { tools: openAiTools(opts.tools), tool_choice: 'auto' } : {}),
+      stream: true,
+      temperature: opts.temperature ?? s.temperature,
+      ...(openAiMaxTokens(s.maxTokens, s.allowThinking ? s.thinkingBudget : 0)),
+      top_p: s.topP,
+      ...(s.minP > 0 ? { min_p: s.minP } : {}),
+      ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
+      ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
+      ...(s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
+    }),
+    signal: opts.signal,
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
+  if (!res.ok || !res.body) throw new Error(`The model endpoint returned HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
+
+  // Calls arrive in fragments keyed by position in the list, and the name
+  // comes in the first fragment while the arguments dribble in over the
+  // following ones. `index` rather than `id` is the key, because several
+  // servers that speak this shape send the id only once and omit it after.
+  const building = new Map<number, { id: string; name: string; args: string }>();
+  for await (const data of sse(res.body, opts.signal)) {
+    if (data === '[DONE]') break;
+    let j: any;
+    try { j = JSON.parse(data); } catch { continue; }
+    if (j.error) throw new Error(String(j.error?.message ?? j.error));
+    const d = j.choices?.[0]?.delta;
+    if (!d) continue;
+    const reasoning = d.reasoning_content ?? d.reasoning;
+    if (reasoning) { opts.onThinking?.(String(reasoning)); continue; }
+    for (const frag of d.tool_calls ?? []) {
+      const at = Number(frag.index ?? 0);
+      const cur = building.get(at) ?? { id: '', name: '', args: '' };
+      if (frag.id) cur.id = String(frag.id);
+      if (frag.function?.name) cur.name += String(frag.function.name);
+      if (frag.function?.arguments) cur.args += String(frag.function.arguments);
+      building.set(at, cur);
+    }
+    if (d.content) yield { kind: 'text', text: String(d.content) };
+  }
+  for (const c of [...building.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v)) {
+    if (c.name) yield { kind: 'call', call: { id: c.id || callId('oai'), name: c.name, arguments: readArguments(c.args) } };
+  }
+}
+
+async function* anthropicAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
+  const think = s.allowThinking;
+  const { system, messages } = toAnthropicAgent(opts.messages);
+  const headers = { 'Content-Type': 'application/json', ...(await providerHeaders(s)) };
+  const outputLimit = await anthropicOutputLimit(s.baseUrl, model, headers, transportFor(s));
+  const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      messages,
+      ...(system ? { system } : {}),
+      ...(opts.tools.length ? { tools: opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}),
+      stream: true,
+      max_tokens: anthropicMaxTokens(s.maxTokens, think ? s.thinkingBudget : 0, outputLimit),
+      ...(think
+        ? { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: s.thinkEffort } }
+        : /^claude-(fable|mythos)/i.test(model) ? {} : { thinking: { type: 'disabled' } }),
+      ...(anthropicTakesSampling(model) ? { temperature: opts.temperature ?? s.temperature, top_p: s.topP } : {}),
+    }),
+    signal: opts.signal,
+  }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 401 || res.status === 403) throw new Error(`Anthropic refused the request (HTTP ${res.status}). Check the API key in Admin → AI model.`);
+    if (res.status === 429) throw new Error('Anthropic is rate-limiting this key. Try again shortly.');
+    throw new Error(`Anthropic returned HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
+
+  // A call is announced by a `content_block_start` carrying its id and name,
+  // and its arguments then arrive as `partial_json` on the deltas for that
+  // block index. Nothing is runnable until the block stops.
+  const blocks = new Map<number, { id: string; name: string; args: string }>();
+  const calls: ToolCall[] = [];
+  for await (const data of sse(res.body, opts.signal)) {
+    let j: any;
+    try { j = JSON.parse(data); } catch { continue; }
+    if (j.type === 'error') throw new Error(String(j.error?.message ?? 'the model server reported an error'));
+    if (j.type === 'message_stop') break;
+    if (j.type === 'content_block_start' && j.content_block?.type === 'tool_use') {
+      blocks.set(Number(j.index ?? 0), { id: String(j.content_block.id ?? ''), name: String(j.content_block.name ?? ''), args: '' });
+      continue;
+    }
+    if (j.type === 'content_block_delta') {
+      if (j.delta?.type === 'thinking_delta') { opts.onThinking?.(String(j.delta.thinking ?? '')); continue; }
+      if (j.delta?.type === 'text_delta') {
+        const piece = String(j.delta.text ?? '');
+        if (piece) yield { kind: 'text', text: piece };
+        continue;
+      }
+      if (j.delta?.type === 'input_json_delta') {
+        const b = blocks.get(Number(j.index ?? 0));
+        if (b) b.args += String(j.delta.partial_json ?? '');
+      }
+      continue;
+    }
+    if (j.type === 'content_block_stop') {
+      const b = blocks.get(Number(j.index ?? 0));
+      if (b?.name) calls.push({ id: b.id || callId('ant'), name: b.name, arguments: readArguments(b.args) });
+      blocks.delete(Number(j.index ?? 0));
+    }
+  }
+  for (const c of calls) yield { kind: 'call', call: c };
+}
+
+// ---------- Two line readers ----------
+//
+// The draft path parses NDJSON and SSE inline in each of its three streamers,
+// which was fine while there were three. There are now six, so the framing is
+// lifted out — the alternative is the same twelve-line read loop written six
+// times, and the version of that which drifts is the one nobody notices.
+
+async function* ndjson(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<string> {
+  for await (const line of lines(body, signal)) if (line) yield line;
+}
+
+/** SSE, yielding only the payload of each `data:` line. */
+async function* sse(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<string> {
+  for await (const line of lines(body, signal)) {
+    if (line.startsWith('data:')) yield line.slice(5).trim();
+  }
+}
+
+async function* lines(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      if (signal?.aborted) return;
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) yield line;
+      }
+    }
+  } finally {
+    // A conversation the person navigated away from must not leave a socket
+    // draining somebody else's model for the rest of the turn.
+    await reader.cancel().catch(() => {});
+  }
 }
 
 // ---------- Embeddings ----------

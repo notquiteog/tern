@@ -93,7 +93,13 @@ test('every generation carries a consent', () => {
     // somebody's behalf reaches a model and costs their administrator money;
     // it is the same class of thing as a draft, and it should not have been
     // possible to add it outside the gate by writing a new verb.
-    for (const m of text.matchAll(/\b(chat|chatStream|embed|generateImage|startVideo)\(/g)) {
+    //
+    // `agentStream` is the newest verb and proves the point: it is the
+    // assistant's own entry into the model, it takes the same `consent`
+    // argument for the same reason, and a version of this list written before
+    // it existed would have let a whole conversation reach a model ungated
+    // while still reporting clean.
+    for (const m of text.matchAll(/\b(chat|chatStream|agentStream|embed|generateImage|startVideo)\(/g)) {
       const start = m.index! + m[0].length;
       let depth = 1, i = start;
       while (i < text.length && depth > 0) {
@@ -142,6 +148,13 @@ test('the raw key is only reachable from files that are meant to have it', () =>
     'services/calendar/index.ts',
     'services/guard.ts',
     'services/mailImport.ts',
+    // The assistant's transcript store. It seals and opens one person's own
+    // conversation rows the way summaries.ts does for their summaries, and it
+    // is the only file outside `services/` on this list — it lives under `ai/`
+    // because it is the assistant's own storage rather than a service anything
+    // else calls, and it reads nobody's row but the owner's, scoped by user_id
+    // in every statement.
+    'ai/conversation.ts',
     'routes/mail.ts',
     'routes/review.ts',
     'routes/contacts.ts',

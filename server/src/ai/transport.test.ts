@@ -226,8 +226,19 @@ test('no call to a model server is written without its endpoint’s connection',
  * store serves itself. Here nothing collides, the paths match directly, and
  * matching the word "ollama" would flag every admin hint string that mentions
  * it by name, which is most of `routes/ai.ts`.
+ *
+ * The two audio paths were missing until the assistant needed one of them, and
+ * their absence is worth recording because of the shape of it. `voice.ts` is
+ * bound by NAME below, so transcription was covered by the other half of this
+ * file and the gap was invisible: a second transcriber, or a synthesiser,
+ * written into any other file would have passed this check silently and gone
+ * out with no certificate rule and no proxy — an admin who had turned Tor on
+ * for that connection would have been told it was on while it was not. That is
+ * the exact failure `ai/endpoint.ts` records having shipped once already, and
+ * a path list that covers five kinds of model and not the sixth is how it
+ * happens a second time.
  */
-const MODEL_PATHS = ['/api/chat', '/api/embed', '/api/embeddings', '/api/generate', '/api/tags', '/api/ps', '/api/show', '/api/pull', '/v1/chat/completions', '/v1/embeddings', '/v1/messages', '/v1/models', '/v1/images/generations', '/v1/videos'];
+const MODEL_PATHS = ['/api/chat', '/api/embed', '/api/embeddings', '/api/generate', '/api/tags', '/api/ps', '/api/show', '/api/pull', '/v1/chat/completions', '/v1/embeddings', '/v1/messages', '/v1/models', '/v1/images/generations', '/v1/videos', '/v1/audio/speech', '/v1/audio/transcriptions'];
 
 /**
  * Files outside the bound set that may name one anyway.
