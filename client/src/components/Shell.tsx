@@ -19,7 +19,7 @@ import { Avatar, IconButton, Menu, MenuItem, Modal, Kbd, Button, Field, Input, C
 import { ComposeDock } from './Compose';
 import { CommandPalette } from './CommandPalette';
 import { AssistantDock } from './Assistant';
-import { useAssistant } from '../state/assistant';
+import { useAssistant, usePageContext } from '../state/assistant';
 import { api } from '../api';
 import { adoptServerAppearance, getAppearance, setAppearance, onAppearance, type Theme, type Appearance } from '../state/theme';
 import { Background } from './Background';
@@ -35,6 +35,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const compose = useCompose();
   const nav = useNavigate();
   const loc = useLocation();
+  const page = loc.pathname.split('/')[1] || 'home';
+  usePageContext(page.charAt(0).toUpperCase() + page.slice(1));
   const toast = useToast();
   useEffect(() => {
     const onUpdate = () => toast.toast('A new version is ready.', { action: { label: 'Reload', onClick: () => window.location.reload() }, ttl: 60000 });

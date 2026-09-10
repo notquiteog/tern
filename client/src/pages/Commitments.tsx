@@ -24,6 +24,8 @@ import { FeatureOffNotice } from './Features';
 import { useToast } from '../state/toast';
 import { cls, dueIn } from '../lib/format';
 import { CommitmentMove } from '../components/CommitmentMove';
+import { AskAssistant } from '../components/AskAssistant';
+import { useWorkspaceChange } from '../lib/workspaceEvents';
 
 interface Commitment {
   id: number;
@@ -68,6 +70,7 @@ export default function CommitmentsPage() {
   }, [allowed, toast]);
 
   useEffect(() => { void load(); }, [load]);
+  useWorkspaceChange('commitments', load);
 
   const close = async (id: number, status: 'done' | 'dropped') => {
     setItems((prev) => prev.filter((c) => c.id !== id));
@@ -106,7 +109,7 @@ export default function CommitmentsPage() {
         sub={items.length
           ? <>{owed.length} on you, {awaiting.length} on somebody else{overdue > 0 ? <> · <span className="commit-late-note">{overdue} past its date</span></> : null}</>
           : 'Nothing outstanding.'}
-        actions={<Button icon={<Plus size={15} />} onClick={() => setAdding(true)}>Add one</Button>}
+        actions={<><AskAssistant label="Help me prioritise" prompt="Review my open commitments and suggest what to tackle first based on due dates. Separate what I owe from what I am waiting on." /><Button icon={<Plus size={15} />} onClick={() => setAdding(true)}>Add one</Button></>}
       />
 
       {!items.length ? (
@@ -189,6 +192,10 @@ function Row({ c, onClose, onChanged }: { c: Commitment; onClose: (id: number, s
             share a line whenever the column is wide enough to hold both. */}
         <div className="commit-foot">
           <div className="commit-meta">
+            <AskAssistant label="Help with this" context={{
+              page: 'Commitments',
+              thread: c.threadId ? { accountId: c.accountId, threadId: c.threadId } : null,
+            }} prompt={`Help me with this ${c.kind === 'owed' ? 'promise I made' : 'item I am waiting on'}: ${c.text}${c.counterparty ? ` (${c.counterparty})` : ''}${c.dueAt ? `, due ${c.dueAt}` : ''}. ${c.threadId ? 'Read the source conversation first. ' : ''}Suggest a next step; if a reply is needed, prepare a draft for me to review.`} />
             {c.counterparty && <span className="commit-party">{c.counterparty}</span>}
             {due && <Badge kind={due.late ? 'danger' : due.today ? 'warning' : undefined}>{due.label}</Badge>}
             {c.source === 'manual' && <Badge>Added by you</Badge>}

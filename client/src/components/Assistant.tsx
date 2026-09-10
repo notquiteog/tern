@@ -19,7 +19,7 @@
 // mails your contacts on a model's say-so.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle, Bot, CalendarPlus, Check, ChevronLeft, ClipboardCheck, ImagePlus, Layers,
   ListFilter, Loader2, Mail, MessageSquare, Mic, Plus, Search, Square, Trash2, Volume2, VolumeX, X,
@@ -27,7 +27,9 @@ import {
 import { api } from '../api';
 import { streamWithWork, withWork } from '../lib/work';
 import { textToHtml } from '../lib/format';
-import { useAssistant } from '../state/assistant';
+import { useAssistant, type ViewContext } from '../state/assistant';
+import { assistantContextLabel, assistantSuggestions } from '../lib/assistant';
+import { notifyWorkspaceChange } from '../lib/workspaceEvents';
 import { useCompose } from '../state/compose';
 import { useCan } from '../state/features';
 import { useToast } from '../state/toast';
@@ -204,6 +206,7 @@ function EventCard({ p }: { p: Extract<Proposal, { kind: 'event' }> }) {
       attendees: p.attendees.map((a) => ({ email: a.email, name: a.name })),
       notify: false,
     });
+    notifyWorkspaceChange('calendar');
     return 'In your calendar';
   });
   return (
@@ -247,6 +250,7 @@ function CommitmentCard({ p }: { p: Extract<Proposal, { kind: 'commitment' }> })
       dueAt: p.dueAt,
     });
     void qc.invalidateQueries({ queryKey: ['commitments'] });
+    notifyWorkspaceChange('commitments');
     return 'Added to your list';
   });
   return (
@@ -432,7 +436,7 @@ function ReferenceList({ refs }: { refs: Reference[] }) {
         <ul>
           {refs.map((r, i) => (
             <li key={i}>
-              <a href={`/mail/all/t/${r.accountId}:${encodeURIComponent(r.threadId)}`}>{r.subject}</a>
+              <Link to={`/mail/all/t/${r.accountId}:${encodeURIComponent(r.threadId)}`}>{r.subject}</Link>
               <span className="faint"> — {r.from}, {r.date}</span>
             </li>
           ))}
@@ -445,7 +449,7 @@ function ReferenceList({ refs }: { refs: Reference[] }) {
 // ---------- The panel ----------
 
 export function AssistantDock() {
-  const { open, hide, takePending, view } = useAssistant();
+  const { open, hide, pendingCount, takePending, clearPending, view } = useAssistant();
   const can = useCan('ai.assistant');
   const status = useAssistantStatus(open && can);
   const toast = useToast();
@@ -460,6 +464,9 @@ export function AssistantDock() {
   const [showList, setShowList] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const abort = useRef<AbortController | null>(null);
+  const turn = useRef(0);
+  const sending = useRef(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
   const audio = useRef<HTMLAudioElement | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
   const box = useRef<HTMLTextAreaElement | null>(null);
@@ -493,7 +500,7 @@ export function AssistantDock() {
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  const say = useCallback(async (what: string) => {
+  const say = useCallback(async (what: string, signal: AbortSignal) => {
     if (!what.trim() || !status.data?.voice.speak) return;
     try {
       // Through the work guard like every other expensive call. `api` is not
@@ -502,6 +509,7 @@ export function AssistantDock() {
       // a plain fetch here is a 400 on every answer.
       const blob = await withWork('voice', async (work) => {
         const res = await fetch('/api/assistant/speak', {
+          signal,
           method: 'POST',
           headers: { 'X-Requested-With': 'tern', 'Content-Type': 'application/json', ...work },
           credentials: 'same-origin',
@@ -510,6 +518,7 @@ export function AssistantDock() {
         if (!res.ok) throw new Error(`speech failed (${res.status})`);
         return res.blob();
       });
+      if (signal.aborted) return;
       const url = URL.createObjectURL(blob);
       audio.current?.pause();
       const el = new Audio(url);
@@ -524,10 +533,15 @@ export function AssistantDock() {
     } catch { /* a voice that will not speak is not worth an error toast */ }
   }, [status.data]);
 
-  const send = useCallback(async (asked: string) => {
+  const ready = can && Boolean(status.data?.enabled && status.data?.consented) && !status.isError;
+
+  const send = useCallback(async (asked: string, context?: ViewContext) => {
     const question = asked.trim();
-    if (!question || busy) return;
-    setText('');
+    if (!question || sending.current || loadingConversation || !ready) return;
+    const mine = ++turn.current;
+    sending.current = true;
+    setShowList(false);
+    if (!context) setText('');
     setBusy(true);
     stick.current = true;
     // Shown immediately under a temporary id; the server's real id replaces it
@@ -537,17 +551,19 @@ export function AssistantDock() {
     setMessages((m) => [...m, { id: tempId, role: 'user', content: question }]);
     setLive('');
     abort.current?.abort();
-    abort.current = new AbortController();
+    const controller = new AbortController();
+    abort.current = controller;
     let spoken = '';
     try {
       await streamWithWork('ai', '/api/assistant/chat', {
         conversationId,
         message: question,
-        view: view(),
+        view: context ?? view(),
         tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }, {
-        signal: abort.current.signal,
+        signal: controller.signal,
         onEvent: (ev, data) => {
+          if (mine !== turn.current || controller.signal.aborted) return;
           if (ev === 'start') {
             setConversationId(data.conversationId);
             setMessages((m) => m.map((x) => (x.id === tempId ? { ...x, id: data.userMessageId } : x)));
@@ -584,15 +600,19 @@ export function AssistantDock() {
           }
         },
       });
-      if (handsFree && spoken) await say(spoken);
+      if (mine === turn.current && !controller.signal.aborted && handsFree && spoken) await say(spoken, controller.signal);
     } catch (e: any) {
-      if (e?.name !== 'AbortError') toast.error(e);
+      if (mine === turn.current && e?.name !== 'AbortError') toast.error(e);
     } finally {
-      setBusy(false);
-      setRunning([]);
-      setLive('');
+      void qc.invalidateQueries({ queryKey: ['assistant-conversations'] });
+      if (mine === turn.current) {
+        sending.current = false;
+        setBusy(false);
+        setRunning([]);
+        setLive('');
+      }
     }
-  }, [busy, conversationId, handsFree, say, toast, view]);
+  }, [conversationId, handsFree, say, toast, view, ready, loadingConversation, qc]);
 
   // The microphone. A finished recording is sent straight away rather than
   // dropped into the box for editing: somebody who has just spoken a question
@@ -600,43 +620,66 @@ export function AssistantDock() {
   // said is the thing that makes voice control feel like a form.
   const dictation = useDictation(useCallback((said: string) => { void send(said); }, [send]));
 
-  const startNew = () => {
+  const resetTurn = () => {
+    ++turn.current;
     abort.current?.abort();
+    audio.current?.pause();
+    setSpeaking(false);
+    sending.current = false;
+    setBusy(false);
+    setRunning([]);
+    setLive('');
+    setLoadingConversation(false);
+    clearPending();
+  };
+
+  const startNew = () => {
+    resetTurn();
     setConversationId(null);
     setMessages([]);
-    setLive('');
+    setText('');
     setShowList(false);
     box.current?.focus();
   };
 
   const openConversation = async (id: number) => {
-    abort.current?.abort();
-    setShowList(false);
-    setConversationId(id);
-    const r = await api.get<{ messages: UiMessage[] }>(`/api/assistant/conversations/${id}`);
-    setMessages(r.messages.filter((m) => (m.role === 'tool' ? m.proposal || m.references?.length : m.content?.trim())));
-    stick.current = true;
+    resetTurn();
+    const mine = turn.current;
+    setLoadingConversation(true);
+    try {
+      const r = await api.get<{ messages: UiMessage[] }>(`/api/assistant/conversations/${id}`);
+      if (mine !== turn.current) return;
+      setConversationId(id);
+      setMessages(r.messages.filter((m) => (m.role === 'tool' ? m.proposal || m.references?.length : m.content?.trim())));
+      setText('');
+      setShowList(false);
+      stick.current = true;
+    } catch (e) { if (mine === turn.current) toast.error(e); }
+    finally { if (mine === turn.current) setLoadingConversation(false); }
   };
 
   const remove = async (id: number) => {
-    await api.del(`/api/assistant/conversations/${id}`);
-    void qc.invalidateQueries({ queryKey: ['assistant-conversations'] });
-    if (id === conversationId) startNew();
+    try {
+      await api.del(`/api/assistant/conversations/${id}`);
+      void qc.invalidateQueries({ queryKey: ['assistant-conversations'] });
+      if (id === conversationId) startNew();
+    } catch (e) { toast.error(e); }
   };
 
-  // A question handed over by another part of the app — the thread view's
-  // "Ask about this", the command palette — asked as soon as the panel opens.
+  // Consume only once the model is ready and the previous turn has finished.
+  // Context was captured by the originating screen, not by this delayed effect.
   useEffect(() => {
-    if (!open) return;
-    const p = takePending();
-    if (p) void send(p);
-    else box.current?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    if (!open || !ready || busy || sending.current || loadingConversation || !pendingCount) return;
+    const pending = takePending();
+    if (pending) void send(pending.prompt, pending.view);
+  }, [open, ready, busy, loadingConversation, pendingCount, takePending, send]);
+  useEffect(() => { if (open) box.current?.focus(); }, [open]);
 
   if (!open) return null;
 
-  const unavailable = status.data && (!status.data.enabled || !status.data.consented);
+  const unavailable = !can || (status.data && (!status.data.enabled || !status.data.consented));
+  const context = view();
+  const suggestions = ready ? assistantSuggestions(context, status.data?.tools.map((t) => t.name) ?? []) : [];
 
   return (
     <aside className="assistant-dock" aria-label="Assistant">
@@ -675,6 +718,7 @@ export function AssistantDock() {
         </div>
       ) : (
         <>
+          <div className="assistant-context" title={assistantContextLabel(context)}>About: {assistantContextLabel(context)}</div>
           <div className="assistant-scroll" ref={scroller} onScroll={onScroll}>
             {unavailable ? (
               <Empty
@@ -685,9 +729,11 @@ export function AssistantDock() {
                   ? 'An administrator has not enabled a model for this server.'
                   : 'It can search your mail, read a conversation and its attachments, check your calendar, and put a draft, a meeting or a tidy-up in front of you. Nothing happens without your button.'}
               </Empty>
-            ) : !messages.length && !live ? (
+            ) : status.isError ? (
+              <Empty title="Could not connect to the assistant" action={<Button size="sm" onClick={() => void status.refetch()}>Try again</Button>} />
+            ) : !ready ? <div className="center p-4"><Spinner /></div> : !messages.length && !live ? (
               <Empty icon={<Bot size={22} />} title="Ask about anything in here">
-                Try “summarise this thread”, “what's the total on that invoice?”, or “archive every newsletter from last month”.
+                Ask a question, or choose a starting point below. I can use the context shown above.
               </Empty>
             ) : null}
 
@@ -711,6 +757,12 @@ export function AssistantDock() {
             {busy && !live && !running.length ? <div className="assistant-doing"><Loader2 size={13} className="spin" /> Thinking…</div> : null}
           </div>
 
+          {!busy && !text && suggestions.length > 0 && (
+            <div className="assistant-suggestions" aria-label="Suggested questions">
+              {suggestions.map((s) => <button key={s.label} type="button" disabled={loadingConversation} onClick={() => void send(s.prompt)}>{s.label}</button>)}
+            </div>
+          )}
+          {pendingCount > 0 && <div className="assistant-pending" role="status">{pendingCount} question{pendingCount === 1 ? '' : 's'} waiting <button type="button" onClick={clearPending}>Cancel</button></div>}
           <form
             className="assistant-compose"
             onSubmit={(e) => { e.preventDefault(); void send(text); }}
@@ -721,7 +773,9 @@ export function AssistantDock() {
               rows={1}
               value={text}
               placeholder={dictation.state === 'recording' ? 'Listening…' : 'Ask the assistant'}
-              disabled={Boolean(unavailable)}
+              aria-label="Ask the assistant"
+              maxLength={8000}
+              disabled={!ready || loadingConversation}
               onChange={(e) => setText(e.target.value)}
               // Enter sends, Shift+Enter is a new line. The same bargain the
               // composer makes, so the two do not disagree about a key.
@@ -734,6 +788,7 @@ export function AssistantDock() {
               // Guarded on the box being empty so it never steals the key from
               // somebody moving the caret through a message they are writing.
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(text); return; }
                 if (e.key === 'ArrowUp' && !text) {
                   const last = [...messages].reverse().find((m) => m.role === 'user' && m.content.trim());
@@ -755,14 +810,14 @@ export function AssistantDock() {
                 className={dictation.state === 'recording' ? 'recording' : undefined}
                 onClick={dictation.toggle}
                 type="button"
-                disabled={busy || Boolean(unavailable)}
+                disabled={busy || !ready || loadingConversation}
               >
                 {dictation.state === 'working' ? <Loader2 size={16} className="spin" /> : dictation.state === 'recording' ? <Square size={16} /> : <Mic size={16} />}
               </IconButton>
             )}
             {busy
-              ? <IconButton label="Stop" type="button" onClick={() => abort.current?.abort()}><Square size={16} /></IconButton>
-              : <Button size="sm" type="submit" disabled={!text.trim() || Boolean(unavailable)}>Ask</Button>}
+              ? <IconButton label="Stop" type="button" onClick={() => { clearPending(); abort.current?.abort(); }}><Square size={16} /></IconButton>
+              : <Button size="sm" type="submit" disabled={!text.trim() || !ready || loadingConversation}>Ask</Button>}
           </form>
           {speaking ? <div className="assistant-speaking"><Volume2 size={12} /> Speaking… <button onClick={() => { audio.current?.pause(); setSpeaking(false); }}>stop</button></div> : null}
         </>

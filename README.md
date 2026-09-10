@@ -131,6 +131,14 @@ Nothing leaves your server except the mail itself.
   pictures rather than sending or attaching either. With a voice configured it
   will read its answers aloud and take the next question from the microphone,
   so a turn is spoken rather than typed.
+- **Help where the question comes up.** A contact offers **Catch me up**,
+  the commitments ledger offers prioritisation and help with an individual
+  promise, and the calendar offers **Plan this day**. The assistant shows
+  which screen or draft it is using and suggests questions supported by your
+  enabled tools. Questions handed over while it is busy wait in a cancellable
+  queue with their original context. Accepted calendar entries and commitments
+  appear immediately on their pages, and opening a cited conversation keeps
+  the assistant open.
 - **It has verbs now, and every one of them ends in a card with your button
   on it.** Put that meeting in the calendar, note what you just promised
   somebody, turn a complaint into a draft rule, or gather up forty newsletters

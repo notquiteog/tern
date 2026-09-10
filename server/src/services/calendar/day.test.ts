@@ -54,3 +54,26 @@ test('a zone the browser made up falls back to UTC rather than throwing', () => 
   assert.deepEqual(iso(w.from), '2026-09-07T00:00');
   assert.deepEqual(iso(dayWindow(new Date('2026-09-07T12:00:00Z'), '').from), '2026-09-07T00:00');
 });
+
+// Tool arguments contain a date, not an instant at midnight UTC.
+test('explicit calendar dates stay on the requested day across zones and DST', async () => {
+  const { calendarDate } = await import('./index.js');
+  for (const tz of ['America/Chicago', 'America/Los_Angeles', 'Asia/Tokyo', 'Pacific/Kiritimati', 'Pacific/Pago_Pago', 'Europe/London']) {
+    for (const value of ['2026-09-10', '2026-03-08', '2026-11-01', '2026-03-29', '2026-10-25']) {
+      const day = calendarDate(value, tz);
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(day);
+      const field = (type: string) => parts.find((p) => p.type === type)!.value;
+      assert.equal(`${field('year')}-${field('month')}-${field('day')}`, value, `${value} in ${tz}`);
+      const window = dayWindow(day, tz);
+      assert.ok(day >= window.from && day < window.to);
+    }
+  }
+  assert.equal(dayWindow(calendarDate('2026-03-08', 'America/Chicago'), 'America/Chicago').from.toISOString(), '2026-03-08T06:00:00.000Z');
+});
+
+test('invalid assistant calendar dates fail instead of silently using today', async () => {
+  const { calendarDate } = await import('./index.js');
+  for (const value of ['tomorrow', '2026-02-30', '2026-13-01', '2026-09-10T00:00:00Z', '2026-9-1', '2026-00-10']) {
+    assert.throws(() => calendarDate(value, 'America/Chicago'));
+  }
+});

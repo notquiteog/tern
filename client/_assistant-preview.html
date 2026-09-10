@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
+import { AuthProvider } from '/src/state/auth.tsx';
+import { FeaturesProvider } from '/src/state/features.tsx';
+import { AssistantProvider, useAssistant, usePageContext } from '/src/state/assistant.tsx';
+import { AssistantDock } from '/src/components/Assistant.tsx';
+import CommitmentsPage from '/src/pages/Commitments.tsx';
+import '/src/styles/app.css';
+const json = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+window.fetch = async (input, init) => {
+ const url = String(input);
+ if (url === '/api/setup/status') return json({ needsSetup:false, version:'preview' });
+ if (url === '/api/auth/me') return json({user:{id:1,prefs:{}},accountCount:1});
+ if (url === '/api/features') return json({capabilities:['ai.assistant','commitments','calendar','ai.compose'].map(id=>({id,available:true,granted:true}))});
+ if (url === '/api/ai/thinking') return json({allowed:false});
+ if (url === '/api/assistant/status') return json({enabled:true,consented:true,model:'Local assistant',tools:['my_commitments','my_day','draft_email','read_thread'].map(name=>({name})),voice:{listen:false,speak:false,maxChars:1000}});
+ if (url === '/api/assist/commitments') return json({commitments:[{id:1,kind:'owed',text:'Send the revised proposal and confirm the delivery date',counterparty:'Dana Okafor',dueAt:'2026-09-11T17:00:00Z',threadId:'demo',accountId:1,source:'manual'},{id:2,kind:'awaiting',text:'Review the contract and share feedback',counterparty:'Sam Taylor',dueAt:'2026-09-09T17:00:00Z',threadId:'contract',accountId:1,source:'ai'}]});
+ if (url.includes('/work?')) return json({challenge:'preview',difficulty:0});
+ if (url === '/api/assistant/chat') { const q = JSON.parse(init.body); return new Response(`event: start\ndata: ${JSON.stringify({conversationId:1,userMessageId:1})}\n\nevent: saved\ndata: ${JSON.stringify({id:2,role:'assistant',content:'Start with the proposal due tomorrow. Sam’s contract feedback is overdue; a short follow-up would help clarify the next step.'})}\n\n`); }
+ return json({});
+};
+const h=React.createElement;
+function Demo(){const assistant=useAssistant();usePageContext('Commitments');return h(React.Fragment,null,h('div',{style:{padding:'24px',maxWidth:'1150px'}},h(CommitmentsPage),h('button',{className:'btn',onClick:()=>assistant.show()},'Open assistant')),h(AssistantDock));}
+createRoot(document.getElementById('root')).render(h(QueryClientProvider,{client:new QueryClient()},h(MemoryRouter,null,h(AuthProvider,null,h(FeaturesProvider,null,h(AssistantProvider,null,h(Demo)))))));
+</script></body></html>

@@ -8,3 +8,11 @@ for (const k of ['window', 'document', 'DOMParser', 'Node', 'NodeFilter', 'Range
   if (!(k in g) || k === 'localStorage') g[k] = k === 'window' ? dom.window : (dom.window as any)[k];
 }
 export const jsdom = dom;
+
+// jsdom has no layout engine; component tests use the default light/desktop
+// preference and can override individual queries when a breakpoint matters.
+dom.window.matchMedia = (query: string) => ({
+  matches: false, media: query, onchange: null,
+  addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
+  dispatchEvent: () => true,
+});

@@ -49,7 +49,7 @@ import { openEmails } from '../services/mailVault.js';
 import { semanticSearch } from '../services/semantic.js';
 import { htmlToText } from '../services/merge.js';
 import { listCommitments } from '../services/commitments.js';
-import { agendaFor, availabilityFor, busyIn } from '../services/calendar/index.js';
+import { agendaFor, availabilityFor, busyIn, calendarDate } from '../services/calendar/index.js';
 import { textFor } from '../services/attachments.js';
 import { parseSearch, buildSearchSql } from '../services/search.js';
 import { draftRule as draftRuleFor, type DraftRule } from '../services/nlRules.js';
@@ -737,7 +737,7 @@ const myDay: AssistantTool = {
   },
   async run(ctx, args) {
     const dayArg = str(args, 'day', 20);
-    const day = dayArg && !Number.isNaN(Date.parse(dayArg)) ? new Date(dayArg) : new Date();
+    const day = dayArg ? calendarDate(dayArg, ctx.tz) : new Date();
     const events = await agendaFor(ctx.userId, day, ctx.tz);
     const time = (v: unknown) => {
       try { return new Date(v as string).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: ctx.tz }); }

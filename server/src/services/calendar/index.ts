@@ -702,6 +702,17 @@ export async function agendaFor(userId: number, day: Date, tz?: string): Promise
   return instancesIn(userId, from, to, { limit: 60 });
 }
 
+/** A date from a calendar/tool argument is a civil day in the user's zone. */
+export function calendarDate(value: string, tz?: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error('Use a calendar date in YYYY-MM-DD format.');
+  const [y, m, d] = value.split('-').map(Number);
+  const check = new Date(`${value}T12:00:00Z`);
+  if (!Number.isFinite(check.getTime()) || check.getUTCFullYear() !== y || check.getUTCMonth() + 1 !== m || check.getUTCDate() !== d) {
+    throw new Error('That calendar date does not exist.');
+  }
+  return new Date(zonedInstant(safeZone(tz), y, m - 1, d, 12));
+}
+
 function safeZone(tz: string | undefined): string {
   if (!tz) return 'UTC';
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return 'UTC'; }

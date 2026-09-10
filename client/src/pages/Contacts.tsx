@@ -7,6 +7,7 @@ import { useToast } from '../state/toast';
 import { useCompose } from '../state/compose';
 import { useCan } from '../state/features';
 import { useFocusContext } from '../state/assistant';
+import { AskAssistant } from '../components/AskAssistant';
 import { useContactTags, useSequences } from '../lib/queries';
 import { useDebounced } from '../lib/hooks';
 import { postWithWork, streamWithWork } from '../lib/work';
@@ -502,7 +503,7 @@ function ContactDrawer({ id, onClose, onEdit }: { id: number; onClose: () => voi
     detail: [c.title, c.company].filter(Boolean).join(', ') || null,
   } : null);
   return (
-    <Drawer open onClose={onClose} title={c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email : 'Contact'} actions={c && <>{quiet && canWrite && <Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={nudging === c.id} onClick={() => void nudge(c, standing.days)}>Draft a nudge</Button>}<Button size="sm" icon={<Mail size={14} />} onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}>Email</Button><Button size="sm" icon={<Pencil size={14} />} onClick={() => onEdit(c)}>Edit</Button></>}>
+    <Drawer open onClose={onClose} title={c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email : 'Contact'} actions={c && <><AskAssistant label="Catch me up" onAsk={onClose} prompt="Look up this contact and search our recent mail. Summarise where things stand, citing the conversations you read." />{quiet && canWrite && <Button size="sm" variant="ai" icon={<Sparkles size={14} />} loading={nudging === c.id} onClick={() => void nudge(c, standing.days)}>Draft a nudge</Button>}<Button size="sm" icon={<Mail size={14} />} onClick={() => compose.open({ to: [{ name: [c.first_name, c.last_name].filter(Boolean).join(' '), email: c.email }], contactId: c.id })}>Email</Button><Button size="sm" icon={<Pencil size={14} />} onClick={() => onEdit(c)}>Edit</Button></>}>
       {isLoading || !c ? <div className="center" style={{ padding: 40 }}><Spinner /></div> : (
         <>
           <div className="mb-16"><AvatarUploader src={c.avatar_version ? `/api/avatars/contact/${c.id}?v=${c.avatar_version}` : null} name={[c.first_name, c.last_name].join(' ') || c.email} email={c.email} onUpload={async (blob) => { await api.upload(`/api/avatars/contact/${c.id}`, blob, blob.type || 'image/webp'); refreshAll(); toast.success('Photo saved'); }} onRemove={async () => { await api.del(`/api/avatars/contact/${c.id}`); refreshAll(); }} /></div>

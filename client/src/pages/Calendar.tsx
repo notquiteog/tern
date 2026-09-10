@@ -18,6 +18,9 @@ import { Badge, Button, Callout, Empty, Field, Input, Modal, PageHeader, Segment
 import { useToast } from '../state/toast';
 import { cls, escapeHtml } from '../lib/format';
 import { useCompose } from '../state/compose';
+import { useFocusContext } from '../state/assistant';
+import { AskAssistant } from '../components/AskAssistant';
+import { useWorkspaceChange } from '../lib/workspaceEvents';
 
 export interface CalEvent {
   id: number;
@@ -97,6 +100,12 @@ export default function CalendarPage() {
   const [editing, setEditing] = useState<{ objectId?: number; startsAt: Date; allDay?: boolean; scope?: EditScope; occurrence?: string | null } | null>(null);
   const [open, setOpen] = useState<CalEvent | null>(null);
   const seq = useRef(0);
+  const focusedDay = editing?.startsAt ?? (open ? dayOf(open.startsAt, open.allDay) : anchor);
+  const dateRef = `${focusedDay.getFullYear()}-${String(focusedDay.getMonth() + 1).padStart(2, '0')}-${String(focusedDay.getDate()).padStart(2, '0')}`;
+  useFocusContext(can('calendar') ? {
+    kind: 'day', label: longDay.format(focusedDay), ref: dateRef,
+    detail: `Calendar ${view} view. Ask about this date; other dates may also be visible.`,
+  } : null);
 
   const { from, to } = useMemo(() => rangeFor(view, anchor), [view, anchor]);
 
@@ -120,6 +129,8 @@ export default function CalendarPage() {
 
   useEffect(() => { if (can('calendar')) void load(); }, [can, load]);
   useEffect(() => { if (can('calendar')) void loadSources(); }, [can, loadSources]);
+  const refreshCalendar = useCallback(() => { if (can('calendar')) void load(); }, [can, load]);
+  useWorkspaceChange('calendar', refreshCalendar);
 
   // A calendar that is being synced in the background changes under the
   // person, so the window is refreshed while the tab is visible. Two minutes
@@ -178,6 +189,7 @@ export default function CalendarPage() {
         sub={title}
         actions={
           <div className="row gap-8 wrap">
+            <AskAssistant label="Plan this day" prompt={`Check my calendar for ${dateRef}. Summarise the day and flag any overlapping meetings.`} />
             <Segmented value={view} onChange={setView} options={[{ value: 'month', label: 'Month' }, { value: 'week', label: 'Week' }, { value: 'agenda', label: 'Agenda' }]} />
             <div className="row gap-4">
               <Button size="sm" variant="ghost" iconOnly aria-label="Previous" onClick={() => step(-1)}><ChevronLeft size={16} /></Button>
