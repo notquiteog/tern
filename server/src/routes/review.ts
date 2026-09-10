@@ -11,7 +11,7 @@ import { getAccount } from '../services/accounts.js';
 import { composeAndSend } from '../services/compose.js';
 import { openEmail, openEmailWith, openReview, openReviewWith, sealReview } from '../services/mailVault.js';
 import { dataKey, openWith, seal } from '../services/vault.js';
-import { describeHits, findTemplateArtifacts, type GuardHit } from '../ai/guard.js';
+import { describeHits, findTemplateArtifacts, type GuardHit, type GuardInput } from '../ai/guard.js';
 import { generateResponderReply, personalize, renderStep } from '../workers/scheduler.js';
 
 export const reviewRouter = Router();
@@ -151,6 +151,18 @@ reviewRouter.post(
     let subject: string;
     let html: string;
     let model: string;
+    // What this regeneration was allowed to know, and who it is allowed to
+    // greet. Carried out of the generator and handed to the guard below.
+    //
+    // Leaving it out is not a smaller check, it is a different one: without
+    // `specifics` the guard looks for placeholders and prompt leakage and
+    // never asks whether a figure in the body was ever given to the model. A
+    // regeneration steered with "mention the callout rate" duly invented a
+    // flat fee of £45 a shift, and the queue passed it as clean — which is
+    // precisely the failure `findInventedSpecifics` was written for, and
+    // exactly the one the README says is worse than a leftover placeholder,
+    // because a placeholder gets reviewed and a price gets sent.
+    let expectation: Pick<GuardInput, 'greeting' | 'specifics'> = {};
 
     if (item.kind === 'reply') {
       // A responder reply, regenerated through exactly the path that made it —
@@ -168,23 +180,39 @@ reviewRouter.post(
         opened,
       );
       subject = gen.subject; html = gen.html; model = gen.model;
+      expectation = gen.guard;
     } else {
       // A sequence step, re-personalised. Same path as the scheduler's.
       if (!item.step_id || !item.enrollment_id) throw badRequest('This draft did not come from a sequence step, so it cannot be written again. Edit it by hand.');
+      // Scoped through the sequence, which is the row that carries the owner:
+      // `enrollments` has no user_id of its own. The review item was already
+      // fetched by (id, user_id), so this is the belt to that braces — an
+      // enrollment reached by id alone would be a way to regenerate against
+      // somebody else's step.
       const step = await one<any>('SELECT * FROM sequence_steps WHERE id=$1', [item.step_id]);
-      const enr = await one<any>('SELECT * FROM enrollments WHERE id=$1 AND user_id=$2', [item.enrollment_id, req.user!.id]);
+      const enr = await one<any>(
+        `SELECT e.* FROM enrollments e JOIN sequences s ON s.id=e.sequence_id
+          WHERE e.id=$1 AND s.user_id=$2`,
+        [item.enrollment_id, req.user!.id],
+      );
       const contact = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [item.contact_id, req.user!.id]);
-      const seq = enr ? await one<any>('SELECT * FROM sequences WHERE id=$1', [enr.sequence_id]) : null;
+      const seq = enr ? await one<any>('SELECT * FROM sequences WHERE id=$1 AND user_id=$2', [enr.sequence_id, req.user!.id]) : null;
       if (!step || !enr || !contact || !seq) throw badRequest('The sequence step behind this draft is gone. Edit it by hand or reject it.');
       const rendered = await renderStep(acc, seq, step, contact, enr);
       const gen = await personalize(acc, { ...step, ai_instructions: [step.ai_instructions, steer].filter(Boolean).join('\n') }, contact, rendered);
       subject = gen.subject; html = gen.html; model = gen.model;
+      expectation = {
+        greeting: { first: gen.greetingFirst, forbidden: [acc.name] },
+        // A campaign email carries no attachment, so "as attached" in one is
+        // always a promise it cannot keep. The same terms the scheduler sets.
+        specifics: { facts: gen.facts, hasAttachment: false },
+      };
     }
 
     // Checked again, because a second attempt is exactly as capable of leaving
     // a placeholder in as the first was — and the point of this route is to
     // fix that class of problem, not to become a way around the check.
-    const again = findTemplateArtifacts({ subject, html });
+    const again = findTemplateArtifacts({ subject, html, ...expectation });
     const sealed = await sealReview(req.user!.id, { subject, body_html: html });
     await query(
       `UPDATE review_queue SET subject=$2, body_html=$3, ai_model=$4, hold_reason=$5, hold_hits=$6 WHERE id=$1`,

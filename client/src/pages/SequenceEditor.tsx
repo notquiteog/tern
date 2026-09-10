@@ -154,7 +154,7 @@ export default function SequenceEditorPage() {
             <div key={i} className="card mb-16">
               <div className="row small muted mb-8">
                 <CalendarClock size={13} />
-                {p.at ? fmtDateTime(p.at) : 'as soon as it is due'}
+                {p.at ? inZone(p.at, preview?.schedule?.tz) : 'as soon as it is due'}
               </div>
               <div className="strong mb-8">{p.subject || '(no subject)'}{p.step.ai_personalize && <Badge kind="accent"><Sparkles size={12} /> AI rewrites this per contact</Badge>}</div>
               <SafeHtml className="msg-text" html={p.html} />
@@ -331,4 +331,29 @@ function ContactPicker({ onPick }: { onPick: (c: { id: number } | null) => void 
       )}
     </div>
   );
+}
+
+
+/**
+ * A projected send time, written in the send window's own zone.
+ *
+ * The window is stated in the account's timezone and the dates were pushed to
+ * fit it, so rendering them in the reader's browser zone instead produces a
+ * line that looks self-contradictory — "sends only 09:00-17:00 UTC" above
+ * "Thu, Sep 10, 4:00 AM" — even though the arithmetic is right. Somebody
+ * checking a schedule should not have to do timezone conversion to see that it
+ * is correct.
+ */
+function inZone(iso: string, tz?: string | null): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString(undefined, {
+      weekday: 'short', day: 'numeric', month: 'short',
+      hour: '2-digit', minute: '2-digit',
+      ...(tz ? { timeZone: tz, timeZoneName: 'short' } : {}),
+    });
+  } catch {
+    return fmtDateTime(iso);
+  }
 }
