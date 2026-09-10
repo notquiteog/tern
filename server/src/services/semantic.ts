@@ -372,6 +372,103 @@ export async function similarTo(userId: number, emailId: number, limit = 10): Pr
     .slice(0, limit);
 }
 
+/**
+ * Drop everything this person's meaning index holds.
+ *
+ * The Postgres half of an erase is a DELETE that the cascade would have done
+ * anyway. This is the half that stopped being automatic when the vectors left
+ * Postgres, and the distinction matters because the promise is different from
+ * the one the read path keeps:
+ *
+ * * For a **deleted email**, the promise is that you cannot get at it. The
+ *   join in `semanticSearch` keeps that by construction — an orphaned point
+ *   joins to no row and can surface nothing.
+ * * For a **revoked capability or a deleted account**, the promise is
+ *   *erasure*, and invisible is not erased. The vectors have to go.
+ *
+ * Collection names carry the user id (`tern_u<id>_<model>`), so this is a
+ * prefix scan over what the index reports rather than a list Tern has to keep
+ * in step. One collection per model the mailbox has been indexed under, and
+ * all of them go.
+ *
+ * **Never throws.** A consent revocation that fails because a vector service
+ * is unreachable is the wrong failure: the caller's SQL should still run, the
+ * person should still be un-consented, and the leftovers are a sweep's problem.
+ * What is dropped is returned so the caller can log the difference.
+ */
+export async function eraseSemanticIndex(userId: number): Promise<number> {
+  const prefix = `tern_u${userId}_`;
+  let dropped = 0;
+  try {
+    const all = await vectors.listCollections();
+    for (const name of all.filter((n) => n === prefix.slice(0, -1) || n.startsWith(prefix))) {
+      try {
+        await vectors.dropCollection(name);
+        dropped += 1;
+      } catch (err) {
+        log.error('could not drop a vector collection', { name, err: String(err) });
+      }
+    }
+  } catch (err) {
+    // The index could not even be asked. Say so loudly — this is the path
+    // where somebody has withdrawn consent and their vectors are still there.
+    log.error('the vector index could not be reached to erase it; vectors remain', {
+      user: userId, err: String(err),
+    });
+    return 0;
+  }
+  if (dropped) log.info(`dropped ${dropped} vector collections`, { user: userId });
+  return dropped;
+}
+
+/**
+ * Drop collections whose user no longer exists.
+ *
+ * `eraseSemanticIndex` handles the cases Tern can see coming — a revoked
+ * capability, a deleted account. This is for the ones it could not: rows
+ * removed before the erase path existed, a database restored from a backup
+ * taken before some accounts were created, an account deleted while the index
+ * was unreachable. Thirty-nine such collections were found on the development
+ * box from end-to-end runs whose users were long gone.
+ *
+ * The read path already refuses to surface them — an orphaned point joins to
+ * no row. This is about them not being on the disk, which is a different
+ * promise and the one that matters after somebody asks to be forgotten.
+ *
+ * Deliberately conservative about what it considers an orphan: only names that
+ * parse as Tern's own, and only ids with no row in `users`. A collection it
+ * cannot parse is left alone and reported — somebody else's data in the same
+ * Qdrant is not this function's to delete.
+ */
+export async function sweepOrphanedCollections(): Promise<{ dropped: number; kept: number }> {
+  let names: string[];
+  try {
+    names = await vectors.listCollections();
+  } catch (err) {
+    log.warn('could not list vector collections to sweep', { err: String(err) });
+    return { dropped: 0, kept: 0 };
+  }
+
+  const live = new Set(
+    (await query<{ id: number }>('SELECT id FROM users')).map((r) => r.id),
+  );
+  let dropped = 0;
+  let kept = 0;
+  for (const name of names) {
+    const m = /^tern_u(\d+)_/.exec(name);
+    if (!m) { kept += 1; continue; }
+    if (live.has(Number(m[1]))) { kept += 1; continue; }
+    try {
+      await vectors.dropCollection(name);
+      dropped += 1;
+    } catch (err) {
+      log.error('could not drop an orphaned collection', { name, err: String(err) });
+    }
+  }
+  if (dropped) log.info(`swept ${dropped} orphaned vector collections`, { kept });
+  return { dropped, kept };
+}
+
 // Retrieval for the model: the few messages most related to a question,
 // opened and trimmed, for the brief and for a reply that needs to remember
 // something from six months ago.

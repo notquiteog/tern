@@ -11,6 +11,7 @@
 // without reading nine other files, and a new feature that forgets to answer
 // it shows up as a missing case rather than as silent leftovers.
 import { query } from '../db.js';
+import { eraseSemanticIndex } from './semantic.js';
 import { logger } from '../log.js';
 import type { Capability } from './capabilities.js';
 
@@ -101,6 +102,22 @@ export async function eraseCapabilityData(userId: number, cap: Capability): Prom
       log.error(`could not erase ${cap} data`, { user: userId, err: (e as Error).message });
       throw e;
     }
+  }
+  // The vectors are not rows any more.
+  //
+  // `ERASE.semantic` deletes the manifest and marks the mail unindexed, which
+  // was a total erase while the vectors WERE those rows. Since they moved to
+  // Qdrant it deletes the bookkeeping and leaves every vector in place — and
+  // `CAPABILITY_META.semantic.erases` says "the whole meaning index", which the
+  // Features page shows in the confirmation dialog before somebody revokes.
+  //
+  // Not inside the SQL loop, and not allowed to fail the erase: refusing to
+  // honour a consent revocation because a vector service is unreachable is the
+  // wrong failure. `eraseSemanticIndex` never throws, logs loudly when it
+  // cannot reach the index, and returns what it managed to drop.
+  if (cap === 'semantic') {
+    const dropped = await eraseSemanticIndex(userId);
+    if (dropped) log.info(`dropped ${dropped} vector collections after semantic was turned off`, { user: userId });
   }
   log.info(`erased ${erased} rows after ${cap} was turned off`, { user: userId });
   return erased;

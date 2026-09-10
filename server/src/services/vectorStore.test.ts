@@ -153,3 +153,84 @@ test('a restore queues the re-index, because vectors are not in the backup', () 
   assert.match(bin, /Meaning search will be thin/,
     'the restore does not say that meaning search will be degraded while it rebuilds');
 });
+
+test('the erase primitives are actually wired to something', () => {
+  // The bug this exists to prevent, found on main after the move to Qdrant:
+  // `dropCollection` was exported, correct, tested by inspection — and called
+  // from nowhere. Revoking "Meaning search" deleted the Postgres manifest and
+  // left every vector in the index, while the confirmation dialog said it
+  // would erase "the whole meaning index".
+  //
+  // An erase primitive nobody calls is not dead code, it is a broken promise,
+  // and nothing else in the suite can see the difference: the SQL still runs,
+  // the row count still comes back, the UI still says it worked.
+  const store = readReal('server/src/services/vectorStore.ts');
+  const semantic = readReal('server/src/services/semantic.ts');
+  const capData = readReal('server/src/services/capabilityData.ts');
+
+  assert.match(store, /export async function dropCollection/, 'dropCollection is gone');
+  assert.match(semantic, /vectors\.dropCollection\(/,
+    'nothing in semantic.ts drops a collection, so nothing can erase the index');
+  assert.match(semantic, /export async function eraseSemanticIndex/,
+    'eraseSemanticIndex is gone');
+  assert.match(capData, /eraseSemanticIndex\(/,
+    'capabilityData.ts never calls eraseSemanticIndex — revoking the capability '
+    + 'would delete the manifest and leave the vectors, which is exactly the bug '
+    + 'this test was written for');
+});
+
+test('erasing the index cannot fail a consent revocation', () => {
+  // Refusing to honour "stop using my mail for this" because a vector service
+  // is unreachable is the wrong failure. The SQL must still run and the person
+  // must still be un-consented; leftover vectors are a sweep's problem.
+  const semantic = readReal('server/src/services/semantic.ts');
+  const body = /export async function eraseSemanticIndex[\s\S]*?\n}/.exec(semantic);
+  assert.ok(body, 'eraseSemanticIndex is gone');
+  assert.match(body[0], /try\s*{/, 'eraseSemanticIndex does not catch anything');
+  // A `throw` inside it would propagate into eraseCapabilityData, which
+  // rethrows, which fails the revocation.
+  assert.ok(!/\bthrow\b/.test(body[0]),
+    'eraseSemanticIndex can throw, so an unreachable index would block a revocation');
+});
+
+test('erasing one user cannot take another user\u2019s index with it', () => {
+  // The prefix scan in `eraseSemanticIndex` matches `tern_u<id>_`, and the
+  // TRAILING UNDERSCORE is what makes it safe: `tern_u1_` is not a prefix of
+  // `tern_u11_`, because the characters diverge at `_` against `1`.
+  //
+  // That is load-bearing and not obvious. Drop the separator, or change it to
+  // something that can appear in an id, and erasing user 1 silently drops user
+  // 11's entire memory — no error, nothing to notice until somebody searches
+  // and finds their mail unsearchable. It is the kind of thing that is fine
+  // for a year and then is not.
+  const one = `tern_u1_`;
+  const eleven = collectionFor(11, 'qwen3-embedding:4b');
+  assert.ok(!eleven.startsWith(one),
+    `erasing user 1 would match user 11's collection ${eleven}`);
+
+  // And the separator has to be a character an id cannot contain, or the
+  // argument above stops holding. Ids are numeric.
+  assert.match(collectionFor(1, 'm'), /^tern_u1_/);
+  assert.match(collectionFor(11, 'm'), /^tern_u11_/);
+
+  // The scan in semantic.ts must use that exact shape. Written out here
+  // because the property lives in the string literal, not in a function this
+  // test can call.
+  const semantic = readReal('server/src/services/semantic.ts');
+  assert.match(semantic, /tern_u\$\{userId\}_/,
+    'eraseSemanticIndex no longer builds the prefix with a trailing separator');
+});
+
+test('the orphan sweep is reachable, not just exported', () => {
+  // Same class as the erase: a sweep nothing can run is a sweep that never
+  // runs. It is deliberately NOT a boot step -- listing every collection would
+  // put a vector service on the critical path of the app starting, which is
+  // the coupling the erase path exists to avoid -- so a command is the only
+  // way it gets called at all.
+  assert.match(readReal('server/src/services/semantic.ts'),
+    /export async function sweepOrphanedCollections/, 'the sweep is gone');
+  assert.match(readReal('server/src/cli.ts'), /sweepOrphanedCollections\(/,
+    'nothing invokes the orphan sweep, so orphaned collections stay for ever');
+  assert.match(readReal('server/src/cli.ts'), /vectors-sweep/,
+    'the sweep has no command name, so nobody can run it');
+});

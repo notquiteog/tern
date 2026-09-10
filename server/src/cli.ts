@@ -138,6 +138,21 @@ async function main(): Promise<void> {
       console.table(rows);
       break;
     }
+    case 'vectors-sweep': {
+      // Drops vector collections whose user no longer exists.
+      //
+      // A command rather than a boot step: listing every collection and
+      // checking it against `users` is cheap but not free, and doing it on
+      // every start would put a vector service on the critical path of the app
+      // coming up — which is exactly the coupling the erase path is written to
+      // avoid. Run it after a restore, or after deleting accounts while the
+      // index was unreachable.
+      const { sweepOrphanedCollections } = await import('./services/semantic.js');
+      const { dropped, kept } = await sweepOrphanedCollections();
+      console.log(`dropped ${dropped} orphaned collection(s); left ${kept} alone`);
+      if (!dropped) console.log('nothing to do: every collection belongs to a user who still exists');
+      break;
+    }
     case 'list-users': {
       const rows = await query('SELECT id, username, display_name, role, disabled, totp_enabled, last_login_at FROM users ORDER BY id');
       console.table(rows);
@@ -242,7 +257,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status | recover-key');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | vectors-sweep | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status | recover-key');
   }
   await pool.end();
 }
