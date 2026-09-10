@@ -53,6 +53,19 @@ export interface GuardDetail {
   name?: string;
   /** How many messages this mailbox has had from the address it resembles. */
   seen?: number;
+  /**
+   * Where a reply would actually go, for `reply_to_offsite`.
+   *
+   * Its own field rather than a second use of `actual`, because the flags are
+   * not exclusive and the detail is one object. A message that is BOTH a
+   * lookalike domain and has an off-site Reply-To — which is the ordinary
+   * shape of an invoice-redirection attempt, not a corner case — had the
+   * Reply-To overwrite the impostor domain, and the banner then read
+   * "<the reply-to address> looks like <the real domain>". That names the
+   * wrong string as the fake, on the one screen where being precise about
+   * which string is the fake is the entire point.
+   */
+  replyTo?: string;
 }
 
 export interface GuardResult { flags: GuardFlag[]; detail: GuardDetail }
@@ -196,6 +209,58 @@ export interface GuardKnowledge {
   names: Map<string, { email: string; count: number }>;
   /** Addresses seen at least once, so "first contact" is a real answer. */
   addresses: Set<string>;
+  /** How many messages each address sent, so one can be subtracted from it. */
+  counts: Map<string, number>;
+}
+
+/**
+ * The same knowledge with one sender's own message taken out of it.
+ *
+ * A message must not vouch for itself: a stranger's first email is in the
+ * table by the time the check runs, so without this every "have we met?"
+ * would answer yes about the very thing it was asked to be suspicious of.
+ *
+ * This used to be done by excluding the whole batch from `knowledgeFor`, which
+ * is right when mail trickles in and catastrophic when it does not. An
+ * imported archive is one backlog: the batch IS the mailbox, so the knowledge
+ * came back empty, every message was "first contact", and the lookalike domain
+ * and hijacked-thread checks — which need a relationship to compare against —
+ * could not fire at all. That is the mail the README tells people to import
+ * first, and the guard was blind on all of it.
+ *
+ * Subtracting one message instead keeps the guarantee and keeps the history.
+ */
+export function withoutSelf(known: GuardKnowledge, fromEmail: string, fromName?: string | null): GuardKnowledge {
+  const from = String(fromEmail ?? '').toLowerCase();
+  if (!from) return known;
+  const mine = known.counts.get(from) ?? 0;
+  // Seen elsewhere too, so removing this one changes nothing that matters.
+  if (mine > 1) {
+    const domains = new Map(known.domains);
+    const domain = from.split('@')[1] ?? '';
+    const d = domains.get(domain);
+    if (d) domains.set(domain, { ...d, count: Math.max(0, d.count - 1) });
+    return { ...known, domains };
+  }
+  // This is the only message from that address, so the mailbox does not know
+  // the address at all — and if this sender was the only one on their domain,
+  // it does not know the domain either.
+  const addresses = new Set(known.addresses);
+  addresses.delete(from);
+  const domains = new Map(known.domains);
+  const domain = from.split('@')[1] ?? '';
+  const d = domains.get(domain);
+  if (d) {
+    if (d.count <= 1) domains.delete(domain);
+    else domains.set(domain, { ...d, count: d.count - 1 });
+  }
+  const names = new Map(known.names);
+  const name = String(fromName ?? '').trim().toLowerCase();
+  const hit = name ? names.get(name) : undefined;
+  if (name && hit && hit.email === from && hit.count <= 1) names.delete(name);
+  const counts = new Map(known.counts);
+  counts.delete(from);
+  return { domains, names, addresses, counts };
 }
 
 export function checkMessage(input: GuardInput, known: GuardKnowledge, thread: { fromEmails: string[] }): GuardResult {
@@ -243,7 +308,7 @@ export function checkMessage(input: GuardInput, known: GuardKnowledge, thread: {
     const rd = String(rt).toLowerCase().split('@')[1] ?? '';
     if (rd && domain && registrable(rd) !== registrable(domain)) {
       flags.push('reply_to_offsite');
-      detail.actual = rt.toLowerCase();
+      detail.replyTo = rt.toLowerCase();
       break;
     }
   }
@@ -306,6 +371,7 @@ export async function knowledgeFor(userId: number, accountId: number, exclude: n
   const domains = new Map<string, { count: number; example: string }>();
   const names = new Map<string, { email: string; count: number }>();
   const addresses = new Set<string>();
+  const counts = new Map<string, number>();
   for (const r of rows) {
     let list: { name?: string | null; email?: string }[] = [];
     try { list = JSON.parse(openWith(dek, r.from_addr) ?? '[]'); } catch { continue; }
@@ -313,6 +379,7 @@ export async function knowledgeFor(userId: number, accountId: number, exclude: n
     const email = String(a?.email ?? '').toLowerCase();
     if (!email) continue;
     addresses.add(email);
+    counts.set(email, (counts.get(email) ?? 0) + r.n);
     const domain = email.split('@')[1] ?? '';
     if (domain) {
       const d = domains.get(domain);
@@ -324,7 +391,7 @@ export async function knowledgeFor(userId: number, accountId: number, exclude: n
       if (!existing || existing.count < r.n) names.set(name, { email, count: r.n });
     }
   }
-  return { domains, names, addresses };
+  return { domains, names, addresses, counts };
 }
 
 // One pass over whatever has not been checked. Runs on the scheduler tick,
@@ -340,7 +407,11 @@ export async function guardBatch(userId: number, accountId: number, limit = 200)
   if (!rows.length) return 0;
 
   const dek = await dataKey(userId);
-  const known = await knowledgeFor(userId, accountId, rows.map((r) => r.id));
+  // The WHOLE mailbox, not the mailbox minus this batch. Each message has its
+  // own contribution subtracted below, which is the guarantee the exclusion was
+  // reaching for — without throwing away the history when the batch happens to
+  // be the entire archive. See `withoutSelf`.
+  const known = await knowledgeFor(userId, accountId);
   const acc = await one<{ email: string }>('SELECT email FROM accounts WHERE id=$1', [accountId]);
   const mine = new Set([String(acc?.email ?? '').toLowerCase()].filter(Boolean));
 
@@ -379,7 +450,7 @@ export async function guardBatch(userId: number, accountId: number, limit = 200)
         accountId,
         mine,
       },
-      known,
+      withoutSelf(known, String(from?.email ?? ''), from?.name ?? null),
       { fromEmails: priorInThread },
     );
     await query(
@@ -425,11 +496,12 @@ export function describe(flags: GuardFlag[], detail: GuardDetail): string | null
     case 'thread_sender_changed':
       return `Someone new joined this conversation from ${detail.actual}${detail.expected ? `, which is not ${detail.expected}` : ''}. Check before replying.`;
     case 'lookalike_domain':
-      return `${detail.actual} looks like ${detail.expected}, which you have exchanged ${detail.seen} messages with. It is not the same domain.`;
+      return `${detail.actual} looks like ${detail.expected}, which you have exchanged ${detail.seen} messages with. It is not the same domain.`
+        + (detail.replyTo ? ` A reply would go to ${detail.replyTo}.` : '');
     case 'display_name_mismatch':
       return `You know ${detail.name} as ${detail.expected}. This message came from ${detail.actual}.`;
     case 'reply_to_offsite':
-      return `A reply to this message would go to ${detail.actual}, not to the sender's address.`;
+      return `A reply to this message would go to ${detail.replyTo}, not to the sender's address.`;
     case 'unauthenticated':
       return 'This message failed the checks its own domain publishes. It may not be from who it says.';
     case 'first_contact':

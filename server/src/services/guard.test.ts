@@ -6,13 +6,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkMessage, describe as describeFlags, editDistance, looksLike, parseAuthResults,
-  registrable, skeleton, type GuardKnowledge,
+  registrable, skeleton, withoutSelf, type GuardKnowledge,
 } from './guard.js';
 
 const knowledge = (opts: Partial<GuardKnowledge> = {}): GuardKnowledge => ({
   domains: opts.domains ?? new Map(),
   names: opts.names ?? new Map(),
   addresses: opts.addresses ?? new Set(),
+  // How many messages each address sent. Defaults to "seen once" for every
+  // known address, which is what the checks below assume when they do not say.
+  counts: opts.counts ?? new Map([...(opts.addresses ?? new Set<string>())].map((a) => [a, 1])),
 });
 
 const mailbox = knowledge({
@@ -203,4 +206,86 @@ test('flags come back worst first', () => {
   );
   const severities = r.flags.map((f) => ({ thread_sender_changed: 5, lookalike_domain: 4, display_name_mismatch: 3, reply_to_offsite: 2, unauthenticated: 1, first_contact: 0 })[f]);
   assert.deepEqual(severities, [...severities].sort((a, b) => b - a));
+});
+
+// ---------- A message must not vouch for itself, and the archive must count ----------
+//
+// These two pull in opposite directions and both matter. The guard used to
+// satisfy the first by excluding the whole batch under test from what the
+// mailbox "knows" — correct while mail trickles in, and catastrophic on an
+// import, where the batch IS the mailbox: the knowledge came back empty, every
+// message read as first contact, and the lookalike-domain check could not fire
+// because it had no relationship to compare against. `withoutSelf` subtracts
+// one message instead of the whole batch.
+
+const archive = (): GuardKnowledge => knowledge({
+  domains: new Map([
+    ['meridian-logistics.example', { count: 3, example: 'dana@meridian-logistics.example' }],
+    ['northwind-design.example', { count: 1, example: 'priya@northwind-design.example' }],
+  ]),
+  names: new Map([['dana okafor', { email: 'dana@meridian-logistics.example', count: 3 }]]),
+  addresses: new Set(['dana@meridian-logistics.example', 'priya@northwind-design.example']),
+  counts: new Map([['dana@meridian-logistics.example', 3], ['priya@northwind-design.example', 1]]),
+});
+
+const from = (email: string, name: string | null = null) => ({
+  fromEmail: email, fromName: name, replyToEmails: [], authResults: null,
+  threadId: 't', accountId: 1, mine: new Set(['alex@perchconsulting.example']),
+});
+
+test('a lookalike domain is caught when the real one is only in the same import', () => {
+  // The regression this exists for. Both domains arrive in one mbox; the
+  // impostor must still be recognised against the genuine correspondent.
+  const known = withoutSelf(archive(), 'dana@meridian-iogistics.example');
+  const { flags, detail } = checkMessage(from('dana@meridian-iogistics.example', 'Dana Okafor'), known, { fromEmails: [] });
+  assert.ok(flags.includes('lookalike_domain'), `expected a lookalike flag, got ${flags.join(',')}`);
+  assert.equal(detail.expected, 'meridian-logistics.example');
+  assert.equal(detail.actual, 'meridian-iogistics.example');
+});
+
+test('the sender of the message being checked does not count as having met them', () => {
+  // Priya has written exactly once, and that once is the message under test.
+  const known = withoutSelf(archive(), 'priya@northwind-design.example', 'Priya Raman');
+  assert.ok(!known.addresses.has('priya@northwind-design.example'));
+  assert.ok(!known.domains.has('northwind-design.example'), 'her only message should not establish her domain');
+  const { flags } = checkMessage(from('priya@northwind-design.example', 'Priya Raman'), known, { fromEmails: [] });
+  assert.ok(flags.includes('first_contact'));
+});
+
+test('a sender with a history keeps it when one of their messages is checked', () => {
+  // Dana has written three times. Checking one of them must not turn her into
+  // a stranger, or every message from a regular correspondent reads as first
+  // contact the moment it is examined.
+  const known = withoutSelf(archive(), 'dana@meridian-logistics.example', 'Dana Okafor');
+  assert.ok(known.addresses.has('dana@meridian-logistics.example'));
+  assert.equal(known.domains.get('meridian-logistics.example')?.count, 2);
+  const { flags } = checkMessage(from('dana@meridian-logistics.example', 'Dana Okafor'), known, { fromEmails: [] });
+  assert.ok(!flags.includes('first_contact'), `should know her, got ${flags.join(',')}`);
+});
+
+test('a display name on the wrong address survives the subtraction', () => {
+  const known = withoutSelf(archive(), 'dana.okafor.finance@webmail.example', 'Dana Okafor');
+  const { flags, detail } = checkMessage(from('dana.okafor.finance@webmail.example', 'Dana Okafor'), known, { fromEmails: [] });
+  assert.ok(flags.includes('display_name_mismatch'), flags.join(','));
+  assert.equal(detail.expected, 'dana@meridian-logistics.example');
+});
+
+test('a lookalike domain with an off-site reply-to names both, and names them right', () => {
+  // The ordinary shape of an invoice redirection: a domain one character out,
+  // and a Reply-To pointing somewhere else again. The two flags share one
+  // detail object, and the Reply-To used to overwrite the impostor domain — so
+  // the banner named the reply-to address as the thing that "looks like" the
+  // real domain, which is the wrong string on the one screen where the right
+  // string is the whole point.
+  const known = withoutSelf(archive(), 'dana@meridian-iogistics.example');
+  const { flags, detail } = checkMessage(
+    { ...from('dana@meridian-iogistics.example', 'Dana Okafor'), replyToEmails: ['accounts@secure-remit-desk.example'] },
+    known, { fromEmails: [] },
+  );
+  assert.ok(flags.includes('lookalike_domain') && flags.includes('reply_to_offsite'), flags.join(','));
+  assert.equal(detail.actual, 'meridian-iogistics.example', 'the impostor domain must survive');
+  assert.equal(detail.replyTo, 'accounts@secure-remit-desk.example');
+  const line = describeFlags(flags, detail)!;
+  assert.match(line, /^meridian-iogistics\.example looks like meridian-logistics\.example/);
+  assert.match(line, /A reply would go to accounts@secure-remit-desk\.example\./);
 });

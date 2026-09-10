@@ -157,10 +157,37 @@ test('the flat format carries both ways of addressing a result', () => {
   // Both go out so each server reads the one it knows.
   const out = toFlatMessages([sys(), user('q'), asks('c1'), answers('c1', 'text')]) as any[];
   assert.equal(out[2].tool_calls[0].id, 'c1');
-  // Arguments cross this wire as a JSON string, not an object.
-  assert.equal(typeof out[2].tool_calls[0].function.arguments, 'string');
   assert.equal(out[3].tool_call_id, 'c1');
   assert.equal(out[3].tool_name, 'search_mail');
+});
+
+test('each provider gets tool arguments in the shape it accepts', () => {
+  // This is not cosmetic and it is not symmetrical. OpenAI takes a JSON
+  // string; Ollama's native /api/chat takes a map and refuses a string with
+  // "Value looks like object, but can't find closing '}' symbol". Sending the
+  // string to Ollama broke every multi-step turn against the one provider Tern
+  // bundles — and only on the second trip, because the first carries no tool
+  // call to replay, so nothing that stubbed one round trip could see it.
+  const asked: ChatMessage[] = [
+    sys(), user('q'),
+    { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'search_mail', arguments: { query: 'the price', limit: 5 } }] },
+    answers('c1', 'text'),
+  ];
+  const openai = toFlatMessages(asked) as any[];
+  assert.equal(typeof openai[2].tool_calls[0].function.arguments, 'string');
+  assert.deepEqual(JSON.parse(openai[2].tool_calls[0].function.arguments), { query: 'the price', limit: 5 });
+
+  const ollama = toFlatMessages(asked, 'object') as any[];
+  assert.equal(typeof ollama[2].tool_calls[0].function.arguments, 'object');
+  assert.deepEqual(ollama[2].tool_calls[0].function.arguments, { query: 'the price', limit: 5 });
+});
+
+test('a call with no arguments still crosses in the right shape', () => {
+  // my_commitments takes none, so this is the everyday case rather than a
+  // corner: an object must stay an object and a string must stay parseable.
+  const none: ChatMessage[] = [sys(), user('q'), asks('c1', 'my_commitments'), answers('c1', 'r', 'my_commitments')];
+  assert.deepEqual((toFlatMessages(none, 'object') as any[])[2].tool_calls[0].function.arguments, {});
+  assert.equal((toFlatMessages(none) as any[])[2].tool_calls[0].function.arguments, '{}');
 });
 
 test('Anthropic gets the system prompt out of the list and results as user turns', () => {

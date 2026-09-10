@@ -283,7 +283,7 @@ const searchMail: AssistantTool = {
     // thing that can be widened by a bug somewhere else, and the cost of the
     // extra clause is an index lookup already being done.
     const rows = await query<any>(
-      `SELECT id, account_id, thread_id, subject, from_addr, received_at, body_text, body_html, preview
+      `SELECT id, account_id, thread_id, subject, from_addr, received_at, body_text, body_html, preview, has_attachment
          FROM emails WHERE id = ANY($1) AND account_id = ANY($2)`,
       [hits.map((h) => h.emailId), ctx.accountIds],
     );
@@ -296,11 +296,22 @@ const searchMail: AssistantTool = {
       const body = (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/^\s*>.*$/gm, '').trim().slice(0, 900);
       references.push({ accountId: m.account_id, threadId: m.thread_id, subject: m.subject || '(no subject)', from: senderOf(m), date: dayOf(m.received_at, ctx.tz) });
       parts.push(quoted('MESSAGE', [
+        // `email_id` is here because `read_attachment` needs one and this is
+        // the tool that finds the message. Without it a model that had just
+        // located the invoice had to guess an id, fail, and go round again
+        // through the operator search to get one — which is what it did.
+        `email_id: ${m.id}`,
         `subject: ${m.subject || '(no subject)'}`,
         `from: ${senderOf(m)}`,
         `date: ${dayOf(m.received_at, ctx.tz)}`,
+        `has_attachment: ${m.has_attachment ? 'yes' : 'no'}`,
         `thread_id: ${m.thread_id}`,
         `account_id: ${m.account_id}`,
+        // The exact token propose_triage takes, ready-made. Asking a model to
+        // join two fields with a colon is a step it can get wrong, and when it
+        // does the failure is silent — it gives up and prints the ids at the
+        // person instead of calling the tool.
+        `ref: ${m.account_id}:${m.thread_id}`,
         '',
         body,
       ].join('\n')));
@@ -328,7 +339,7 @@ const readThread: AssistantTool = {
     const accountId = Number(args.account_id);
     const scoped = Number.isInteger(accountId) && ctx.accountIds.includes(accountId) ? [accountId] : ctx.accountIds;
     const rows = await query<any>(
-      `SELECT id, account_id, thread_id, subject, from_addr, to_addr, received_at, body_text, body_html, preview
+      `SELECT id, account_id, thread_id, subject, from_addr, to_addr, received_at, body_text, body_html, preview, has_attachment
          FROM emails WHERE thread_id = $1 AND account_id = ANY($2) ORDER BY received_at ASC LIMIT 40`,
       [threadId, scoped],
     );
@@ -340,7 +351,10 @@ const readThread: AssistantTool = {
     // in between are where the repetition lives.
     const budget = 12_000;
     const rendered = opened.map((m) => [
-      `--- ${dayOf(m.received_at, ctx.tz)} — ${senderOf(m)}`,
+      // The id goes on each message for the same reason it goes on a search
+      // hit: "read the attachment on the one from Dana" needs an id, and this
+      // is where the person's "this thread" turns into particular messages.
+      `--- ${dayOf(m.received_at, ctx.tz)} — ${senderOf(m)} (email_id: ${m.id}${m.has_attachment ? ', has an attachment' : ''})`,
       (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/^\s*>.*$/gm, '').trim().slice(0, 3000),
     ].join('\n'));
     let body = rendered.join('\n\n');
@@ -453,11 +467,11 @@ const searchMailExact: AssistantTool = {
   needs: ['ai.assistant'],
   spec: {
     name: 'search_mail_exact',
-    description: 'Search the mailbox with the same operators the search box uses: from: to: subject: label: has:attachment is:unread is:starred newer_than:7d older_than:30d larger:5m, plain words, and -word to exclude. Use this when the question has a definite answer — "every unread message from Dana", "anything with an attachment this week", "how many did I get from that list". Use search_mail instead when the person is describing subject matter rather than naming criteria.',
+    description: 'Search the mailbox with the same operators the search box uses: from: to: subject: label: has:attachment is:unread is:starred newer_than:7d older_than:30d larger:5m, plain words, and -word to exclude. Use this when the question has a definite answer — "every unread message from Dana", "anything with an attachment this week", "how many did I get from that list". IMPORTANT: from: and to: match a COMPLETE email address and nothing else — the index holds no names and no partial addresses, so from:dana and from:"Logistics Weekly" both find nothing while from:dana@meridian.example works. If you do not already know somebody\'s exact address, find a message from them with search_mail or with plain words first and read the address off it. Use search_mail instead when the person is describing subject matter rather than naming criteria.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The query, in operator form. For example: from:dana is:unread has:attachment newer_than:14d' },
+        query: { type: 'string', description: 'The query, in operator form. For example: from:dana@example.com is:unread has:attachment newer_than:14d. Addresses in from: and to: must be complete.' },
         limit: { type: 'integer', description: 'How many messages to return. 1 to 25, default 10.' },
       },
       required: ['query'],
@@ -483,7 +497,20 @@ const searchMailExact: AssistantTool = {
     // Counted separately and without the limit, because "how many" is one of
     // the questions this tool exists for and a truncated list cannot answer it.
     const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM emails e WHERE ${where}`, params);
-    if (!rows.length) return { text: `Nothing matches ${q}. That is a definite answer — the query ran and found nothing — so say so plainly rather than trying a vaguer search unless the person asks.` };
+    if (!rows.length) {
+      // A `from:`/`to:` that found nothing is usually not "no such mail", it is
+      // a partial address or a display name, which this index cannot match by
+      // construction. Saying so turns a dead end into the next step — otherwise
+      // a model tries a second spelling, fails the same way, and tells the
+      // person there is nothing there when there are seven of them.
+      const addressish = (parsed.from ?? '') + (parsed.to ?? '');
+      const partial = addressish && !addressish.includes('@');
+      return {
+        text: partial
+          ? `Nothing matches ${q}. "${addressish}" is not a complete email address, and from:/to: only match a whole address — no names, no partial matches. Find one message from them another way (search_mail, or their name as a plain word with no operator), read the exact address off it, and search again with that.`
+          : `Nothing matches ${q}. That is a definite answer — the query ran and found nothing — so say so plainly rather than trying a vaguer search unless the person asks.`,
+      };
+    }
 
     const opened = await openEmails(ctx.userId, 'ai.assistant', rows) as any[];
     const references: Reference[] = [];
@@ -500,6 +527,7 @@ const searchMailExact: AssistantTool = {
         `unread: ${m.is_unread ? 'yes' : 'no'}${m.has_attachment ? ', has an attachment' : ''}`,
         `thread_id: ${m.thread_id}`,
         `account_id: ${m.account_id}`,
+        `ref: ${m.account_id}:${m.thread_id}`,
         '',
         extract,
       ].join('\n')));
@@ -904,14 +932,14 @@ const proposeTriage: AssistantTool = {
   needs: ['ai.assistant'],
   spec: {
     name: 'propose_triage',
-    description: 'Offer to clear a set of conversations in one go — archive them, put a label on them, snooze them to a date, or mute them. Pass the thread ids you found with search_mail or search_mail_exact. The person sees every conversation in the set and presses a button; nothing happens until they do. This cannot delete or junk anything.',
+    description: 'Offer to clear a set of conversations in one go — archive them, put a label on them, snooze them to a date, or mute them. USE THIS whenever the person asks you to tidy up, clear out, archive, file away, get rid of or deal with a group of messages: find them first with search_mail or search_mail_exact, then call this with what you found. Never list conversations or their ids in your reply instead of calling this — the card shows them the list. The person sees every conversation and presses a button; nothing happens until they do. This cannot delete or junk anything.',
     parameters: {
       type: 'object',
       properties: {
         action: { type: 'string', description: 'One of: archive, label, snooze, mute.' },
         threads: {
           type: 'array',
-          description: 'The conversations, each as "account_id:thread_id" exactly as you were given them.',
+          description: 'The conversations to act on. Pass the "ref" value from each search result exactly as it was given to you; a bare thread_id also works.',
           items: { type: 'string' },
         },
         label: { type: 'string', description: 'For action "label", the name of the label to add. It must already exist.' },
@@ -932,16 +960,32 @@ const proposeTriage: AssistantTool = {
     }
 
     const raw = Array.isArray(args.threads) ? args.threads : typeof args.threads === 'string' ? [args.threads] : [];
+    // Two shapes, because a model that has to build one by joining two fields
+    // will sometimes not bother and answer in prose instead. `ref` is handed to
+    // it ready-made; a bare thread id is what it reaches for when it has
+    // forgotten, and resolving that against the person's own accounts costs an
+    // index lookup and removes the whole class of mistake.
+    const bare: string[] = [];
     const wanted: { accountId: number; threadId: string }[] = [];
     for (const item of raw.slice(0, 100)) {
       const s = String(item ?? '').trim();
+      if (!s) continue;
       const at = s.indexOf(':');
-      if (at < 1) continue;
-      const accountId = Number(s.slice(0, at));
-      const threadId = s.slice(at + 1);
-      if (Number.isInteger(accountId) && ctx.accountIds.includes(accountId) && threadId) wanted.push({ accountId, threadId });
+      const accountId = at > 0 ? Number(s.slice(0, at)) : NaN;
+      if (Number.isInteger(accountId) && ctx.accountIds.includes(accountId) && s.slice(at + 1)) {
+        wanted.push({ accountId, threadId: s.slice(at + 1) });
+      } else {
+        bare.push(s);
+      }
     }
-    if (!wanted.length) throw new Error('No usable conversations. Each entry in "threads" must be "account_id:thread_id" using ids you were given by a search.');
+    if (bare.length) {
+      const found = await query<{ account_id: number; thread_id: string }>(
+        'SELECT DISTINCT account_id, thread_id FROM emails WHERE account_id = ANY($1) AND thread_id = ANY($2)',
+        [ctx.accountIds, bare],
+      );
+      for (const r of found) wanted.push({ accountId: r.account_id, threadId: r.thread_id });
+    }
+    if (!wanted.length) throw new Error('None of those conversations resolved. Pass the "ref" value from a search result, or a thread_id you were given by one.');
 
     // Resolved against the mailbox so the card shows what the person would see
     // in their list, and so a thread id the model invented simply does not

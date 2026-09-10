@@ -1151,15 +1151,32 @@ export function openAiTools(tools: ToolSpec[]): unknown[] {
  * role. They differ in how a call is addressed — OpenAI matches a result to a
  * call by `tool_call_id`, Ollama by the tool's name — so both fields go out
  * and each server reads the one it knows.
+ *
+ * They also differ on one thing that is NOT cosmetic, and getting it wrong
+ * breaks the assistant completely rather than subtly. A tool call's arguments
+ * cross OpenAI's wire as a JSON **string** and Ollama's native `/api/chat` as
+ * an **object**: Ollama's `ToolCallFunctionArguments` is a map, so a string
+ * there is refused outright with
+ *
+ *     HTTP 400 Value looks like object, but can't find closing '}' symbol
+ *
+ * and the failure only appears on the SECOND trip to the model — the first
+ * carries no tool call to replay. Every question that needs a tool therefore
+ * died the moment the tool came back, against the one provider Tern bundles.
+ * So the shape is a parameter and both call sites state which they want.
  */
-export function toFlatMessages(messages: ChatMessage[]): unknown[] {
+export function toFlatMessages(messages: ChatMessage[], argumentsAs: 'string' | 'object' = 'string'): unknown[] {
   return messages.map((m) => {
     if (m.role === 'tool') return { role: 'tool', content: m.content, tool_call_id: m.toolCallId, tool_name: m.name };
     if (m.role === 'assistant' && m.toolCalls?.length) {
       return {
         role: 'assistant',
         content: m.content,
-        tool_calls: m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments) } })),
+        tool_calls: m.toolCalls.map((c) => ({
+          id: c.id,
+          type: 'function',
+          function: { name: c.name, arguments: argumentsAs === 'object' ? (c.arguments ?? {}) : JSON.stringify(c.arguments ?? {}) },
+        })),
       };
     }
     return { role: m.role, content: m.content };
@@ -1258,7 +1275,8 @@ async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): A
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
       model,
-      messages: toFlatMessages(opts.messages),
+      // Objects, not strings: Ollama's native endpoint takes a map here.
+      messages: toFlatMessages(opts.messages, 'object'),
       ...(opts.tools.length ? { tools: openAiTools(opts.tools) } : {}),
       stream: true,
       think: think ? s.thinkEffort : false,
