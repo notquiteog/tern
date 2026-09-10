@@ -244,6 +244,108 @@ function senderOf(m: any): string {
   return a.name ? `${a.name} <${a.email}>` : String(a.email ?? 'unknown sender');
 }
 
+/**
+ * A date the person meant, worked out here rather than by the model.
+ *
+ * Every tool that takes a date inherits whatever arithmetic the model did, and
+ * a well-formed wrong date is indistinguishable from a well-formed right one —
+ * so a deadline silently lands a week out and nothing anywhere says so. Asked
+ * for "Friday" on a Thursday, qwen3.5:9b produced today's date; given a table
+ * of the next fortnight to read it off instead, it produced the *second*
+ * Friday and then described it in prose as a third date.
+ *
+ * Weekday names, "tomorrow" and "in three weeks" are trivial to resolve
+ * exactly and impossible to get wrong here, so the tools accept the words and
+ * do it themselves. An ISO date still works, for a model that has already done
+ * the sum or a person who named a real date.
+ *
+ * Everything is resolved in the person's own zone: at 23:00 in Sydney, "today"
+ * in UTC is yesterday, and a deadline a day early is as wrong as one a week
+ * late.
+ */
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+export function resolveDate(raw: unknown, now = new Date(), tz?: string): Date | null {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (!s) return null;
+
+  // A full instant, or a plain ISO date. Taken as given.
+  if (/^\d{4}-\d{2}-\d{2}t/i.test(s)) {
+    const d = new Date(raw as string);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T12:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // Where "today" starts for this person, which is not where it starts in UTC.
+  const local = (() => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: tz }).format(now);
+      return new Date(`${parts}T12:00:00`);
+    } catch { return new Date(new Date(now).setHours(12, 0, 0, 0)); }
+  })();
+  const plus = (days: number) => new Date(local.getTime() + days * 86_400_000);
+
+  if (/^(today|tonight)$/.test(s)) return local;
+  if (s === 'tomorrow') return plus(1);
+  if (s === 'yesterday') return plus(-1);
+
+  const inN = s.match(/^in\s+(\d+)\s+(day|week|month)s?$/);
+  if (inN) {
+    const n = Number(inN[1]);
+    return plus(inN[2] === 'day' ? n : inN[2] === 'week' ? n * 7 : n * 30);
+  }
+
+  // A weekday, with or without "next"/"this"/"on". Bare, it means the next one
+  // that is not today — "see you Friday" on a Friday means the one coming, and
+  // a deadline of "today" that the person called Friday would be a surprise.
+  // "next <day>" means the one after that.
+  const wd = s.match(/^(?:on\s+)?(this|next|coming)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/);
+  if (wd) {
+    const target = WEEKDAYS.indexOf(wd[2]!);
+    const from = local.getDay();
+    let ahead = (target - from + 7) % 7;
+    if (ahead === 0) ahead = 7;
+    if (wd[1] === 'next') ahead += 7;
+    return plus(ahead);
+  }
+
+  // Anything else that Date can read, as a last resort.
+  const d = new Date(raw as string);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * A resolved day plus a clock time, made into one instant.
+ *
+ * The split exists because the two halves have very different failure rates.
+ * "15:00" is something a model reproduces from what the person said; "which
+ * Friday" is arithmetic it gets wrong. So the day comes from `resolveDate` and
+ * only the time is read off whatever the model wrote — and if that carries a
+ * full instant with a zone, it is taken whole.
+ */
+function combine(day: Date | null, timeish: string): Date | null {
+  if (!day) return null;
+  const raw = String(timeish ?? '').trim();
+  // A complete instant with a zone: the model has done the whole job.
+  if (/^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}/i.test(raw)) {
+    const whole = new Date(raw);
+    if (!Number.isNaN(whole.getTime())) return whole;
+  }
+  const hm = raw.match(/(\d{1,2}):(\d{2})/) ?? raw.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+  const out = new Date(day);
+  if (!hm) { out.setHours(9, 0, 0, 0); return out; }
+  let hour = Number(hm[1]);
+  const min = /^\d{2}$/.test(hm[2] ?? '') ? Number(hm[2]) : 0;
+  if (/pm/i.test(raw) && hour < 12) hour += 12;
+  if (/am/i.test(raw) && hour === 12) hour = 0;
+  if (hour > 23 || min > 59) return null;
+  out.setHours(hour, min, 0, 0);
+  return out;
+}
+
 function dayOf(v: unknown, tz?: string): string {
   const d = new Date(v as string);
   if (Number.isNaN(d.getTime())) return '';
@@ -757,8 +859,9 @@ const proposeEvent: AssistantTool = {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'What the entry is called. Short: "Call with Dana", not a sentence.' },
-        starts_at: { type: 'string', description: 'When it starts, ISO 8601 with a zone offset.' },
-        ends_at: { type: 'string', description: 'When it ends. Omit for an hour after the start.' },
+        day: { type: 'string', description: 'Which day, in the person\'s own words — "Friday", "tomorrow", "next Tuesday" — or as YYYY-MM-DD. Resolved here exactly, so prefer this over working a date out yourself.' },
+        starts_at: { type: 'string', description: 'What time it starts, as HH:MM on a 24-hour clock, or a full ISO 8601 instant.' },
+        ends_at: { type: 'string', description: 'What time it ends, as HH:MM. Omit for an hour after the start.' },
         all_day: { type: 'boolean', description: 'True for a whole-day entry, in which case the times are dates.' },
         location: { type: 'string', description: 'Where, if anywhere. A room, an address, or a meeting link.' },
         description: { type: 'string', description: 'Any note that belongs on the entry.' },
@@ -770,13 +873,16 @@ const proposeEvent: AssistantTool = {
   async run(ctx, args) {
     const summary = need(args, 'summary', 300);
     const startRaw = need(args, 'starts_at', 60);
-    const start = new Date(startRaw);
-    if (Number.isNaN(start.getTime())) throw new Error(`"${startRaw}" is not a date I can read. Use ISO 8601, like 2026-09-14T15:00:00+01:00.`);
+    // A day and a time, taken apart, because a model that can be trusted with
+    // "15:00" cannot be trusted with which Friday. `day` is resolved exactly
+    // from the person's words; the clock time is read off `starts_at`.
+    const dayArg = str(args, 'day', 40);
+    const start = combine(resolveDate(dayArg || startRaw, new Date(), ctx.tz), startRaw);
+    if (!start) throw new Error(`"${startRaw}" is not a time I can read. Give the day as a word like "Friday" or a date like 2026-09-14, and the time as HH:MM.`);
     const allDay = args.all_day === true || args.all_day === 'true';
     const endRaw = str(args, 'ends_at', 60);
-    const end = endRaw && !Number.isNaN(Date.parse(endRaw))
-      ? new Date(endRaw)
-      : new Date(start.getTime() + (allDay ? 86_400_000 : 3_600_000));
+    const end = combine(resolveDate(dayArg || endRaw, new Date(), ctx.tz), endRaw)
+      ?? new Date(start.getTime() + (allDay ? 86_400_000 : 3_600_000));
     if (end.getTime() < start.getTime()) throw new Error('That entry ends before it starts.');
 
     // What is already in that slot, worked out here rather than left to the
@@ -831,7 +937,7 @@ const recordCommitment: AssistantTool = {
         kind: { type: 'string', description: '"owed" if they owe it, "awaiting" if somebody owes them.' },
         text: { type: 'string', description: 'What the thing is, in one short line, as they would write it.' },
         counterparty: { type: 'string', description: 'The other person, by name or address.' },
-        due: { type: 'string', description: 'When it is due, as YYYY-MM-DD. Omit if there is no date.' },
+        due: { type: 'string', description: 'When it is due. Prefer the person\'s own words — "Friday", "tomorrow", "next Tuesday", "in two weeks" — which are resolved here exactly; an ISO date like 2026-09-14 also works. Omit if there is no date.' },
         thread_id: { type: 'string', description: 'The conversation it came from, if there is one.' },
         account_id: { type: 'integer', description: 'Which account that thread is in.' },
       },
@@ -843,10 +949,10 @@ const recordCommitment: AssistantTool = {
     const commitmentKind = kindRaw.startsWith('await') || kindRaw.startsWith('wait') ? 'awaiting' : 'owed';
     const text = need(args, 'text', 500);
     const dueRaw = str(args, 'due', 40);
-    // A date that will not parse is dropped rather than failing the tool: an
+    // A date that will not resolve is dropped rather than failing the tool: an
     // item with no date is a perfectly good item, and refusing the whole thing
     // over "next Tuesday-ish" would lose the note the person actually asked for.
-    const dueAt = dueRaw && !Number.isNaN(Date.parse(dueRaw)) ? new Date(dueRaw).toISOString() : null;
+    const dueAt = resolveDate(dueRaw, new Date(), ctx.tz)?.toISOString() ?? null;
     const threadId = str(args, 'thread_id', 200) || null;
     const accountId = Number.isInteger(Number(args.account_id)) && ctx.accountIds.includes(Number(args.account_id))
       ? Number(args.account_id)
@@ -943,7 +1049,7 @@ const proposeTriage: AssistantTool = {
           items: { type: 'string' },
         },
         label: { type: 'string', description: 'For action "label", the name of the label to add. It must already exist.' },
-        until: { type: 'string', description: 'For action "snooze", when they should come back, as a date or ISO 8601 time.' },
+        until: { type: 'string', description: 'For action "snooze", when they should come back — "Monday", "next week", "in three days", or a date like 2026-09-20.' },
         reason: { type: 'string', description: 'Why these ones, in one short line. It is the heading on the card the person reads.' },
       },
       required: ['action', 'threads'],
@@ -1021,8 +1127,8 @@ const proposeTriage: AssistantTool = {
     let until: string | null = null;
     if (action === 'snooze') {
       const untilRaw = need(args, 'until', 60);
-      const when = new Date(untilRaw);
-      if (Number.isNaN(when.getTime())) throw new Error(`"${untilRaw}" is not a date I can read. Use a date like 2026-09-20 or a full ISO 8601 time.`);
+      const when = resolveDate(untilRaw, new Date(), ctx.tz);
+      if (!when) throw new Error(`"${untilRaw}" is not a date I can read. Use a word like "Monday" or "in two weeks", or a date like 2026-09-20.`);
       if (when.getTime() <= Date.now()) throw new Error('A snooze has to be in the future.');
       until = when.toISOString();
     }

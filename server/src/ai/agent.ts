@@ -202,6 +202,40 @@ function describeDraft(view: ViewContext): string {
   ].join('\n');
 }
 
+
+/**
+ * The next fourteen days as a table the model can read a date off.
+ *
+ * Fourteen because "a week on Tuesday" is a thing people say, and because the
+ * whole table costs about eighty tokens — far less than one wrong deadline.
+ */
+function upcomingDays(now: Date, tz?: string): string {
+  const fmt = (d: Date, opts: Intl.DateTimeFormatOptions) => {
+    try { return d.toLocaleDateString('en-GB', { ...opts, timeZone: tz }); }
+    catch { return d.toLocaleDateString('en-GB', opts); }
+  };
+  // The ISO date has to be the one in the person's own zone, not UTC's: at
+  // 23:00 in Sydney those are different days, and the wrong one here would be
+  // the wrong deadline everywhere downstream.
+  const iso = (d: Date) => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: tz }).format(d);
+      return parts;
+    } catch { return d.toISOString().slice(0, 10); }
+  };
+  const rows: string[] = [];
+  for (let i = 0; i <= 14; i++) {
+    const d = new Date(now.getTime() + i * 86_400_000);
+    const label = i === 0 ? ' (today)' : i === 1 ? ' (tomorrow)' : '';
+    rows.push(`  ${iso(d)} = ${fmt(d, { weekday: 'long', day: 'numeric', month: 'long' })}${label}`);
+  }
+  return [
+    'Dates, so you never have to count days. Use these exactly; do not calculate a date yourself:',
+    ...rows,
+    'A weekday the person names without saying which week means the next one of those in this list. Anything further out than this list, say you are not sure which date they mean and ask.',
+  ].join('\n');
+}
+
 export async function buildSystemPrompt(userId: number, view: ViewContext, tz?: string): Promise<string> {
   const accounts = await listAccounts(userId);
   const accountIds = accounts.map((a) => a.id);
@@ -224,7 +258,18 @@ export async function buildSystemPrompt(userId: number, view: ViewContext, tz?: 
     '',
     who,
     accountLine,
-    `Today is ${today}${tz ? ` and they are in ${tz}` : ''}. Work out "tomorrow", "next week" and "Friday" from that date and never from anything else.`,
+    `Today is ${today}${tz ? ` and they are in ${tz}` : ''}.`,
+    // The next fortnight, spelled out.
+    //
+    // "Work it out from today's date" is a reasonable instruction and a small
+    // model gets it wrong often enough to matter: asked for Friday on a
+    // Thursday, qwen3.5:9b produced today's date, and every tool that takes a
+    // date — a commitment's deadline, a meeting, a snooze — inherits the
+    // mistake silently, because a well-formed wrong date looks exactly like a
+    // well-formed right one. Date arithmetic is the thing these models are
+    // worst at and lookup is the thing they are best at, so the arithmetic is
+    // done here, once, for nothing.
+    upcomingDays(now, tz),
     await describeThread(userId, accountIds, view),
     describeDraft(view),
     describeFocus(view),

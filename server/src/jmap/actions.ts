@@ -30,7 +30,7 @@ export async function ensureArchive(acc: AccountRow): Promise<MailboxRow> {
 
 export async function createMailbox(acc: AccountRow, name: string, parentJmapId: string | null, role: string | null = null): Promise<MailboxRow> {
   const client = clientFor(acc);
-  const accountId = client.session!.accountId;
+  const accountId = await addressed(client);
   const create: Record<string, unknown> = { name, parentId: parentJmapId };
   if (role) create.role = role;
   let res = await client.one('Mailbox/set', { accountId, create: { m: create } });
@@ -50,27 +50,44 @@ export async function createMailbox(acc: AccountRow, name: string, parentJmapId:
 
 export async function renameMailbox(acc: AccountRow, jmapId: string, name: string): Promise<void> {
   const client = clientFor(acc);
-  const res = await client.one('Mailbox/set', { accountId: client.session!.accountId, update: { [jmapId]: { name } } });
+  const res = await client.one('Mailbox/set', { accountId: await addressed(client), update: { [jmapId]: { name } } });
   if (res.notUpdated?.[jmapId]) throw new Error(`Rename failed: ${res.notUpdated[jmapId].type}`);
   await query('UPDATE mailboxes SET name=$3 WHERE account_id=$1 AND jmap_id=$2', [acc.id, jmapId, name]);
 }
 
 export async function destroyMailbox(acc: AccountRow, jmapId: string): Promise<void> {
   const client = clientFor(acc);
-  const res = await client.one('Mailbox/set', { accountId: client.session!.accountId, destroy: [jmapId], onDestroyRemoveEmails: false });
+  const res = await client.one('Mailbox/set', { accountId: await addressed(client), destroy: [jmapId], onDestroyRemoveEmails: false });
   if (res.notDestroyed?.[jmapId]) throw new Error(`Delete failed: ${res.notDestroyed[jmapId].type}${res.notDestroyed[jmapId].description ? ' - ' + res.notDestroyed[jmapId].description : ''}`);
   await query('DELETE FROM mailboxes WHERE account_id=$1 AND jmap_id=$2', [acc.id, jmapId]);
+}
+
+/**
+ * The account id to address a JMAP call to, fetching the session if needed.
+ *
+ * `client.session!.accountId` reads right and behaves wrong. `one()` fetches
+ * the session itself when it has none — but the caller evaluates this as an
+ * ARGUMENT, before `one()` is ever entered, so an account whose session fields
+ * are not cached in the row throws `Cannot read properties of null (reading
+ * 'accountId')` before anything can go and get them. That is what somebody sees
+ * on an archive click when their account has been added but never completed a
+ * session fetch, or when a provider moved its URLs: a null dereference, in a
+ * toast, where "could not reach the mail server" belongs.
+ */
+async function addressed(client: ReturnType<typeof clientFor>): Promise<string> {
+  return (await client.ensureSession()).accountId;
 }
 
 // Apply one patch to many emails in a single Email/set.
 async function patchAll(acc: AccountRow, jmapIds: string[], patchFor: (id: string) => Record<string, unknown>): Promise<void> {
   if (!jmapIds.length) return;
   const client = clientFor(acc);
+  const accountId = await addressed(client);
   const update: Record<string, Record<string, unknown>> = {};
   for (const id of jmapIds) update[id] = patchFor(id);
   for (let i = 0; i < jmapIds.length; i += 200) {
     const slice = Object.fromEntries(jmapIds.slice(i, i + 200).map((id) => [id, update[id]]));
-    const res = await client.one('Email/set', { accountId: client.session!.accountId, update: slice });
+    const res = await client.one('Email/set', { accountId, update: slice });
     const failed = res.notUpdated ? Object.keys(res.notUpdated) : [];
     if (failed.length === jmapIds.length) {
       const first = res.notUpdated[failed[0]];
@@ -135,7 +152,7 @@ export async function destroyEmails(acc: AccountRow, jmapIds: string[]): Promise
   const client = clientFor(acc);
   await query('DELETE FROM emails WHERE account_id=$1 AND jmap_id = ANY($2)', [acc.id, jmapIds]);
   touchAccount(acc.id);
-  await client.one('Email/set', { accountId: client.session!.accountId, destroy: jmapIds });
+  await client.one('Email/set', { accountId: await addressed(client), destroy: jmapIds });
 }
 
 export async function archive(acc: AccountRow, jmapIds: string[]): Promise<void> {
