@@ -1263,4 +1263,98 @@ CREATE INDEX IF NOT EXISTS calendar_instances_due_idx
   WHERE notified_at IS NULL AND busy;
 `,
   },
+  {
+    // Vectors move out of Postgres and into Qdrant.
+    //
+    // `email_vectors` stays, minus the numbers: it becomes a MANIFEST saying
+    // which messages are indexed and under which model. That is what
+    // `indexPending` counts and what `invalidateVectorsFrom` marks, both pure
+    // bookkeeping that wants to be a SQL statement rather than a conversation
+    // with another service — and it keeps the cascade, so deleting a message
+    // still drops its manifest row without Qdrant taking part in the
+    // transaction.
+    //
+    // The `vec` and `norm` columns are dropped rather than migrated. Vectors
+    // are derived data: there is no way to move them that is cheaper or safer
+    // than making them again, and re-embedding is a path the install already
+    // has to be good at. Everything is therefore marked unindexed, which the
+    // ordinary background pass then rebuilds into Qdrant.
+    //
+    // That means meaning search is thin until the pass finishes — overnight on
+    // a CPU-only box with a large mailbox. `indexPending` stays accurate
+    // throughout, so the settings page can say how much is left, and ordinary
+    // text search is unaffected the whole time.
+    id: '20260909_1400_vector_store_qdrant',
+    up: `
+ALTER TABLE email_vectors DROP COLUMN IF EXISTS vec;
+ALTER TABLE email_vectors DROP COLUMN IF EXISTS norm;
+-- Every message goes back in the queue: the vectors that described them are
+-- gone from here and not yet in Qdrant. Deliberately not conditional on
+-- anything -- an install that had never embedded has nothing to re-do, and one
+-- that had needs all of it.
+UPDATE emails SET embedded = false WHERE embedded;
+`,
+  },
+  {
+    // The assistant's conversations — the first thing in Tern that remembers
+    // what was said to a model.
+    //
+    // ── Why this table exists at all ────────────────────────────────────────
+    //
+    // Every other AI feature here is single-turn by construction: a prompt is
+    // built, an answer comes back, and `ai/session.ts` drops the lot. There is
+    // nothing to store because there is nothing that outlives the request. A
+    // conversation is the deliberate exception — "make that shorter" is not a
+    // sentence that means anything without the turn before it — so the
+    // transcript has to be somewhere, and somewhere is here.
+    //
+    // ── Sealed, like the mail it is about ───────────────────────────────────
+    //
+    // `content`, `tool_calls`, `proposal` and `refs` are ciphertext under the
+    // owner's data key, because a conversation about a mailbox quotes the
+    // mailbox: a tool result carries real paragraphs of somebody's mail, and a
+    // draft carries a message that has not been sent yet. Storing those in
+    // clear beside an `emails` table that is sealed would put the plaintext of
+    // a message one join away from the encrypted copy of itself.
+    //
+    // `role`, `tool_name` and `tool_call_id` are NOT sealed, and that is a
+    // decision rather than an oversight. They carry no content — a role is one
+    // of three words, a tool name is one of eight known strings, an id is
+    // random — and leaving them readable is what lets the transcript be
+    // reassembled in the right order and checked for shape without opening
+    // every row first.
+    id: '20260909_1500_assistant_conversations',
+    up: `
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- Sealed. Written from the first thing the person said, not by the model:
+  -- a title is worth one row's worth of storage and not a generation.
+  title TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- The list is always "mine, most recent first", which is the whole query.
+CREATE INDEX IF NOT EXISTS ai_conversations_user_idx ON ai_conversations(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id BIGSERIAL PRIMARY KEY,
+  conversation_id BIGINT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+  -- Denormalised from the conversation on purpose: every read is scoped by
+  -- user_id in SQL, and a join is one more place for that scope to be
+  -- forgotten in a query written in a hurry a year from now.
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user','assistant','tool')),
+  content TEXT,
+  tool_calls TEXT,
+  tool_call_id TEXT,
+  tool_name TEXT,
+  proposal TEXT,
+  refs TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_messages_conversation_idx ON ai_messages(conversation_id, id);
+CREATE INDEX IF NOT EXISTS ai_messages_user_idx ON ai_messages(user_id);
+`,
+  },
 ];

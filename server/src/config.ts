@@ -103,6 +103,24 @@ export const config = {
   // are excluded by name, and nothing would have queued the rebuild.
   aiEmbedModel: env('AI_EMBED_MODEL', 'qwen3-embedding:4b'),
   aiEnabled: bool('AI_ENABLED', true),
+  // ---------- The vector index ----------
+  //
+  // Qdrant, and not optional: compose starts it on every deployment, dev and
+  // production alike. Vectors used to live in Postgres and were scanned in
+  // full on every search — measured at 94 ms over 50,000 messages and 383 ms
+  // over 200,000, of which 82% was shipping rows into Node rather than the
+  // arithmetic. An index does not make the maths faster; it stops the rows
+  // being sent at all.
+  //
+  // The default address is the compose service name, so an ordinary install
+  // needs none of these set. They exist for the operator whose index is
+  // somewhere else.
+  qdrantUrl: env('QDRANT_URL', 'http://qdrant:6333').replace(/\/+$/, ''),
+  // Empty is allowed and means an index with no authentication, which is
+  // correct on the compose network and wrong anywhere else. install.sh always
+  // generates one; the container refuses to start without it.
+  qdrantApiKey: env('QDRANT_API_KEY', ''),
+  qdrantTlsInsecure: bool('QDRANT_TLS_INSECURE', false),
   // What Ollama itself was started with. The app cannot change these — they
   // are read when the container starts — but it has to know them: the number
   // of requests it may have in flight at once is Ollama's slot count, and

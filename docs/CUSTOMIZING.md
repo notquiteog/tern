@@ -644,6 +644,41 @@ window column above decorative; a ceiling of 8,000 replaced it, and that was
 invisible until a 32k-window model became the floor and clipped it to a
 fourteenth of what it could hold.
 
+### Where the vectors live
+
+**Qdrant, in a container that comes up on every deployment** — development and
+production alike, behind no profile. `install.sh` generates its key; the
+container refuses to start without one rather than coming up open to the
+compose network.
+
+They used to live in Postgres, and every search scanned all of them. Measured
+on the development database: 94 ms over 50,000 messages and 383 ms over
+200,000, of which **82% was shipping rows into Node** rather than the
+arithmetic. An index does not make the maths faster; it stops the rows being
+sent at all.
+
+Three things about the layout are worth knowing before you change anything:
+
+- **One collection per user, per model.** Vectors are rotated with a per-user
+  key, so one collection holding several rotations would give the index a graph
+  built from distances that mean nothing across users — costing recall *within*
+  a user, not merely across them. The model is in the name too, because vectors
+  from two embedders are not comparable, so switching model writes into a new
+  collection instead of poisoning the old one. This is right for tens of users
+  and wrong for tens of thousands, since collections are not free.
+- **The index holds ids, scores and the account — no content.** Everything
+  shown comes from a join back to Postgres, and that is what preserves the
+  guarantee that deleting a message takes its vector with it: a point that
+  outlived its email joins to no row and disappears before anything is
+  rendered. Content in a payload would survive in a store the cascade cannot
+  reach and no backup captures.
+- **The index is not in your backup, deliberately.** `./bin/tern backup` is
+  `pg_dump` plus `.env`, and vectors are derived data. `restore` queues every
+  message for re-embedding and says so; meaning search is thin until that
+  finishes — overnight on a CPU-only box with a large mailbox — and ordinary
+  text search is unaffected throughout. **Settings → AI** shows how many are
+  left.
+
 The cost of embedding a very long message whole is that its vector is an
 average of everything in it, so long mail is findable but less precisely. The
 ceiling was never a fix for that — it addressed dilution by throwing the tail

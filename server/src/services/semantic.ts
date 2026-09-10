@@ -19,6 +19,7 @@
 // another's rotation anyway.
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
+import * as vectors from './vectorStore.js';
 import { embed, getAiSettings } from '../ai/llm.js';
 import { embedInputChars } from '../ai/providers.js';
 import { dataKey } from './vault.js';
@@ -68,6 +69,20 @@ async function rotationFor_(userId: number, dims: number): Promise<Rotation> {
   return rot;
 }
 export function forgetRotations(): void { rotations.clear(); }
+
+/**
+ * The Qdrant collection for one user and one embedding model.
+ *
+ * Both halves matter. The user, because vectors are rotated with a per-user
+ * key and one collection holding several rotations gives HNSW a graph built
+ * from distances that mean nothing across users — which costs recall *within*
+ * a user, not just across them. The model, because vectors from two models are
+ * not comparable at all, so a model change writes into a new collection rather
+ * than poisoning the old one.
+ */
+function vectorCollection(userId: number, model: string): string {
+  return vectors.collectionFor(userId, model);
+}
 
 // ---------- Indexing ----------
 
@@ -161,21 +176,53 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   // is the whole point: a retrieval model embeds the thing being searched for
   // and the things being searched through differently, and until this argument
   // existed both went out identically.
-  const { vectors, model, dims } = await embed(usable.map((x) => x.t), { userId, capability: 'semantic' }, undefined, 'document');
-  if (!vectors.length || !dims) return { done: 0, remaining: await indexPending(userId) };
+  const { vectors: embedded, model, dims } = await embed(usable.map((x) => x.t), { userId, capability: 'semantic' }, undefined, 'document');
+  if (!embedded.length || !dims) return { done: 0, remaining: await indexPending(userId) };
   const rot = await rotationFor_(userId, dims);
 
+  // Vectors go to Qdrant; Postgres keeps a manifest row saying WHICH messages
+  // are indexed and under which model, and no longer the vector itself.
+  //
+  // The split is what makes both halves cheap. The manifest is what
+  // `indexPending` counts and what `invalidateVectorsFrom` marks, both of which
+  // are pure bookkeeping and want to be a SQL statement rather than a
+  // conversation with another service. The vector is what search needs, and it
+  // wants to be somewhere that can answer top-k without shipping every
+  // candidate back.
+  //
+  // It also keeps the cascade: `email_vectors.email_id` still references
+  // `emails(id) ON DELETE CASCADE`, so deleting a message still removes its
+  // manifest row without Qdrant having to take part in the transaction.
+  const collection = vectorCollection(userId, model);
+  const points: { emailId: number; accountId: number; vector: number[] }[] = [];
+  const indexed: { id: number; accountId: number }[] = [];
   for (let k = 0; k < usable.length; k++) {
-    const v = vectors[k];
+    const v = embedded[k];
     if (!Array.isArray(v) || !v.length) continue;
     const row = rows[usable[k].i];
     const stored = project(rot, v);
-    await query(
-      `INSERT INTO email_vectors (email_id, account_id, vec, dims, model)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email_id) DO UPDATE SET vec=EXCLUDED.vec, dims=EXCLUDED.dims, model=EXCLUDED.model, created_at=now()`,
-      [row.id, row.account_id, toBuffer(stored), stored.length, model],
-    );
+    // `project` already normalises to length 127 before quantising, so the
+    // int8 values are the vector — Cosine over them is exact, not an
+    // approximation, and no scale has to travel alongside. `Array.from`
+    // because JSON has no typed arrays.
+    points.push({ emailId: row.id, accountId: row.account_id, vector: Array.from(stored) });
+    indexed.push({ id: row.id, accountId: row.account_id });
+  }
+  if (points.length) {
+    // The index first, the manifest second, and deliberately in that order: a
+    // manifest row with no point is a message that silently never matches,
+    // while a point with no manifest row is found by the next sweep and
+    // rewritten. Failing between them should leave the recoverable one.
+    await vectors.ensureCollection(collection, points[0]!.vector.length);
+    await vectors.upsert(collection, points);
+    for (const row of indexed) {
+      await query(
+        `INSERT INTO email_vectors (email_id, account_id, dims, model)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (email_id) DO UPDATE SET dims=EXCLUDED.dims, model=EXCLUDED.model, created_at=now()`,
+        [row.id, row.accountId, points[0]!.vector.length, model],
+      );
+    }
   }
   await query('UPDATE emails SET embedded=true WHERE id = ANY($1)', [rows.map((r) => r.id)]);
   const remaining = await indexPending(userId);
@@ -224,69 +271,103 @@ export async function semanticSearch(
 ): Promise<SemanticHit[]> {
   const query_ = String(text ?? '').trim();
   if (!query_ || !accountIds.length) return [];
-  const { vectors, dims, model } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
-  if (!vectors[0]?.length || !dims) return [];
+  const { vectors: embedded, dims, model } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
+  if (!embedded[0]?.length || !dims) return [];
   const rot = await rotationFor_(userId, dims);
-  const needle = project(rot, vectors[0]);
+  const needle = project(rot, embedded[0]);
 
-  // Scoped to the model that made the needle, and that is the load-bearing
-  // clause rather than a tidiness one.
+  // The index answers, and Postgres says what the answers are.
   //
-  // `v.dims` cannot do this job and used to be relied on to. Every vector is
-  // projected down to EMBED_DIMS before it is stored, so an all-minilm row and
-  // a Qwen3-Embedding-4B row are both 256 bytes wide and `dims` matches both.
-  // A rotation, meanwhile, is derived per model WIDTH, so those two rows live
-  // in different spaces: scoring one against the other's needle produces
-  // noise, not similarity. Over a big mailbox some of that noise clears 0.28
-  // and comes back as a confident result about an unrelated message — the
-  // worst kind of wrong, because nothing about it looks broken.
+  // Qdrant returns ids and scores and nothing else. Everything shown — the
+  // subject, the sender, the thread, the mailbox — comes from the join below,
+  // and that is not merely tidy: **a point that outlived its email joins to no
+  // row and disappears before anything is rendered.** The cascade's guarantee
+  // that deleting a message takes its vector with it therefore holds by
+  // construction rather than by a sweep having run recently, and Qdrant never
+  // has to take part in a delete that must not fail.
   //
-  // The window in which it happens is not hypothetical either: changing the
-  // embedder queues every message for re-indexing, and on a CPU-only box that
-  // pass runs overnight. Every search until it finishes is scanning a table
-  // that is mostly the old model's work.
-  const rows = await query<{ email_id: number; account_id: number; thread_id: string; vec: Buffer }>(
-    `SELECT v.email_id, v.account_id, e.thread_id, v.vec
-       FROM email_vectors v
-       JOIN emails e ON e.id = v.email_id
-       JOIN accounts a ON a.id = v.account_id
-      WHERE a.user_id = $1 AND v.account_id = ANY($2) AND v.dims = $3 AND v.model = $4
-        AND ($5::text[] IS NULL OR e.mailbox_ids && $5::text[])`,
-    [userId, accountIds, needle.length, model, opts.mailboxIds?.length ? opts.mailboxIds : null],
+  // Scoping by model is still load-bearing and is now free: the model is in
+  // the collection NAME, so a needle can only ever be compared with vectors
+  // made by the same embedder. Under the old table it was a WHERE clause that
+  // `dims` could not stand in for — every vector was projected to the same
+  // width, so an all-minilm row and a Qwen3 row were both 256 bytes and `dims`
+  // matched both, while the geometry did not.
+  const minScore = opts.minScore ?? 0.28;
+  const want = opts.limit ?? 60;
+  // Over-fetch when a mailbox filter is in play. The mailbox a message is in
+  // changes whenever anyone moves mail, so it is deliberately NOT in the
+  // index's payload — keeping it there would mean writing to Qdrant on every
+  // move. The cost is that the filter is applied after the top-k, so the top-k
+  // has to be big enough to survive it.
+  const filtered = Boolean(opts.mailboxIds?.length);
+  const found = await vectors.search(vectorCollection(userId, model), Array.from(needle), {
+    accountIds,
+    limit: filtered ? Math.min(want * 8, 1000) : want,
+    minScore,
+  });
+  if (!found.length) return [];
+
+  const byId = new Map(found.map((h) => [h.emailId, h.score]));
+  const rows = await query<{ email_id: number; account_id: number; thread_id: string }>(
+    `SELECT e.id AS email_id, e.account_id, e.thread_id
+       FROM emails e JOIN accounts a ON a.id = e.account_id
+      WHERE a.user_id = $1 AND e.id = ANY($2) AND e.account_id = ANY($3)
+        AND ($4::text[] IS NULL OR e.mailbox_ids && $4::text[])`,
+    [userId, [...byId.keys()], accountIds, opts.mailboxIds?.length ? opts.mailboxIds : null],
   );
 
-  const minScore = opts.minScore ?? 0.28;
-  const hits: SemanticHit[] = [];
-  for (const r of rows) {
-    const score = similarity(needle, fromBuffer(r.vec));
-    if (score >= minScore) hits.push({ emailId: r.email_id, accountId: r.account_id, threadId: r.thread_id, score });
-  }
-  hits.sort((a, b) => b.score - a.score);
-  return hits.slice(0, opts.limit ?? 60);
+  return rows
+    .map((r) => ({
+      emailId: r.email_id,
+      accountId: r.account_id,
+      threadId: r.thread_id,
+      score: byId.get(r.email_id) ?? 0,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, want);
 }
 
-// "More like this": the same scan, with a message that is already indexed as
-// the needle. No model call at all, so it is free and instant.
+// "More like this": the index recommends from a point it already holds.
+//
+// No embedding call, and — since the vectors moved to Qdrant — no round trip
+// carrying one either. Tern names the seed by id and the index does the rest,
+// which is the reason the vectors were free to leave Postgres: nothing here
+// needs to know the width, the rotation, or what the numbers are.
+//
+// The manifest row is still consulted, for the model and the account: the
+// model decides which collection to ask, and asking the wrong one would
+// compare a needle against vectors from a different embedder and return
+// confident nonsense.
 export async function similarTo(userId: number, emailId: number, limit = 10): Promise<SemanticHit[]> {
-  const seed = await one<{ vec: Buffer; dims: number; model: string; account_id: number }>(
-    `SELECT v.vec, v.dims, v.model, v.account_id FROM email_vectors v
+  const seed = await one<{ model: string; account_id: number }>(
+    `SELECT v.model, v.account_id FROM email_vectors v
        JOIN accounts a ON a.id=v.account_id
       WHERE v.email_id=$1 AND a.user_id=$2`,
     [emailId, userId],
   );
   if (!seed) return [];
-  const needle = fromBuffer(seed.vec);
-  // The seed's own model, for the reason spelled out in `semanticSearch`: the
-  // stored width is the same for all of them and the geometry is not.
-  const rows = await query<{ email_id: number; account_id: number; thread_id: string; vec: Buffer }>(
-    `SELECT v.email_id, v.account_id, e.thread_id, v.vec
-       FROM email_vectors v JOIN emails e ON e.id=v.email_id JOIN accounts a ON a.id=v.account_id
-      WHERE a.user_id=$1 AND v.dims=$2 AND v.model=$3 AND v.email_id <> $4`,
-    [userId, seed.dims, seed.model, emailId],
+
+  const accounts = await query<{ id: number }>(
+    'SELECT id FROM accounts WHERE user_id=$1', [userId],
+  );
+  const found = await vectors.recommend(vectorCollection(userId, seed.model), emailId, {
+    accountIds: accounts.map((a) => a.id),
+    limit,
+    minScore: 0.4,
+  });
+  if (!found.length) return [];
+
+  // The same join as `semanticSearch`, for the same reason: a point whose
+  // message is gone joins to nothing and never reaches the caller.
+  const byId = new Map(found.map((h) => [h.emailId, h.score]));
+  const rows = await query<{ email_id: number; account_id: number; thread_id: string }>(
+    `SELECT e.id AS email_id, e.account_id, e.thread_id
+       FROM emails e JOIN accounts a ON a.id = e.account_id
+      WHERE a.user_id = $1 AND e.id = ANY($2)`,
+    [userId, [...byId.keys()]],
   );
   return rows
-    .map((r) => ({ emailId: r.email_id, accountId: r.account_id, threadId: r.thread_id, score: similarity(needle, fromBuffer(r.vec)) }))
-    .filter((h) => h.score >= 0.4)
+    .map((r) => ({ emailId: r.email_id, accountId: r.account_id, threadId: r.thread_id, score: byId.get(r.email_id) ?? 0 }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }

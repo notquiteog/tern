@@ -246,9 +246,13 @@ WHISPER_MEM_LIMIT="${WHISPER_MEM_LIMIT:-768m}"
 # gets the floor rather than the smallest thing that runs.
 AI_EMBED_MODEL="${AI_EMBED_MODEL:-qwen3-embedding:4b}"
 # Memory limits scale with the box so a 4.5 GB VPS never swaps itself to death.
-if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_MEM_LIMIT="2300m"; APP_MEM_LIMIT="640m"; STALWART_MEM_LIMIT="512m";
-elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_MEM_LIMIT="4500m"; APP_MEM_LIMIT="768m"; STALWART_MEM_LIMIT="768m";
-else OLLAMA_MEM_LIMIT="$(awk -v g="$TOTAL_GIB" 'BEGIN { printf "%dm", g*1024*0.6 }')"; APP_MEM_LIMIT="1024m"; STALWART_MEM_LIMIT="1024m"; fi
+if awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 5) }'; then OLLAMA_MEM_LIMIT="2300m"; APP_MEM_LIMIT="640m"; STALWART_MEM_LIMIT="512m"; QDRANT_MEM_LIMIT="256m";
+elif awk -v g="$TOTAL_GIB" 'BEGIN { exit !(g < 9) }'; then OLLAMA_MEM_LIMIT="4500m"; APP_MEM_LIMIT="768m"; STALWART_MEM_LIMIT="768m"; QDRANT_MEM_LIMIT="512m";
+else OLLAMA_MEM_LIMIT="$(awk -v g="$TOTAL_GIB" 'BEGIN { printf "%dm", g*1024*0.6 }')"; APP_MEM_LIMIT="1024m"; STALWART_MEM_LIMIT="1024m"; QDRANT_MEM_LIMIT="1024m"; fi
+# The index scales with the mailbox rather than with the box, so this is a
+# ceiling and not a reservation: qdrant idles around 150 MB and grows with what
+# has been indexed. A 4.5 GB VPS gets the smaller limit because everything else
+# on it is tight too, not because the index needs less.
 # How many people Ollama answers at once. Each slot holds its own context
 # window of KV cache, so this is sized from the same RAM the limit above is:
 # a starting point for the people this box is likely to have. When more people
@@ -299,6 +303,12 @@ step "6/8 Writing configuration"
 DB_PASSWORD="${DB_PASSWORD:-$(gen_secret 16)}"
 SESSION_SECRET="${SESSION_SECRET:-$(gen_secret 32)}"
 ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(gen_secret 32)}"
+# The vector index's key. Generated on EVERY install, not only when AI is on:
+# qdrant carries no profile, so a plain `compose up` starts it, and its
+# entrypoint refuses to start without a key rather than coming up open to
+# everything on the compose network. A missing one would take the whole stack
+# down on a deployment that never wanted AI.
+QDRANT_API_KEY="${QDRANT_API_KEY:-$(gen_secret 32)}"
 COMPOSE_FILE="compose.yml"
 [ "$STALWART_ENABLED" = 1 ] && COMPOSE_FILE="$COMPOSE_FILE:compose.stalwart.yml"
 [ "${GPU_ENABLED:-0}" = 1 ] && COMPOSE_FILE="$COMPOSE_FILE:compose.gpu.yml"
@@ -320,6 +330,8 @@ TERN_VERSION=$TERN_VERSION
 DB_PASSWORD=$DB_PASSWORD
 SESSION_SECRET=$SESSION_SECRET
 ENCRYPTION_KEY=$ENCRYPTION_KEY
+QDRANT_API_KEY=$QDRANT_API_KEY
+QDRANT_MEM_LIMIT=$QDRANT_MEM_LIMIT
 TRUST_PROXY=true
 
 ADMIN_USER=$ADMIN_USER

@@ -302,9 +302,20 @@ else: print("ok")' $SUBNETS)"
     compose exec -T db psql -U tern -d postgres -c "DROP DATABASE IF EXISTS tern_restore;" -c "CREATE DATABASE tern_restore OWNER tern;" >/dev/null
     compose exec -T db pg_restore -U tern -d tern_restore --no-owner < "$TMP/tern.pgdump"
     compose exec -T db psql -U tern -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='tern';" -c "DROP DATABASE tern;" -c "ALTER DATABASE tern_restore RENAME TO tern;" >/dev/null
+    # Vectors are derived data and are deliberately not in the backup, so the
+    # restored database describes an index that does not exist. Marking
+    # everything unindexed is what turns that into ordinary pending work: the
+    # background pass rebuilds it, and until then meaning search is thin while
+    # ordinary text search is unaffected.
+    #
+    # Said out loud rather than left to be discovered. A silent hours-long
+    # degradation after a restore is exactly the thing that gets reported as
+    # "the restore did not work".
+    compose exec -T db psql -U tern -d tern -c "UPDATE emails SET embedded=false WHERE embedded;" >/dev/null
     compose start app >/dev/null
     rm -rf "$TMP"
-    echo "Restored. If the backup came from another machine, copy its ENCRYPTION_KEY into .env or mailbox credentials will not decrypt." ;;
+    echo "Restored. If the backup came from another machine, copy its ENCRYPTION_KEY into .env or mailbox credentials will not decrypt."
+    echo "Meaning search will be thin until the index is rebuilt: vectors are derived and are not in the backup, so every message has been queued for re-embedding. Ordinary search works throughout. Settings -> AI shows how many are left." ;;
   help|*)
     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

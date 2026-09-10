@@ -38,7 +38,16 @@ services:
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       # The embedding model meaning search uses. Nobody's mail is embedded
       # until they turn the feature on for themselves.
-      AI_EMBED_MODEL: ${AI_EMBED_MODEL:-all-minilm}
+      # The embedding floor, and it must agree with config.ts's default: this
+      # line WINS, because compose passes it into the container whether .env
+      # names it or not. It said `all-minilm` while config.ts said
+      # `qwen3-embedding:4b`, which meant every containerised install silently
+      # got the small model no matter what the code defaulted to.
+      AI_EMBED_MODEL: ${AI_EMBED_MODEL:-qwen3-embedding:4b}
+      # The vector index. The service name resolves on the compose network;
+      # an operator whose index is elsewhere overrides it in .env.
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       CLIENT_DIST: /app/client/dist
       PORT: "3080"
       TERN_VERSION: ${TERN_VERSION:-0.1.0}
@@ -82,6 +91,47 @@ services:
       - tern-ollama:/root/.ollama
     mem_limit: ${OLLAMA_MEM_LIMIT:-2560m}
 
+  # The vector index. Not behind a profile: it comes up on every deployment,
+  # development and production alike.
+  #
+  # Vectors used to live in Postgres and every search scanned all of them.
+  # Measured on the dev database: 94 ms over 50,000 messages and 383 ms over
+  # 200,000, of which 82% was shipping rows into Node rather than the
+  # arithmetic. An index does not make the maths faster — it stops the rows
+  # being sent at all.
+  qdrant:
+    image: docker.io/qdrant/qdrant:v1.19.1
+    restart: unless-stopped
+    environment:
+      # Empty here would leave the index open to anything on the compose
+      # network: with no key set, GET /collections answers 200 to anybody.
+      # install.sh always generates one. The entrypoint below refuses to start
+      # without it rather than coming up unauthenticated, which is the failure
+      # worth having — a container that will not start gets looked at, and an
+      # open one does not.
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+      # This project does not phone home, and an index reporting collection
+      # statistics to its vendor would be exactly that.
+      QDRANT__TELEMETRY_DISABLED: "true"
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        if [ -z "$$QDRANT__SERVICE__API_KEY" ]; then
+          echo "QDRANT_API_KEY is empty. Refusing to start an unauthenticated vector index." >&2
+          echo "Run ./install.sh, or set QDRANT_API_KEY in .env to a value from: openssl rand -hex 32" >&2
+          exit 1
+        fi
+        exec ./qdrant
+    volumes:
+      - tern-qdrant:/qdrant/storage
+    # Losing this volume costs a re-index, not data. Every vector is derived
+    # from Postgres, `emails.embedded` records what has been done, and the
+    # background pass rebuilds from there — which is why it is deliberately
+    # absent from `./bin/tern backup`, and why that absence is the design
+    # rather than an omission.
+    mem_limit: ${QDRANT_MEM_LIMIT:-512m}
+
   caddy:
     image: docker.io/library/caddy:2-alpine
     restart: unless-stopped
@@ -97,6 +147,7 @@ services:
       - app
 
 volumes:
+  tern-qdrant:
   tern-db:
   tern-ollama:
   tern-caddy-data:
