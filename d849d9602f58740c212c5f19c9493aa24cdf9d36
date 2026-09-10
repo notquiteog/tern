@@ -1,0 +1,18 @@
+Also carries one migration entry that is not this commit's subject:
+
+  20260909_1500_assistant_conversations  — the assistant's conversation and
+                                           message tables, from the session
+                                           building the tool-calling agent.
+
+migrations.ts is an append-only file that two sessions were appending to at
+once, and a path-scoped commit takes a whole file rather than a hunk, so the
+entry rode along. It is complete and unmodified, and its author names it in
+their own commit too so it is findable from both ends.
+
+Worth knowing if you bisect a schema question to this commit: the entry above
+touches ai_conversations / ai_messages and has nothing to do with the vector
+store. It was also renamed from ...1200... to ...1500... before this was
+pushed, so that array order and id order agree — db.ts applies migrations in
+ARRAY order and records them by ID, and anyone inferring run order from the id
+column would otherwise have inferred it backwards. No schema_migrations row for
+the old id ever reached a pushed tree.
