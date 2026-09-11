@@ -91,17 +91,25 @@ export const DEFAULT_SYSTEM_PROMPT = `You are an email writing assistant inside 
 
 const LENGTH: Record<string, string> = {
   short: 'Keep it to 2-4 sentences.',
-  medium: 'Keep it to one or two short paragraphs, under 120 words.',
-  long: 'Up to three paragraphs, under 220 words.',
+  medium: 'Keep it to one or two short paragraphs.',
+  long: 'Up to three paragraphs.',
 };
 
-// A word ceiling for the editing modes, taken from the draft the person
-// actually wrote rather than from a fixed number.
+// How long the answer should be, as a shape rather than a number.
+//
+// This used to state an exact ceiling — "the draft is 50 words; your answer is
+// at most 55 words" — and an exact number is something a reasoning model
+// verifies. Measured on qwen3.8-flash: most of the working-out went on
+// counting words one at a time and re-counting after every edit ("Thank(1)
+// you(2) for(3)… total 35, that's one over"), for a bound no reader cares
+// about to the word. The ceiling still exists in spirit, because the editing
+// modes do need one: left unbounded a small model treats a rewrite as an
+// invitation to write a longer email of its own.
 function draftLimit(draft: string | undefined, factor: number): string {
-  const words = (draft ?? '').trim().split(/\s+/).filter(Boolean).length;
-  if (!words) return '';
-  const cap = Math.max(20, Math.round(words * factor));
-  return `The draft is ${words} words; your answer is at most ${cap} words.`;
+  if (!(draft ?? '').trim()) return '';
+  if (factor <= 0.7) return 'Your answer is about half the length of the draft.';
+  if (factor <= 1.2) return 'Your answer is about the same length as the draft — do not make it longer.';
+  return 'Your answer may be up to about twice the length of the draft.';
 }
 
 // Temperature and token ceiling per mode, so the composer, the responders and
@@ -419,14 +427,14 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
       // The subject is already on the row above this line, so repeating it
       // wastes the only line there is. What the reader wants is the point:
       // what is being asked of them, or what changed.
-      parts.push(`In one line of at most 14 words, say what this message is actually about — what it asks for, or what it says has happened. Do not repeat the subject line. Do not start with "This email" or the sender's name. No quotes, no full stop at the end. Output that one line and nothing else.`);
+      parts.push(`In one short line, say what this message is actually about — what it asks for, or what it says has happened. Do not repeat the subject line. Do not start with "This email" or the sender's name. No quotes, no full stop at the end. Output that one line and nothing else.`);
       break;
     case 'subject':
-      parts.push(`Write one subject line for the email below. At most 7 words, no quotes, no trailing punctuation. Output the subject line only, nothing else.`);
+      parts.push(`Write one subject line for the email below. A few words only, no quotes, no trailing punctuation. Output the subject line only, nothing else.`);
       break;
     case 'personalize':
       parts.push(
-        `Write the email the sender will send to the recipient below, in the first person ("I", "we") and speaking to the recipient as "you". The brief is the message to deliver; say it in the sender's words, do not describe or summarise it. Use at most two of the recipient facts, naturally, without saying you have facts about them.`,
+        `Write the email the sender will send to the recipient below, in the first person ("I", "we") and speaking to the recipient as "you". The brief is the message to deliver; say it in the sender's words, do not describe or summarise it. Use one or two of the recipient facts, naturally, without saying you have facts about them — at least one wherever there are any. An email that would read the same for anybody on the list has failed. Where the notes say not to raise something, write around it; that is not a reason to drop the notes altogether.`,
         // A brief ends in the thing the email is for. Left to itself a small
         // model paraphrases the offer at length and drops the ask, which is
         // the only part that needed to survive.
@@ -489,7 +497,7 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
     }
     case 'quick_replies':
       parts.push(
-        `Suggest three different short replies the sender could send to the last message in the conversation. Answer only that message; do not summarise the thread. Output exactly three lines and then stop. One reply per line, each a complete sentence of at most 12 words, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off, no explanation.`,
+        `Suggest three different short replies the sender could send to the last message in the conversation. Answer only that message; do not summarise the thread. Output exactly three lines and then stop. One reply per line, each a short complete sentence, in the first person. Vary them: one agrees or confirms, one asks a question or proposes a time, one politely declines or defers. No numbering, no bullets, no quotes, no greeting, no sign-off, no explanation.`,
         // These are conversational moves, not answers. Only the newest part
         // of the thread is shown, so a suggestion that states a date or a
         // figure is stating one it cannot see — and it goes into the
@@ -636,7 +644,7 @@ export function assertAgentTranscript(messages: ChatMessage[]): void {
 // Small models sometimes wrap output in quotes or add a label anyway.
 // A subject line, out of whatever came back.
 //
-// The prompt asks for at most seven words. Asked for a subject for a campaign
+// The prompt asks for a few words. Asked for a subject for a campaign
 // email, the model this ships with returned an entire email on one line —
 // greeting, body, closing question, 40 words of it — and because it was one
 // line, taking the first line kept all of it. It went into the preview as the

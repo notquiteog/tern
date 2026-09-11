@@ -137,6 +137,16 @@ const SYSTEM = [
   'Rules:',
   '- Leave out every key you have no reason to set. An empty filter is better than a guessed one.',
   '- Use only tags and field keys from the lists you are given. If the sentence names one that is not there, put the words in "q" instead.',
+  // Measured: with "sage" on the tag list and "plan" on the field list, a
+  // sentence saying "customers on Sage" had two readings and no rule to pick
+  // between them. The model spent 30,000 characters of reasoning cycling
+  // between {"tag":"sage"} and {"fields":[{"key":"plan","value":"Sage"}]}
+  // before settling. Ambiguity that costs that much deliberation is the same
+  // ambiguity that makes two runs disagree.
+  '- A word that is both a tag and a possible field value is a tag. Only use a field when the sentence names that field\'s key.',
+  // "Gone quiet" with no number had nowhere to go: quietDays wants a number,
+  // and period is only allowed beside intent.
+  '- "quietDays" needs a number of days. "Went quiet in March" gives none, so leave it out and put those words in "q".',
   '- "intent" is what they last replied. Only set it if the sentence is about a reply.',
   '- "period" only ever describes when they replied, and only alongside "intent".',
   '- "quietDays" is for "gone quiet", "not heard from", "no reply in N days".',

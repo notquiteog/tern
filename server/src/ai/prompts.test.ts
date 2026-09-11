@@ -154,9 +154,14 @@ test('reasoning left inline in <think> tags never reaches the draft', () => {
 
 test('the editing modes are anchored to the length of the draft they were given', () => {
   const draft = 'word '.repeat(50).trim();
-  assert.match(buildMessages({ mode: 'shorten', draft })[1].content, /draft is 50 words; your answer is at most 30 words/);
-  assert.match(buildMessages({ mode: 'expand', draft })[1].content, /at most 100 words/);
-  assert.match(buildMessages({ mode: 'polish', draft })[1].content, /at most 55 words/);
+  // Length is asked for as a shape, never as a number to count to: an exact
+  // ceiling sent the model into counting words one at a time. See `draftLimit`.
+  assert.match(buildMessages({ mode: 'shorten', draft })[1].content, /about half the length of the draft/);
+  assert.match(buildMessages({ mode: 'expand', draft })[1].content, /up to about twice the length of the draft/);
+  assert.match(buildMessages({ mode: 'polish', draft })[1].content, /about the same length as the draft/);
+  for (const mode of ['shorten', 'expand', 'polish', 'rewrite'] as const) {
+    assert.doesNotMatch(buildMessages({ mode, draft })[1].content, /\d+ words/, `${mode} still asks for a word count`);
+  }
   assert.ok(!buildMessages({ mode: 'compose', instruction: 'hi' })[1].content.includes('The draft is'));
 });
 
