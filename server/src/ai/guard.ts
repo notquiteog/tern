@@ -320,7 +320,22 @@ function monthIndex(name: string): string {
 // "Please find attached", "the attached plan", "enclosed". A model writing
 // about a document it has no way to send is promising the reader something
 // that is not there.
-const ATTACHMENT_CLAIM_RE = /\b(?:attached|attachment|attaching|enclosed|enclosing|see the (?:attached|enclosed)|please find (?:attached|enclosed))\b/i;
+const ATTACHMENT_CLAIM_RE = /\b(?:attached|attachment|attachments|attaching|enclosed|enclosing|see the (?:attached|enclosed)|please find (?:attached|enclosed))\b/i;
+
+/**
+ * A mention that DENIES an attachment rather than promising one.
+ *
+ * The claim test is a bare word, and a word has no polarity: "No attachment,
+ * as requested" was read as a promise of a document and held, which is the
+ * opposite of what it says. Measured on a real draft — the conversation asked
+ * for the terms in one message it could forward rather than as the proposal,
+ * the model said so, and the guard called it an invented attachment.
+ *
+ * Deliberately narrow. The negation has to be right in front of the word, so
+ * "please find attached" and "the attached plan" are untouched; only the
+ * handful of ways a writer says there is nothing attached are let through.
+ */
+const ATTACHMENT_DENIAL_RE = /\b(?:no|not|without|nothing|never|isn't|aren't|won't|cannot|can't)\b[^.;!?]{0,24}?\b(?:attached|attachment|attachments|enclosed)\b/i;
 
 export interface SpecificsExpectation {
   /**
@@ -389,7 +404,9 @@ export function findInventedSpecifics(body: string, expect: SpecificsExpectation
   // somebody attached a CSV is describing their attachment, not inventing one.
   if (!expect.hasAttachment && !ATTACHMENT_CLAIM_RE.test(expect.facts)) {
     const m = body.match(ATTACHMENT_CLAIM_RE);
-    if (m) hits.push({ kind: 'false_attachment', sample: m[0] });
+    // Saying there is nothing attached is not promising one — see
+    // `ATTACHMENT_DENIAL_RE`.
+    if (m && !ATTACHMENT_DENIAL_RE.test(body)) hits.push({ kind: 'false_attachment', sample: m[0] });
   }
   return hits;
 }
@@ -695,7 +712,7 @@ export function coachBrief(brief: string): BriefNote[] {
 
   // A promise the send cannot keep.
   const attach = text.match(ATTACHMENT_CLAIM_RE);
-  if (attach) {
+  if (attach && !ATTACHMENT_DENIAL_RE.test(text)) {
     notes.push({ kind: 'false_attachment', sample: attach[0], note: `This mentions something “${attach[0]}”. Campaign mail carries no attachment, so a draft that says so is held. Link to it instead.` });
   }
   return notes;

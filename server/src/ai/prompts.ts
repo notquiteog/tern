@@ -513,7 +513,7 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
   // greetings". Left ambiguous, a reasoning model spends its whole budget
   // arguing with itself about which rule to follow, and a small one drops
   // the salutation and greets nobody.
-  if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these${ab ? ', except where they contradict the first line stated above, which always wins' : ''}):\n${input.voice.trim()}`);
+  if (input.voice?.trim()) parts.push(`Sender's voice and preferences (follow these${ab ? ', except where they contradict the first line stated above, which always wins' : ''}; where they disagree with the tone asked for above, the voice wins):\n${input.voice.trim()}`);
   const rb = recipientBlock(input.recipient); if (rb) parts.push(rb);
   const tb = threadBlock(input.thread, input.senderEmail, input.threadChars); if (tb) parts.push(tb);
   // Only where the job is to answer from the conversation. A quick reply is
@@ -528,7 +528,12 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
   if (['reply', 'compose', 'reschedule', 'nudge', 'quick_replies'].includes(input.mode)) {
     const avb = availabilityBlock(input.availability); if (avb) parts.push(avb);
   }
-  if (input.subject && input.mode !== 'subject') parts.push(`Subject of this email: ${input.subject}`);
+  // Labelled as the subject it ALREADY has, because "Subject of this email:"
+  // reads as an instruction to write one. Measured on qwen3.8-flash: the
+  // working-out spent itself reconciling this line against the system
+  // prompt's "do not add a subject line" — "they gave subject of this email
+  // but likely don't include… Ensure no subject." — before writing a word.
+  if (input.subject && input.mode !== 'subject') parts.push(`The subject line this email already has, for context — do not write one: ${input.subject}`);
   if (input.template) parts.push(`Brief / template:\n${input.template}`);
   if (input.draft) parts.push(input.mode === 'subject' ? `Email:\n${input.draft}` : `Draft:\n${input.draft}`);
   return [

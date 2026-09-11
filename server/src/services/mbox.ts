@@ -136,7 +136,10 @@ export function splitHeadersAndBody(buf: Buffer): { headers: Headers; body: Buff
 // =?utf-8?B?…?= and =?iso-8859-1?Q?…?=, which is how every non-ASCII subject
 // line and display name arrives.
 export function decodeWords(input: string): string {
-  const s = String(input ?? '');
+  // UTF-8 first, then the encoded words: a header can be both, and the
+  // encoded words are ASCII either way so reinterpreting the bytes cannot
+  // disturb them.
+  const s = utf8IfValid(String(input ?? ''));
   if (!s.includes('=?')) return s;
   // Adjacent encoded words separated only by whitespace are one run and the
   // whitespace between them is not part of the text.
@@ -158,6 +161,28 @@ export function decodeBytes(bytes: Buffer, charset: string | null | undefined): 
   const label = String(charset ?? 'utf-8').toLowerCase().replace(/^["']|["']$/g, '').trim() || 'utf-8';
   try { return new TextDecoder(label, { fatal: false }).decode(bytes); } catch { /* unknown label */ }
   try { return new TextDecoder('windows-1252', { fatal: false }).decode(bytes); } catch { return bytes.toString('latin1'); }
+}
+
+/**
+ * A header that arrived as raw UTF-8, read as the text it is.
+ *
+ * `splitHeadersAndBody` decodes the header block as latin1, which is
+ * lossless — every byte becomes the code point of the same value — and RFC
+ * 2047 encoded words are then decoded from it. What that misses is a header
+ * carrying UTF-8 with no encoded word at all, which RFC 6532 allows and
+ * which mainstream clients send: an em dash arrives as its three bytes and
+ * is shown as "â" and two more. An imported subject read
+ * "Quarterly review â which day suits?".
+ *
+ * So the latin1 round trip is undone and the bytes are tried as UTF-8, and
+ * kept only if they really are UTF-8 — `fatal` is what decides that. A
+ * genuine windows-1252 or latin1 header is almost never valid UTF-8, so it
+ * fails the check and is returned untouched.
+ */
+function utf8IfValid(s: string): string {
+  // Pure ASCII cannot change, so there is nothing to try.
+  if (!/[\u0080-\u00ff]/.test(s)) return s;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(s, 'latin1')); } catch { return s; }
 }
 
 // ---------- Addresses ----------

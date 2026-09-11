@@ -177,6 +177,19 @@ test('a figure said the way people say it out loud is not an invention', () => {
   assert.deepEqual(findInventedSpecifics('It is nine fifty pounds a month.', { facts: 'The monthly close is £950 a month.' }), []);
 });
 
+test('saying there is nothing attached is not claiming an attachment', () => {
+  // A real draft: the conversation asked for the terms in one message that
+  // could be forwarded, rather than as the proposal, and the model said so.
+  // The bare word match read the denial as a promise and held it.
+  const facts = 'Put the two constraints and the monthly figure in one message I can forward to Tomasz, rather than the proposal.';
+  assert.deepEqual(findInventedSpecifics('That is everything. No attachment, as requested.', { facts }), []);
+  assert.deepEqual(findInventedSpecifics('Nothing is attached — the figures are all above.', { facts }), []);
+  assert.deepEqual(findInventedSpecifics('I have not attached the proposal.', { facts }), []);
+  // The promise it exists to catch still is one.
+  assert.deepEqual(findInventedSpecifics('Please find the plan attached.', { facts }).map((h) => h.kind), ['false_attachment']);
+  assert.deepEqual(findInventedSpecifics('The attached plan sets out the dates.', { facts }).map((h) => h.kind), ['false_attachment']);
+});
+
 test('describing somebody else\'s attachment is not claiming one of our own', () => {
   const facts = 'Priya wrote: the CSV is attached, four files, March through June.';
   assert.deepEqual(findInventedSpecifics('Priya has sent the CSV as an attachment.', { facts }), []);

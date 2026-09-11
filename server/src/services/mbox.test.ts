@@ -96,6 +96,24 @@ test('text that is not encoded passes through untouched', () => {
   assert.equal(decodeWords('2 + 2 =? 4'), '2 + 2 =? 4');
 });
 
+test('a header sent as raw UTF-8, with no encoded word, is read as UTF-8', () => {
+  // RFC 6532 allows it and clients send it. The header block is decoded as
+  // latin1 first — lossless, but it shows an em dash as "â" and two more
+  // characters, which is exactly how an imported subject read
+  // "Quarterly review â which day suits?".
+  const asParsed = Buffer.from('Quarterly review — which day suits?', 'utf8').toString('latin1');
+  assert.equal(decodeWords(asParsed), 'Quarterly review — which day suits?');
+  // Mixed: raw UTF-8 around an encoded word.
+  const mixed = Buffer.from('Re: café ', 'utf8').toString('latin1') + '=?utf-8?B?UmVjaG51bmc=?=';
+  assert.equal(decodeWords(mixed), 'Re: café Rechnung');
+});
+
+test('a header that is really latin1 is left as it is', () => {
+  // "Grüße" in latin1 is not valid UTF-8, so it fails the check and keeps
+  // the reading the charset gave it rather than being mangled the other way.
+  assert.equal(decodeWords(Buffer.from('Grüße', 'latin1').toString('latin1')), 'Grüße');
+});
+
 test('an unknown charset falls back rather than losing the line', () => {
   const out = decodeWords('=?x-unknown-charset?B?aGVsbG8=?=');
   assert.match(out, /hello/);
