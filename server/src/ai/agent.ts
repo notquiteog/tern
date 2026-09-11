@@ -24,7 +24,8 @@ import { openEmails } from '../services/mailVault.js';
 import { allowed } from '../services/capabilities.js';
 import { guardFor, describe as describeGuard } from '../services/guard.js';
 import { query } from '../db.js';
-import { agentStream, type ChatMessage, type ToolCall } from './llm.js';
+import { agentRoom, agentStream, getAiSettings, type ChatMessage, type ToolCall } from './llm.js';
+import { effectiveSettings } from './thinking.js';
 import { appendMessage, readConversation, transcriptFor } from './conversation.js';
 import { runTool, toolSpecs, toolsFor, type Proposal, type Reference, type ToolContext } from './tools.js';
 
@@ -312,6 +313,41 @@ export interface RunInput {
   view: ViewContext;
   tz?: string;
   signal?: AbortSignal;
+  /**
+   * A reasoning model's working-out, for a caller that wants to watch it. The
+   * route passes nothing — the browser gets no thinking event, for the reasons
+   * `AgentEvent` gives — but the evaluation does, because a draft that went
+   * wrong is often explained by what the model told itself on the way there.
+   */
+  onThinking?: (piece: string) => void;
+}
+
+/**
+ * The conversation on screen, said again beside the question.
+ *
+ * The system prompt already names it. That was not enough: in a conversation
+ * whose previous turn had been about a newsletter, "draft a reply to this"
+ * with a different thread open was answered about the newsletter — the model
+ * weighed the recent transcript over one line of preamble, and never called
+ * read_thread at all. Repeating the fact at the point of the question costs a
+ * sentence and puts it where the model is looking. It is added to what the
+ * model sees on this turn only; the stored message stays the person's words.
+ */
+async function viewNote(userId: number, accountIds: number[], view: ViewContext): Promise<string> {
+  const t = view.thread;
+  if (!t || !accountIds.includes(Number(t.accountId))) return '';
+  const rows = await query<any>(
+    'SELECT id, subject FROM emails WHERE thread_id=$1 AND account_id=$2 ORDER BY received_at ASC LIMIT 1',
+    [String(t.threadId), Number(t.accountId)],
+  );
+  if (!rows.length) return '';
+  const [first] = await openEmails(userId, 'ai.assistant', rows) as any[];
+  const drafting = Boolean(view.draft?.body?.trim() || view.draft?.subject?.trim());
+  // The second sentence is the rule the system prompt already states, said
+  // again where it is acted on. Measured without it, on the reply evaluation:
+  // a correct reply written straight into the chat, where there is nothing to
+  // send, and "do you want me to draft a reply?" in answer to "draft a reply".
+  return `[Tern: the person is looking at the conversation "${first?.subject || '(no subject)'}" (thread_id ${t.threadId})${drafting ? ', with a draft open in the composer' : ''}. Unless they say otherwise, "this" means ${drafting ? 'that draft and that conversation' : 'that conversation'} — not anything from earlier in this chat. A reply they ask for goes to draft_email with that thread_id: do not write the email in your own message, and do not ask whether to draft it.]`;
 }
 
 /**
@@ -324,16 +360,25 @@ export interface RunInput {
 export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
   const { userId, conversationId } = input;
   const accounts = await listAccounts(userId);
-  const ctx: ToolContext = {
-    userId,
-    accountIds: accounts.map((a) => a.id),
-    tz: input.tz,
-    signal: input.signal,
-  };
+  const accountIds = accounts.map((a) => a.id);
 
   const available = await toolsFor(userId);
   const system = await buildSystemPrompt(userId, input.view, input.tz);
   const messages: ChatMessage[] = transcriptFor(system, await readConversation(userId, conversationId));
+  const note = await viewNote(userId, accountIds, input.view);
+  const asking = messages.map((m) => m.role).lastIndexOf('user');
+  if (note && asking > 0) messages[asking] = { ...messages[asking]!, content: `${messages[asking]!.content}\n\n${note}` };
+
+  // What a draft may be judged against: everything the person has said, the
+  // system prompt, and each tool result as this turn produces it.
+  const results: { name: string; text: string }[] = [];
+  const ctx: ToolContext = {
+    userId,
+    accountIds,
+    tz: input.tz,
+    signal: input.signal,
+    seen: { said: messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n'), system, results },
+  };
 
   for (let step = 0; step < MAX_STEPS; step++) {
     // The last trip is made with no tools at all. A model that has spent five
@@ -350,6 +395,7 @@ export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
       consent: { userId, capability: 'ai.assistant' },
       signal: input.signal,
       owner: userId,
+      onThinking: input.onThinking,
     })) {
       if (chunk.kind === 'text') { text += chunk.text; yield { type: 'token', text: chunk.text }; }
       else calls.push(chunk.call);
@@ -370,7 +416,12 @@ export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
 
     for (const call of calls) {
       yield { type: 'tool', id: call.id, name: call.name, state: 'running' };
+      // How much this result may take before the window overflows — see
+      // `agentRoom` for what overflowing does. Per call, because every result
+      // earlier in the turn has already taken some of the room.
+      ctx.room = await agentRoom(await effectiveSettings(await getAiSettings(), userId), messages, tools);
       const result = await runTool(call.name, ctx, call.arguments);
+      results.push({ name: call.name, text: result.text });
       const toolId = await appendMessage(userId, conversationId, {
         role: 'tool',
         content: result.text,

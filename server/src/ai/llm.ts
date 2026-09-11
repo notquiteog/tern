@@ -1299,12 +1299,115 @@ export async function* agentStream(opts: AgentOptions): AsyncGenerator<AgentChun
   }
 }
 
+/**
+ * How many characters a tool's result may take before an assistant turn stops
+ * fitting the model's window — or undefined when this install does not decide
+ * the window.
+ *
+ * Measured on the reply evaluation: eighteen tool schemas are about 14,000
+ * characters and the system prompt about 4,000, which on an 8,192-token Ollama
+ * window leaves room for one short thread and not much else. A long thread
+ * read on top of that did not fail loudly. Ollama fitted the prompt by
+ * dropping the oldest messages — in a tool turn, the person's own question —
+ * and the model, left holding a system prompt and a thread, reasoned that "it
+ * looks like a simulation" and wrote nothing. So a tool that can return a lot
+ * is told how much it may return, and puts the part that matters inside it.
+ *
+ * Ollama only: `numCtx` is Ollama's setting, and a hosted model's window is
+ * far larger than anything a tool here returns.
+ *
+ * `s` is the person's settings, already resolved by the caller (see
+ * `ai/thinking.ts`). It is taken rather than read here so that the only places
+ * in this file that resolve somebody's setting stay the two that generate —
+ * `thinking.test.ts` counts them, and a sizing helper is not a third.
+ */
+export async function agentRoom(s: AiSettings, messages: ChatMessage[], tools: ToolSpec[]): Promise<number | undefined> {
+  if (s.provider !== 'ollama') return undefined;
+  const ctx = clampNumCtx(s.numCtx, await modelContextLimit(s.baseUrl, s.model));
+  const used = agentPromptChars(messages, tools);
+  return Math.floor((ctx - agentReserve(s.maxTokens, s.allowThinking)) * 3.2) - used;
+}
+
+/** The answer, some reasoning if it is on, and a margin — in tokens. */
+function agentReserve(maxTokens: number, thinking: boolean): number {
+  return (maxTokens > 0 ? Math.max(400, maxTokens) : 1_500) + (thinking ? 1_000 : 0) + 300;
+}
+
+/** Everything an assistant turn puts in the window, tool schemas included. */
+function agentPromptChars(messages: ChatMessage[], tools: ToolSpec[]): number {
+  return (tools.length ? JSON.stringify(openAiTools(tools)).length : 0)
+    + messages.reduce((n, m) => n + m.content.length + (m.toolCalls?.length ? JSON.stringify(m.toolCalls).length : 0), 0);
+}
+
+/**
+ * An assistant turn cut to fit the window — by Tern, rather than by the server.
+ *
+ * Left to itself, Ollama fits an over-long prompt by dropping the oldest
+ * messages it can, and in a tool turn the oldest message after the system
+ * prompt is the person's question. The model is then holding a system prompt
+ * and some tool output with nothing asked of it; measured, it wrote nothing,
+ * or summarised whatever it had been shown. `agentRoom` keeps one long result
+ * inside the window, but a turn that searches twice and then reads a thread
+ * still overflowed on an 8,192-token window, every time.
+ *
+ * So what goes is chosen: tool results, replaced by a line saying so — never
+ * the system prompt, never anything the person said, and never the newest
+ * result, which is what the model is about to act on. Searches go before
+ * threads, because a search is the likeliest to be about some other
+ * conversation and a thread the likeliest to be the one being answered. If
+ * that is still not enough, the newest result keeps its beginning and its end
+ * — where read_thread puts the latest messages and the agreed figures — and
+ * loses its middle. Only what is sent changes; the stored transcript keeps
+ * every word.
+ */
+export function fitToWindow(messages: ChatMessage[], tools: ToolSpec[], maxChars: number): ChatMessage[] {
+  const out = messages.map((m) => ({ ...m }));
+  const over = () => agentPromptChars(out, tools) - maxChars;
+  if (over() <= 0) return out;
+  const results = out.flatMap((m, i) => (m.role === 'tool' ? [i] : []));
+  // Kept whole the longest: the newest thread read, because a reply is written
+  // from it — or, with none, the newest result of any kind. Protecting "the
+  // newest result" regardless was measured going wrong: a search after a read
+  // pushed the thread out, the stub invited the model to read it again, the
+  // next search pushed it out again, and one turn spent all six steps and
+  // 212 seconds going round without drafting.
+  const threads = results.filter((i) => out[i]!.name === 'read_thread');
+  const protect = threads.length ? threads[threads.length - 1] : results[results.length - 1];
+  const order = results
+    .filter((i) => i !== protect)
+    .sort((a, b) => Number(out[a]!.name === 'read_thread') - Number(out[b]!.name === 'read_thread') || a - b);
+  for (const i of order) {
+    if (over() <= 0) return out;
+    out[i] = { ...out[i]!, content: `[What ${out[i]!.name || 'the tool'} returned is left out here: the conversation is too long for the model's window to hold it as well. Work from what is shown rather than calling it again.]` };
+  }
+  const excess = over();
+  if (excess > 0 && protect !== undefined) {
+    const text = out[protect]!.content;
+    const keep = Math.max(600, text.length - excess - 60);
+    if (keep < text.length) {
+      out[protect] = { ...out[protect]!, content: `${text.slice(0, Math.floor(keep / 2))}\n[… cut here to fit the model's window …]\n${text.slice(text.length - Math.ceil(keep / 2))}` };
+    }
+  }
+  return out;
+}
+
 async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
   const think = s.allowThinking && (await modelCanThink(s.baseUrl, model));
   const ctx = clampNumCtx(s.numCtx, await modelContextLimit(s.baseUrl, model));
+  // Fitted here rather than left to the server — see `fitToWindow`.
+  const messages = fitToWindow(opts.messages, opts.tools, Math.floor((ctx - agentReserve(s.maxTokens, think)) * 3.2));
+  // The tool schemas are part of the prompt. Leaving them out — they were —
+  // undercounted an assistant turn by about 4,000 tokens, so the reply was
+  // promised room the window did not have.
+  const promptChars = agentPromptChars(messages, opts.tools);
+  if (promptChars / 3.2 > ctx - 256) {
+    log.warn('an assistant turn does not fit the context window even with its tool results trimmed', { model, numCtx: ctx, promptTokensEstimate: Math.round(promptChars / 3.2) });
+  } else if (messages.some((m, i) => m.content !== opts.messages[i]?.content)) {
+    log.info('tool results trimmed to fit an assistant turn into the context window', { model, numCtx: ctx });
+  }
   const predict = predictTokens({
     numCtx: ctx,
-    promptChars: opts.messages.reduce((n, m) => n + m.content.length, 0),
+    promptChars,
     replyTokens: s.maxTokens,
     thinkingTokens: think ? s.thinkingBudget : 0,
   });
@@ -1314,7 +1417,7 @@ async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): A
     body: JSON.stringify({
       model,
       // Objects, not strings: Ollama's native endpoint takes a map here.
-      messages: toFlatMessages(opts.messages, 'object'),
+      messages: toFlatMessages(messages, 'object'),
       ...(opts.tools.length ? { tools: openAiTools(opts.tools) } : {}),
       stream: true,
       think: think ? s.thinkEffort : false,

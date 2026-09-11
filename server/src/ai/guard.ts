@@ -16,7 +16,11 @@ export interface GuardHit {
     // `findInventedSpecifics`.
     | 'invented_figure' | 'invented_date' | 'invented_term'
     // "as attached" on a message with nothing attached.
-    | 'false_attachment';
+    | 'false_attachment'
+    // Not prose: markup, a script the conversation never used, a sentence
+    // that runs on for a paragraph, a phrase on a loop, or an ending cut off
+    // mid-word. See `findGarbledText`.
+    | 'garbled';
   sample: string;
 }
 
@@ -78,6 +82,11 @@ const REASONING_RE = new RegExp(
     '\\b(?:wait,? (?:re-?read|let me|no|actually)|let me (?:check|re-?read|reconsider|think)|hold on,? (?:let me|that)|on second thought|okay[,.]? so\\b|alright[,.]? so\\b|hmm[,.]|i should (?:probably )?(?:start|write|use|avoid|make sure)|proceeding\\.|conflict resolved|that\\u2019?s fine[,.]? conflict)\\b',
     // Naming the machinery.
     '\\b(?:word limit|character limit|token limit|the system prompt|sender voice preference|voice preference:|output format|per the format)\\b',
+    // Planning the email instead of writing it: what a small model that
+    // thinks in its answer produces when it has been told not to think. Each
+    // phrase is from a measured draft (qwen3:4b with `think: false`), where
+    // the plan was all there was.
+    "\\b(?:we (?:are|need to) writ(?:e|ing) a (?:reply|response|email) to (?:the|her|his|their|\\w+'s) (?:latest|last) message|let'?s draft\\b|let me count\\b|the user says\\b|okay,? let'?s see\\b)",
   ].join('|'),
   'i',
 );
@@ -271,8 +280,11 @@ export function extractSpecifics(text: string): Specific[] {
     add('date', `time:${String(h).padStart(2, '0')}:${min}`, m[0]);
   }
   // Calendar dates: 30 September / September 30th / Sep 30 / 2026-09-30 / 30/09/2026
-  for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_RE})\\b`, 'gi'))) add('date', `day:${monthIndex(m[2])}-${Number(m[1])}`, m[0]);
-  for (const m of t.matchAll(new RegExp(`\\b(${MONTH_RE})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi'))) add('date', `day:${monthIndex(m[1])}-${Number(m[2])}`, m[0]);
+  // Within a line. "…ends 30 September⏎2. The board meets…" is a date and then
+  // a list number, and reading it as "September 2" sent a correct reply back
+  // as inventing a date.
+  for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?[^\\S\\n]+(?:of[^\\S\\n]+)?(${MONTH_RE})\\b`, 'gi'))) add('date', `day:${monthIndex(m[2])}-${Number(m[1])}`, m[0]);
+  for (const m of t.matchAll(new RegExp(`\\b(${MONTH_RE})[^\\S\\n]+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi'))) add('date', `day:${monthIndex(m[1])}-${Number(m[2])}`, m[0]);
   for (const m of t.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) add('date', `day:${MONTHS[Number(m[2]) - 1] ?? m[2]}-${Number(m[3])}`, m[0]);
   // A weekday on its own is usually a pleasantry ("have a good Monday") and
   // matching it would cost more in false positives than it is worth. A
@@ -429,9 +441,122 @@ export function findTemplateArtifacts(input: GuardInput): GuardHit[] {
   // them, and a plain template send does not have either to offer.
   if (input.greeting) for (const h of findGreetingProblems(bodyOnly, input.greeting)) push(h.kind, h.sample);
   if (input.specifics) for (const h of findInventedSpecifics(`${subject}\n${bodyOnly}`, input.specifics)) push(h.kind, h.sample);
+  // Whether it is prose at all. Only for generated mail — the same callers
+  // that pass a greeting or the facts — because a template a person wrote is
+  // theirs to punctuate however they like, and a run-on sentence in it is a
+  // style, not a malfunction.
+  if (input.greeting || input.specifics) for (const h of findGarbledText(bodyOnly, { context: input.specifics?.facts })) push(h.kind, h.sample);
   // Last resort: only when nothing more specific explains why this is not
   // fit to send, so the reason a person sees is the actionable one.
   if (!hits.length && bodyIsEmpty(bodyOnly)) push('no_body', bodyOnly.trim().replace(/\s+/g, ' ').slice(0, 40) || '(nothing)');
+  return hits;
+}
+
+// ---------- Text that is not prose ----------
+//
+// What this exists for, from a real report. Asked for a reply, a model wrote:
+//
+//   Hello? Hi there,</p> We've officially opened our new Same Day Bookkeeping
+//   service ... </br></div><ul class="ql-syntax ql-line末</li>We'd love if
+//   your team could join us ... through next Friday noon EST when all offers
+//   expire immediately after that deadline passes unless extended later due
+//   demand spikes from early adopters across multiple markets globally
+//   including yours specifically since last quarter showed strong growth
+//   potential in similar sectors like retail finance insurance healthcare
+//   technology media entertainment sports education government non profit ...
+//
+// Nothing else in this file objects to that. There is no merge field, no
+// placeholder and no prompt text in it, and against a brief that mentions a
+// launch and a discount there is not even an invented figure. It is simply
+// not an email. Five signs, none of which ordinary mail shows:
+//
+//   markup    an HTML tag in what is plain text by the time anything here
+//             reads it. A `</p>` in it was written by the model.
+//   script    a writing system that appears nowhere in what the message was
+//             written from — the stray 末 above. Only judged against a
+//             context, so a reply in Japanese to a Japanese thread is fine.
+//   run-on    fifty words without a full stop, comma, colon or line break.
+//             The longest honest run in the drafts measured while writing
+//             this was 31; the report above runs past a hundred.
+//   loop      the same four words four times, or one word four times
+//             running: a model stuck in a repetition.
+//   cut off   a last line of eight words or more that never ends: a
+//             generation that ran until something stopped it.
+//
+// A hit is a reason not to present or send the text, not a thing to repair:
+// there is no sensible edit that turns the example above into an email.
+
+const MARKUP_RE = /<\/?(?:p|br|div|span|ul|ol|li|a|b|i|u|em|strong|table|tbody|thead|tr|td|th|h[1-6]|html|body|head|style|script|img|font|blockquote|pre|code|hr|section|header|footer)\b[^<>\n]{0,120}>?/i;
+// Latin is the default and never flagged; these are the systems a stray
+// token from a multilingual model's vocabulary usually belongs to.
+// Han and the two kana are one family: Japanese writes all three in one
+// sentence, so a thread whose only Japanese is a name in kanji is answered
+// with "田中さん" and neither half is foreign to the other.
+const SCRIPTS: [string, RegExp][] = [
+  ['Chinese or Japanese', /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u],
+  ['Korean', /\p{Script=Hangul}/u],
+  ['Cyrillic', /\p{Script=Cyrillic}/u],
+  ['Greek', /\p{Script=Greek}/u],
+  ['Arabic', /\p{Script=Arabic}/u],
+  ['Hebrew', /\p{Script=Hebrew}/u],
+  ['Thai', /\p{Script=Thai}/u],
+  ['Devanagari', /\p{Script=Devanagari}/u],
+];
+const RUN_ON_WORDS = 50;
+const wordsIn = (s: string) => s.split(/\s+/).filter(Boolean);
+
+export interface GarbleExpectation {
+  /** What the message was written from. Only used to judge whether a writing system is foreign to it. */
+  context?: string;
+}
+
+export function findGarbledText(body: string, expect: GarbleExpectation = {}): GuardHit[] {
+  const hits: GuardHit[] = [];
+  const text = String(body ?? '');
+  if (!text.trim()) return hits;
+  const push = (sample: string) => hits.push({ kind: 'garbled', sample });
+
+  const tag = text.match(MARKUP_RE);
+  if (tag) push(`markup ${tag[0].slice(0, 40)}`);
+
+  if (expect.context !== undefined) {
+    for (const [name, re] of SCRIPTS) {
+      if (!re.test(text) || re.test(expect.context)) continue;
+      const at = text.search(re);
+      push(`${name} script the conversation never used: "${text.slice(Math.max(0, at - 12), at + 4)}"`);
+      break;
+    }
+  }
+
+  // Punctuation, a line break or a dash between words ends a run; a hyphen
+  // inside a word does not.
+  let longest: string[] = [];
+  for (const seg of text.split(/[.!?,;:…()\n]|\s[-—–]\s|[—–]/)) {
+    const w = wordsIn(seg);
+    if (w.length > longest.length) longest = w;
+  }
+  if (longest.length >= RUN_ON_WORDS) push(`${longest.length} words without a stop: "…${longest.slice(-8).join(' ')}"`);
+
+  const words = wordsIn(text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' '));
+  const grams = new Map<string, number>();
+  for (let i = 0; i + 4 <= words.length; i++) {
+    const g = words.slice(i, i + 4).join(' ');
+    grams.set(g, (grams.get(g) ?? 0) + 1);
+  }
+  const loop = [...grams.entries()].find(([, n]) => n >= 4);
+  let stutter = '';
+  for (let i = 1, run = 1; i < words.length && !stutter; i++) {
+    run = words[i] === words[i - 1] ? run + 1 : 1;
+    if (run >= 4) stutter = words[i];
+  }
+  if (loop) push(`a phrase on a loop: "${loop[0]}" ×${loop[1]}`);
+  else if (stutter) push(`"${stutter}" four times running`);
+
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] ?? '';
+  if (wordsIn(last).length >= 8 && !/[.!?…:)"'’”\]]$/.test(last) && !SIGNOFF_RE.test(last)) {
+    push(`ends mid-sentence: "…${wordsIn(last).slice(-6).join(' ')}"`);
+  }
   return hits;
 }
 
@@ -477,6 +602,7 @@ export function describeHits(hits: GuardHit[]): string {
     wrong_name: 'wrong recipient', invented_figure: 'a figure it was never given',
     invented_date: 'a date it was never given', invented_term: 'a term it was never given',
     false_attachment: 'a reference to an attachment that is not there',
+    garbled: 'garbled text,',
   };
   return hits.map((h) => `${label[h.kind]} "${h.sample}"`).join('; ');
 }

@@ -24,7 +24,7 @@ import { getUserAccount, listAccounts } from '../services/accounts.js';
 import { htmlToText } from '../services/merge.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { logger } from '../log.js';
-import { openEmails } from '../services/mailVault.js';
+import { threadForDraft } from '../services/draftThread.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
 import { adminEnabled, requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
@@ -1132,8 +1132,8 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
     const [accId, threadId] = b.threadKey.split(':');
     const tacc = await getUserAccount(req.user!.id, Number(accId));
     if (!tacc) throw notFound('Thread not found');
-    const msgs = await openEmails(req.user!.id, 'ai.compose', await query<any>('SELECT from_addr, received_at, body_text, body_html, preview FROM emails WHERE account_id=$1 AND thread_id=$2 ORDER BY received_at ASC', [tacc.id, threadId]));
-    input.thread = msgs.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() }));
+    const { msgs, thread } = await threadForDraft(req.user!.id, tacc.id, threadId);
+    input.thread = thread;
     // A reply goes to whoever wrote to us; if we only have their address, the thread usually has their name.
     if (input.recipient?.email && !input.recipient.name) {
       const hit = msgs.map((m) => m.from_addr?.[0]).find((a: any) => a?.email && a.name && String(a.email).toLowerCase() === input.recipient!.email!.toLowerCase());

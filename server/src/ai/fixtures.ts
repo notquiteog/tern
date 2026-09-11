@@ -36,7 +36,7 @@ export const PRIYA: Person = { name: 'Priya Raman', email: 'priya@northwind.exam
 // A responder that greets him has failed in the way that matters most.
 export const TOMASZ: Person = { name: 'Tomasz Nowak', email: 'tomasz@northwind.example', title: 'Managing Director', company: 'Northwind Supply' };
 
-function signature(p: Person, opts: { footer?: boolean; short?: boolean } = {}): string {
+export function signature(p: Person, opts: { footer?: boolean; short?: boolean } = {}): string {
   if (opts.short) return `${p.name.split(' ')[0]}`;
   const lines = [p.name.split(' ')[0], '', p.name];
   if (p.title && p.company) lines.push(`${p.title}, ${p.company}`);
@@ -353,7 +353,7 @@ const FILLER: Draft[] = [
 // A quoted block the way a mail client writes one: an attribution line, then
 // the message being answered with "> " in front of every line, including one
 // level of whatever it was itself quoting.
-function quoteOf(prev: { who: Person; rendered: string; date: Date }, depth = 2): string {
+export function quoteOf(prev: { who: Person; rendered: string; date: Date }, depth = 2): string {
   const body = depth <= 1
     ? prev.rendered.split('\n').filter((l) => !l.startsWith('>')).join('\n')
     : prev.rendered;

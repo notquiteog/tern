@@ -395,7 +395,7 @@ else's whole email before seeing a first word.
 Prompts live in `server/src/ai/prompts.ts`. They are short on purpose; small
 models follow short instructions best.
 
-Two evaluation scripts run against a real model rather than a mock, and
+Three evaluation scripts run against a real model rather than a mock, and
 grade what comes back with deterministic checks:
 
 ```bash
@@ -413,7 +413,23 @@ cd server && npx tsx --env-file=../.env.dev src/ai/campaign.eval.ts
 runs the whole mass-generation flow: a CSV through the import parser, an AI
 campaign over the contacts it created, the scheduler generating one email
 per contact, the guard, and the pacing the approved ones would leave
-under (`N=`, `MODE=review|auto`).
+under (`N=`, `MODE=review|auto`). And
+
+```bash
+cd server && npx tsx --env-file=../.env.dev src/ai/reply.eval.ts
+```
+
+seeds a mailbox of detailed conversations — a kitchen refit, a supplier
+outage, a job offer, a school trip, a long procurement thread, and two
+marketing emails nobody answers — into the real mail cache, and asks for a
+reply to each one three ways: through the composer, through the assistant,
+and through an assistant conversation that was about the newsletter a
+moment before. Every reply is scored out of ten (the rubric is in
+`server/src/ai/grade.ts`), and one that is garbled, carries words from
+another conversation or is filed against the wrong thread fails the run
+whatever it scored (`MODEL=`, `RUNS=`, `ONLY=composer|assistant|carryover`
+or a thread name, `THINK=on|off`, `NUM_CTX=`, `VERBOSE=1`, `KEEP=1`). With `THINK=on`
+the model's working-out is printed for every reply that lost points.
 
 ## Inbox rules
 

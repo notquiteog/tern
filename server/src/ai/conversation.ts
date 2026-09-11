@@ -194,12 +194,38 @@ export function transcriptFor(system: string, stored: StoredMessage[], turns = H
   }
 
   const out: ChatMessage[] = [{ role: 'system', content: system }];
-  for (const m of body) {
-    if (m.role === 'tool') { out.push({ role: 'tool', content: m.content, toolCallId: m.toolCallId, name: m.name }); continue; }
+  // Everything before the question being answered now is an earlier question.
+  const current = body.map((m) => m.role).lastIndexOf('user');
+  for (let i = 0; i < body.length; i++) {
+    const m = body[i];
+    if (m.role === 'tool') { out.push({ role: 'tool', content: i < current ? earlierResult(m.name) : m.content, toolCallId: m.toolCallId, name: m.name }); continue; }
     if (m.role === 'assistant') { out.push({ role: 'assistant', content: m.content, ...(m.toolCalls?.length ? { toolCalls: m.toolCalls } : {}) }); continue; }
     out.push({ role: 'user', content: m.content });
   }
   return dropUnansweredTail(out);
+}
+
+/**
+ * What an earlier question's tool result is replayed as: a stub, not the text.
+ *
+ * The whole text used to go back to the model on every turn, and that is how
+ * one conversation leaked into another. Ask about a newsletter, open a
+ * different thread, say "draft a reply to this" — and the model, with the
+ * newsletter in front of it and only a line of system prompt about the thread
+ * on screen, answered about the newsletter without reading the thread at all.
+ * Measured, not supposed. Likewise a search from three questions ago is a pile
+ * of other people's figures sitting in context, ready to be written into a
+ * reply to somebody who never said them.
+ *
+ * The call stays, so the transcript still shows what was looked at and the
+ * shape rule still holds; only the words go. What the model concluded from
+ * them is in its own answer, which is replayed, and if it needs the source
+ * again the tool is one call away — which is what the system prompt already
+ * tells it to do before drafting anything.
+ */
+export function earlierResult(name?: string): string {
+  const tool = name || 'the tool';
+  return `[What ${tool} returned for an earlier question is not repeated here. If this question needs it, call ${tool} again.]`;
 }
 
 /**

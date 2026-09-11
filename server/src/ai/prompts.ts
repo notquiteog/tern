@@ -211,13 +211,40 @@ function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = TH
   const render = (i: number) =>
     `--- From ${t[i].from}${mine(t[i].from) ? ' (this is the sender, you)' : ''} on ${t[i].date}\n${trimMessage(t[i].text, i === t.length - 1 ? NEWEST_MSG_CHARS : OLDER_MSG_CHARS)}`;
 
+  const shown = pickThreadMessages(t.map((_, i) => render(i).length), budget);
+  const parts: string[] = [];
+  for (let n = 0; n < shown.length; n++) {
+    const gap = n === 0 ? 0 : shown[n] - shown[n - 1] - 1;
+    if (gap > 0) parts.push(`--- (${gap} message${gap === 1 ? '' : 's'} in the middle of the thread omitted)`);
+    parts.push(render(shown[n]));
+  }
+  const header = shown.length < t.length
+    ? `Conversation so far (oldest first; ${t.length} messages in total, some of the middle omitted):`
+    : 'Conversation so far (oldest first):';
+  return `${header}\n${parts.join('\n')}`;
+}
+
+/**
+ * Which messages of a conversation fit in `budget` characters, packed from
+ * both ends. Takes each message's rendered length and returns the indices to
+ * show, oldest first.
+ *
+ * Shared with the assistant's `read_thread`, which used to keep the first
+ * third and the last two and drop the middle on its own terms. On the
+ * Northwind thread that cut the £950 a month agreed in message 13, and the
+ * assistant, asked for "the monthly figure", wrote £18,500 in one run and
+ * £4,250 in the next — or went looking with `search_mail` and came back with
+ * another customer's rates. The drafting path had already been fixed for
+ * exactly this; the tool had its own copy of the old behaviour.
+ */
+export function pickThreadMessages(lengths: number[], budget: number): number[] {
   const keep = new Set<number>();
   let used = 0;
   const take = (i: number, len: number) => { keep.add(i); used += len; };
 
   // 1. The last three messages, whatever they cost. This is what is being
   //    answered, and a reply that cannot see it is not a reply.
-  for (let i = t.length - 1; i >= 0 && keep.size < 3; i--) take(i, render(i).length);
+  for (let i = lengths.length - 1; i >= 0 && keep.size < 3; i--) take(i, lengths[i]);
 
   // 2. The opening, oldest first, out of its own reserved share of the
   //    budget.
@@ -236,9 +263,9 @@ function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = TH
   //    the model was asked to recall them from.
   const openingCap = budget * OPENING_SHARE;
   let opening = 0;
-  for (let i = 0; i < t.length; i++) {
+  for (let i = 0; i < lengths.length; i++) {
     if (keep.has(i)) continue;
-    const len = render(i).length;
+    const len = lengths[i];
     if (opening + len > openingCap || used + len > budget) break;
     take(i, len);
     opening += len;
@@ -246,24 +273,14 @@ function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = TH
 
   // 3. Whatever is left goes to the most recent messages still missing, so a
   //    thread that fits entirely is shown entirely.
-  for (let i = t.length - 1; i >= 0; i--) {
+  for (let i = lengths.length - 1; i >= 0; i--) {
     if (keep.has(i)) continue;
-    const len = render(i).length;
+    const len = lengths[i];
     if (used + len > budget) break;
     take(i, len);
   }
 
-  const shown = [...keep].sort((a, b) => a - b);
-  const parts: string[] = [];
-  for (let n = 0; n < shown.length; n++) {
-    const gap = n === 0 ? 0 : shown[n] - shown[n - 1] - 1;
-    if (gap > 0) parts.push(`--- (${gap} message${gap === 1 ? '' : 's'} in the middle of the thread omitted)`);
-    parts.push(render(shown[n]));
-  }
-  const header = shown.length < t.length
-    ? `Conversation so far (oldest first; ${t.length} messages in total, some of the middle omitted):`
-    : 'Conversation so far (oldest first):';
-  return `${header}\n${parts.join('\n')}`;
+  return [...keep].sort((a, b) => a - b);
 }
 
 // The From name on a message is whatever the other person's client put
