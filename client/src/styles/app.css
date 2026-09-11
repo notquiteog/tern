@@ -2817,3 +2817,66 @@ kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-st
 @media (max-width: 640px) {
   .assistant-dock { width: 100%; top: 0; z-index: 70; }
 }
+
+/* ---------- Replies ----------
+   A campaign's answers, grouped by what they said. The row is a list item
+   rather than a card: a person works down these, and cards with their own
+   borders make forty of them read as forty separate things rather than one
+   queue. */
+.reply-list { display: flex; flex-direction: column; }
+.reply-row { display: flex; gap: 10px; padding: 12px 2px; border-top: 1px solid var(--border); }
+.reply-row:first-child { border-top: 0; }
+/* A reply that has been dealt with stays legible — it is still shown under
+   "dealt with" — but stops competing with the ones that have not. */
+.reply-row.handled { opacity: .62; }
+.reply-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+/* The person a wrong-number reply named, offered rather than acted on. Inset
+   and quiet, because it is a guess sitting inside a row of facts. */
+.referral-card { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.referral-card .row { align-items: center; }
+
+/* The filter chips. `.chip` is otherwise a removable token in the search box,
+   so the button behaviour is added here rather than changing that. */
+button.chip { cursor: pointer; padding: 0 10px; color: var(--text); font: inherit; font-size: 12.5px; }
+button.chip:hover { background: var(--bg-hover); }
+button.chip.active { background: var(--accent); border-color: var(--accent); color: var(--bg-elev); }
+button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The offer to keep a steering note. Sits between the draft and the decision
+   buttons, quiet enough not to look like a step in the approval. */
+.review-keep-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--bg-sunken); }
+
+/* What the guard will probably say about a brief, said before a draft is spent
+   finding out. Quiet and inline: these are predictions, not errors, and one of
+   them appearing must not read as the form refusing to go on. */
+.brief-notes { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--bg-sunken); border: 1px solid var(--border); }
+.brief-notes .small { color: var(--warning-text); display: flex; gap: 6px; align-items: flex-start; }
+.brief-notes svg { flex: none; margin-top: 2px; }
+
+/* The schedule projection: one bar per sending day, first sends stacked under
+   follow-ups. Deliberately the same visual language as the Home sends chart —
+   it is the same quantity, counted forwards instead of backwards. */
+.projection { display: flex; align-items: flex-end; gap: 3px; height: 120px; overflow-x: auto; padding-bottom: 18px; }
+.projection .col { flex: 1 0 14px; min-width: 14px; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; position: relative; }
+.projection .col .followup { background: var(--accent); opacity: .45; border-radius: 3px 3px 0 0; }
+.projection .col .first { background: var(--accent); border-radius: 0 0 3px 3px; }
+.projection .col.full .first { background: var(--warning-text); }
+.projection .col span { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--text-3); }
+
+/* A proposal that lists people or drafts. Scrolls rather than truncating: a
+   card that says "and 340 more" is asking somebody to approve what they cannot
+   see, which is the whole thing a proposal exists to prevent. */
+.assistant-list-compact { display: flex; flex-direction: column; gap: 2px; max-height: 210px; overflow-y: auto; margin: 6px 0; }
+.assistant-list-compact .row { justify-content: space-between; gap: 6px; }
+
+/* What a queued draft was allowed to know. Folded away on a clean draft and
+   opened on a held one, because that is the only moment it earns the space. */
+.review-facts { border-top: 1px dashed var(--border); padding-top: 8px; }
+.review-facts .faint { display: inline-block; min-width: 96px; }
+
+/* "This conversation is a campaign answering back." Sits in the same slot as
+   the guard's line, above the message, because both are statements about the
+   message rather than part of what the sender wrote. */
+.campaign-line { display: flex; align-items: center; gap: 6px; padding: 6px 10px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-sunken); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
+.campaign-line svg { flex: none; }

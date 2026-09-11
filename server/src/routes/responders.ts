@@ -38,6 +38,12 @@ const schema = z.object({
   humanize: z.boolean().default(true),
   daily_cap: z.number().int().min(1).max(500).default(20),
   cooldown_hours: z.number().int().min(1).max(720).default(24),
+  // Answer only one campaign's replies, and optionally only the ones the
+  // classifier gave a particular label. The pair this exists for is a campaign
+  // plus 'question': answer the questions this campaign gets, from its brief,
+  // and leave every other question in the mailbox alone.
+  sequence_id: z.number().int().nullable().optional(),
+  reply_intent: z.enum(['interested', 'question', 'not_now', 'not_interested', 'wrong_person']).nullable().optional(),
 });
 
 const updateSchema = z.object({
@@ -45,6 +51,12 @@ const updateSchema = z.object({
   match: z.enum(['all', 'any']).optional(), conditions: z.array(condition).max(20).optional(), only_contacts: z.boolean().optional(), skip_lists: z.boolean().optional(),
   instructions: z.string().max(5000).optional(), tone: z.string().max(60).optional(), length: z.enum(['short', 'medium', 'long']).optional(), reply_all: z.boolean().optional(),
   humanize: z.boolean().optional(), daily_cap: z.number().int().min(1).max(500).optional(), cooldown_hours: z.number().int().min(1).max(720).optional(),
+  // Answer only one campaign's replies, and optionally only the ones the
+  // classifier gave a particular label. The pair this exists for is a campaign
+  // plus 'question': answer the questions this campaign gets, from its brief,
+  // and leave every other question in the mailbox alone.
+  sequence_id: z.number().int().nullable().optional(),
+  reply_intent: z.enum(['interested', 'question', 'not_now', 'not_interested', 'wrong_person']).nullable().optional(),
 });
 
 respondersRouter.get('/', async (req, res) => {
@@ -74,9 +86,9 @@ respondersRouter.post('/', async (req, res) => {
   if (b.account_id && !(await getUserAccount(req.user!.id, b.account_id))) throw badRequest('Account not found');
   const pos = await one<{ n: number }>('SELECT coalesce(max(position),0)+1 AS n FROM responders WHERE user_id=$1', [req.user!.id]);
   const rows = await query<any>(
-    `INSERT INTO responders (user_id, account_id, name, enabled, mode, match, conditions, only_contacts, skip_lists, instructions, tone, length, reply_all, humanize, daily_cap, cooldown_hours, position)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-    [req.user!.id, b.account_id ?? null, b.name, b.enabled, b.mode, b.match, JSON.stringify(b.conditions), b.only_contacts, b.skip_lists, b.instructions, b.tone, b.length, b.reply_all, b.humanize, b.daily_cap, b.cooldown_hours, pos?.n ?? 0],
+    `INSERT INTO responders (user_id, account_id, name, enabled, mode, match, conditions, only_contacts, skip_lists, instructions, tone, length, reply_all, humanize, daily_cap, cooldown_hours, position, sequence_id, reply_intent)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+    [req.user!.id, b.account_id ?? null, b.name, b.enabled, b.mode, b.match, JSON.stringify(b.conditions), b.only_contacts, b.skip_lists, b.instructions, b.tone, b.length, b.reply_all, b.humanize, b.daily_cap, b.cooldown_hours, pos?.n ?? 0, b.sequence_id ?? null, b.reply_intent ?? null],
   );
   await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'responders.created',$2,$3)`, [req.user!.id, String(rows[0].id), JSON.stringify({ mode: b.mode, name: b.name })]);
   res.json({ responder: rows[0] });
@@ -88,9 +100,15 @@ respondersRouter.put('/:id', async (req, res) => {
   const rows = await query<any>(
     `UPDATE responders SET name=COALESCE($3,name), account_id=CASE WHEN $4::boolean THEN $5 ELSE account_id END, enabled=COALESCE($6,enabled), mode=COALESCE($7,mode), match=COALESCE($8,match),
        conditions=COALESCE($9,conditions), only_contacts=COALESCE($10,only_contacts), skip_lists=COALESCE($11,skip_lists), instructions=COALESCE($12,instructions), tone=COALESCE($13,tone), length=COALESCE($14,length),
-       reply_all=COALESCE($15,reply_all), humanize=COALESCE($16,humanize), daily_cap=COALESCE($17,daily_cap), cooldown_hours=COALESCE($18,cooldown_hours), updated_at=now()
+       reply_all=COALESCE($15,reply_all), humanize=COALESCE($16,humanize), daily_cap=COALESCE($17,daily_cap), cooldown_hours=COALESCE($18,cooldown_hours),
+       -- Null is a real value for both — "not scoped to a campaign" — so they
+       -- are set when the key is present rather than COALESCEd, which would
+       -- make un-scoping a responder impossible.
+       sequence_id=CASE WHEN $19::boolean THEN $20 ELSE sequence_id END,
+       reply_intent=CASE WHEN $21::boolean THEN $22 ELSE reply_intent END,
+       updated_at=now()
      WHERE id=$1 AND user_id=$2 RETURNING *`,
-    [id, req.user!.id, b.name ?? null, b.account_id !== undefined, b.account_id ?? null, b.enabled ?? null, b.mode ?? null, b.match ?? null, b.conditions ? JSON.stringify(b.conditions) : null, b.only_contacts ?? null, b.skip_lists ?? null, b.instructions ?? null, b.tone ?? null, b.length ?? null, b.reply_all ?? null, b.humanize ?? null, b.daily_cap ?? null, b.cooldown_hours ?? null],
+    [id, req.user!.id, b.name ?? null, b.account_id !== undefined, b.account_id ?? null, b.enabled ?? null, b.mode ?? null, b.match ?? null, b.conditions ? JSON.stringify(b.conditions) : null, b.only_contacts ?? null, b.skip_lists ?? null, b.instructions ?? null, b.tone ?? null, b.length ?? null, b.reply_all ?? null, b.humanize ?? null, b.daily_cap ?? null, b.cooldown_hours ?? null, b.sequence_id !== undefined, b.sequence_id ?? null, b.reply_intent !== undefined, b.reply_intent ?? null],
   );
   if (!rows.length) throw notFound('Responder not found');
   if (b.mode === 'send') await query(`INSERT INTO audit_log (user_id, action, target, details) VALUES ($1,'responders.auto_send_enabled',$2,'{}')`, [req.user!.id, String(id)]);

@@ -14,6 +14,7 @@ import url from 'node:url';
 import ts from 'typescript';
 
 import { collectionFor, modelSlug, parseCollection } from './vectorStore.js';
+import { isCurrentSlug } from './semantic.js';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -316,8 +317,12 @@ test('a missing embedder name never reads as a model change', () => {
   assert.equal(modelSlug(''), '');
   assert.equal(modelSlug('   '), '');
   const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(readReal('server/src/services/semantic.ts'))![0];
-  assert.match(body, /if \(!keep\) return 0;/,
+  assert.match(body, /if \(!keep\.size\) return 0;/,
     'dropCollectionsNotFrom does not bail on an empty model, so a blank setting would drop every collection');
+  // And the same guarantee from the outside: with no identity, nothing is
+  // current, so nothing can be judged superseded either.
+  assert.equal(isCurrentSlug('', 'anything'), false);
+  assert.equal(isCurrentSlug('', ''), false);
 });
 
 test('changing the embedder drops the collections the old one built', () => {
@@ -395,6 +400,20 @@ test('a missing embedder name never triggers the sweep', () => {
   // way to handle a blank field.
   assert.equal(modelSlug(''), '');
   const body = /export async function dropCollectionsNotFrom[\s\S]*?\n}/.exec(readReal('server/src/services/semantic.ts'));
-  assert.ok(body && /if \(!keep\) return 0;/.test(body[0]),
+  assert.ok(body && /if \(!keep\.size\) return 0;/.test(body[0]),
     'dropCollectionsNotFrom does not bail out on an empty model name');
+});
+
+
+test('a contact index is not swept as though it were an old embedder', () => {
+  // Two collections per user per embedder now — their mail and their contact
+  // notes — and both are current under the same identity. A keep-set that
+  // knew only about mail would drop the contact index on every pass and
+  // rebuild it on the next, for ever.
+  const identity = 'ollama|127.0.0.1:11434|all-minilm';
+  assert.equal(isCurrentSlug(identity, modelSlug(identity)), true, 'the mail collection');
+  assert.equal(isCurrentSlug(identity, modelSlug(`contacts|${identity}`)), true, 'the contact collection');
+  // And a genuinely superseded one is still superseded.
+  assert.equal(isCurrentSlug(identity, modelSlug('ollama|127.0.0.1:11434|bge-m3')), false);
+  assert.equal(isCurrentSlug(identity, modelSlug('contacts|ollama|127.0.0.1:11434|bge-m3')), false);
 });

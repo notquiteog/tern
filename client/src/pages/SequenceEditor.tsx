@@ -9,11 +9,22 @@ import { Badge, Button, Callout, Confirm, Field, IconButton, Input, Modal, Selec
 import { Editor, type EditorHandle } from '../components/Editor';
 import { SafeHtml } from '../components/SafeHtml';
 import { MERGE_FIELDS } from './Templates';
-import { fmtDateTime, fmtDuration, plural } from '../lib/format';
+import { cls, fmtDate, fmtDateTime, fmtDuration, plural } from '../lib/format';
 import { DataTable } from '../components/DataTable';
 import { DictateBox, appendDictated } from '../components/Dictate';
 import { useDebounced } from '../lib/hooks';
 import { useFocusContext } from '../state/assistant';
+import { Replies } from '../components/Replies';
+import { AskAssistant } from '../components/AskAssistant';
+
+// The closed list the public unsubscribe page offers, spelled the same way
+// here so the campaign reads back what the person was actually shown.
+const UNSUB_REASON_LABEL: Record<string, string> = {
+  too_many: 'too many emails',
+  not_relevant: 'not relevant',
+  never_signed_up: 'never signed up',
+  other: 'something else',
+};
 
 interface Step { id?: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean }
 
@@ -29,18 +40,38 @@ export default function SequenceEditorPage() {
   const [seq, setSeq] = useState<any>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [dirty, setDirty] = useState(false);
-  const [tab, setTab] = useState<'steps' | 'enrollments' | 'settings'>('steps');
+  const [tab, setTab] = useState<'steps' | 'enrollments' | 'replies' | 'schedule' | 'settings'>('steps');
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [preview, setPreview] = useState<any>(null);
   const [del, setDel] = useState(false);
   const [saving, setSaving] = useState(false);
   useEffect(() => { if (data) { setSeq(data.sequence); setSteps(data.steps.map((s: any) => ({ id: s.id, kind: s.kind, template_id: s.template_id, subject: s.subject, body_html: s.body_html, wait_days: s.wait_days, wait_hours: s.wait_hours, ai_personalize: s.ai_personalize, ai_instructions: s.ai_instructions, reply_in_thread: s.reply_in_thread }))); setDirty(false); } }, [data]);
   const stepStats = useMemo(() => new Map((data?.stepStats ?? []).map((s: any) => [s.step_id, s])), [data]);
+  const valves = data?.valves;
+  const unsubReasons = data?.unsubReasons ?? [];
+  // How many replies are still waiting on this campaign, for the tab's badge.
+  // Its own query rather than a column on the sequence: it changes when a
+  // reply arrives and when one is dealt with, and neither touches that row.
+  const { data: replies } = useQuery({
+    queryKey: ['replies', sid, '', false],
+    queryFn: () => api.get<{ counts: { total: number } }>(`/api/replies?sequenceId=${sid}`),
+    refetchInterval: 60_000,
+  });
+  const replyCount = replies?.counts?.total ?? 0;
 
   async function save() {
     setSaving(true);
     try {
-      await api.put(`/api/sequences/${sid}`, { name: seq.name, description: seq.description, account_id: seq.account_id, stop_on_reply: seq.stop_on_reply, ai_mode: seq.ai_mode, unsubscribe_footer: seq.unsubscribe_footer, encrypt_pgp: Boolean(seq.encrypt_pgp), steps });
+      await api.put(`/api/sequences/${sid}`, {
+        name: seq.name, description: seq.description, account_id: seq.account_id, stop_on_reply: seq.stop_on_reply,
+        ai_mode: seq.ai_mode, unsubscribe_footer: seq.unsubscribe_footer, encrypt_pgp: Boolean(seq.encrypt_pgp),
+        contact_local_window: Boolean(seq.contact_local_window),
+        // Numbers rather than blanks: an emptied field means "off", which is
+        // zero, and sending NaN would leave the valve at whatever it was.
+        pause_on_bounce_pct: Number(seq.pause_on_bounce_pct) || 0,
+        pause_on_unsubscribes: Number(seq.pause_on_unsubscribes) || 0,
+        steps,
+      });
       qc.invalidateQueries({ queryKey: ['sequence', sid] }); qc.invalidateQueries({ queryKey: ['sequences'] });
       setDirty(false); toast.success('Saved');
     } catch (e) { toast.error(e); } finally { setSaving(false); }
@@ -89,6 +120,12 @@ export default function SequenceEditorPage() {
           </div>
         </div>
         <div className="row gap-4 wrap seq-actions">
+          {/* Contacts has "Catch me up" and the calendar has "Plan this day";
+              the sequence editor had neither, although "why are so many
+              drafts being held" is the question people open it with. The
+              focus context below already tells the assistant which campaign
+              is on screen, so the question needs no preamble. */}
+          <AskAssistant label="Ask" prompt="Why are drafts from this campaign being held, and what should I change?" />
           <Button icon={<Eye size={15} />} onClick={() => void doPreview()}>Dry run</Button>
           <Button icon={<UserPlus size={15} />} onClick={() => setEnrollOpen(true)}>Enroll contacts</Button>
           {seq.status === 'active' ? <Button icon={<Pause size={15} />} onClick={() => setStatus('paused')}>Pause</Button> : <Button variant="primary" icon={<Play size={15} />} onClick={() => setStatus('active')} disabled={!seq.account_id || !emailSteps}>Activate</Button>}
@@ -96,7 +133,11 @@ export default function SequenceEditorPage() {
         </div>
       </div>
       {!seq.account_id && <Callout kind="warning">Choose a sending account in Settings before activating.</Callout>}
-      <Tabs value={tab} onChange={setTab} tabs={[{ value: 'steps', label: 'Steps' }, { value: 'enrollments', label: <>Enrollments <Badge>{st.total ?? 0}</Badge></> }, { value: 'settings', label: 'Settings' }]} />
+      {/* A campaign that stopped itself says so here, in the sentence the
+          scheduler wrote, rather than in the error column of whichever
+          enrollment happened to trip it. */}
+      {seq.status === 'paused' && seq.pause_reason && <Callout kind="warning">Paused: {seq.pause_reason}</Callout>}
+      <Tabs value={tab} onChange={setTab} tabs={[{ value: 'steps', label: 'Steps' }, { value: 'enrollments', label: <>Enrollments <Badge>{st.total ?? 0}</Badge></> }, { value: 'replies', label: <>Replies{replyCount ? <> <Badge kind="success">{replyCount}</Badge></> : null}</> }, { value: 'schedule', label: 'Schedule' }, { value: 'settings', label: 'Settings' }]} />
       {tab === 'steps' && (
         <div style={{ maxWidth: 820 }}>
           {steps.map((s, i) => (
@@ -110,6 +151,8 @@ export default function SequenceEditorPage() {
         </div>
       )}
       {tab === 'enrollments' && <Enrollments sid={sid} />}
+      {tab === 'replies' && <Replies sequenceId={sid} />}
+      {tab === 'schedule' && <Projection sid={sid} />}
       {tab === 'settings' && (
         <div style={{ maxWidth: 640 }}>
           <Field label="Sending account"><Select value={seq.account_id ?? ''} onChange={(e) => { setSeq({ ...seq, account_id: Number(e.target.value) || null }); setDirty(true); }}><option value="">— choose —</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name} &lt;{a.email}&gt; · cap {a.daily_cap}/day</option>)}</Select></Field>
@@ -117,6 +160,39 @@ export default function SequenceEditorPage() {
           <div className="row mb-16"><Toggle checked={seq.stop_on_reply} onChange={(v) => { setSeq({ ...seq, stop_on_reply: v }); setDirty(true); }} /><div><div className="strong small">Stop when the contact replies</div><div className="help-text">Detected from reply headers and from the contact's address. Out-of-office auto-replies do not count.</div></div></div>
           <div className="row mb-16"><Toggle checked={seq.unsubscribe_footer} onChange={(v) => { setSeq({ ...seq, unsubscribe_footer: v }); setDirty(true); }} /><div><div className="strong small">Add an unsubscribe line and List-Unsubscribe headers</div><div className="help-text">One click removes the contact and adds them to the suppression list. Required by CAN-SPAM for commercial mail; the physical address is set in Admin → General.</div></div></div>
           <div className="row mb-16"><Toggle checked={Boolean(seq.encrypt_pgp)} onChange={(v) => { setSeq({ ...seq, encrypt_pgp: v }); setDirty(true); }} /><div><div className="strong small">Encrypt to contacts who have an OpenPGP key</div><div className="help-text">Contacts with a key on file receive each step encrypted (to their key and yours); everyone else gets it as usual. Automated mail cannot be signed, because no browser holds your key when it goes out.</div></div></div>
+          <div className="row mb-16"><Toggle checked={Boolean(seq.contact_local_window)} onChange={(v) => { setSeq({ ...seq, contact_local_window: v }); setDirty(true); }} /><div><div className="strong small">Send in the contact's own working hours</div><div className="help-text">Uses the account's window hours read against each contact's timezone, so a 9am send from London does not land in California at 1am. Contacts with no timezone are sent on the account's own window as before.</div></div></div>
+          <div className="divider" />
+          {/* The valves. Grouped under one heading with the reasoning above
+              them, because two numbers on their own read as tuning knobs and
+              the point is that they are a safety catch. */}
+          <h4 className="mb-8">Stop this campaign automatically</h4>
+          <div className="help-text mb-16">A campaign that is bouncing or losing people is spending your sending reputation. These stop it and tell you why, which matters most in Auto mode where nobody is reading the drafts. Set either to 0 to turn it off.</div>
+          <div className="form-row">
+            <Field label="Pause above this bounce rate" hint={`Percent of sends that bounced. Ignored until the campaign has sent ${20} messages, because one bounce out of two is not evidence of anything.`}>
+              <Input type="number" min={0} max={100} value={seq.pause_on_bounce_pct ?? 0} onChange={(e) => { setSeq({ ...seq, pause_on_bounce_pct: Number(e.target.value) }); setDirty(true); }} />
+            </Field>
+            <Field label="Pause at this many unsubscribes a day" hint="Counted over the last 24 hours across the whole campaign.">
+              <Input type="number" min={0} max={1000} value={seq.pause_on_unsubscribes ?? 0} onChange={(e) => { setSeq({ ...seq, pause_on_unsubscribes: Number(e.target.value) }); setDirty(true); }} />
+            </Field>
+          </div>
+          {/* What the valves are reading right now. A threshold with no
+              current value beside it is a number somebody has to guess at. */}
+          {valves && valves.sent > 0 && (
+            <div className="small muted mb-16">Right now: {valves.bounced} of {valves.sent} bounced ({valves.bouncePct}%), {valves.unsubscribedToday} unsubscribed in the last 24 hours.</div>
+          )}
+          {/* What the people who left said on the way out. Most say nothing —
+              it is asked after the unsubscribe is already done — so this is a
+              shape rather than a statistic, and it is only drawn at all once
+              somebody has answered. */}
+          {unsubReasons.length > 0 && (
+            <div className="small mb-16">
+              <span className="muted">Why people left: </span>
+              {unsubReasons.map((u: any, i: number) => (
+                <span key={u.reason}>{i > 0 ? ', ' : ''}{UNSUB_REASON_LABEL[u.reason] ?? u.reason} ({u.n})</span>
+              ))}
+            </div>
+          )}
+          <div className="divider" />
           <Field label="AI personalisation" hint="Applies to steps with 'AI personalise' turned on.">
             <Select value={seq.ai_mode} onChange={(e) => { setSeq({ ...seq, ai_mode: e.target.value }); setDirty(true); }}>
               <option value="review">Review: drafts wait for approval in AI review</option>
@@ -205,9 +281,73 @@ function StepCard({ step, index, stats, templates, onChange, onMove, onRemove, f
             {index > 0 && <div className="row"><Toggle checked={step.reply_in_thread} onChange={(v) => onChange({ reply_in_thread: v })} /><span className="small">Send as a reply in the same thread</span></div>}
             <div className="row"><Toggle checked={step.ai_personalize} onChange={(v) => onChange({ ai_personalize: v })} /><span className="small"><Sparkles size={13} /> AI personalise for each contact</span></div>
           </div>
+          {/* The same sentence a responder gets, from the same numbers, which
+              were already in the same table. A step whose drafts keep being
+              rejected is a step whose instructions are wrong, and the field
+              that fixes it is the one directly below this line. Drawn only
+              once the verdict is clear enough to act on. */}
+          {stats?.recent_decided >= 5 && stats.recent_rejected / stats.recent_decided > 0.5 && (
+            <div className="small mt-8" style={{ color: 'var(--warning-text)' }}>
+              You rejected {stats.recent_rejected} of this step's last {stats.recent_decided} drafts. Its instructions are below — changing them is what changes what it writes.
+            </div>
+          )}
           {step.ai_personalize && <Field label="Instructions for the model" hint={aiMode === 'off' ? 'AI mode is off in Settings; the template is sent as written.' : aiMode === 'review' ? 'Each draft waits in AI review before sending.' : 'Drafts send automatically; consider review mode first.'} className="mt-8"><DictateBox title="Say how to personalise this step" onText={(t) => onChange({ ai_instructions: appendDictated(step.ai_instructions ?? '', t) })}><Textarea value={step.ai_instructions} onChange={(e) => onChange({ ai_instructions: e.target.value })} placeholder="Mention something specific about their company from the notes. Keep it under 90 words. No exclamation marks." style={{ minHeight: 60 }} /></DictateBox></Field>}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * When this campaign's mail actually lands, over everybody on it.
+ *
+ * The dry run puts one contact's steps on real dates, which answers "does this
+ * arrive on Boxing Day". This answers the question that decides whether the
+ * campaign is the right shape at all: with everyone enrolled and one daily cap
+ * between them, when does the last person hear from it, and when do the
+ * follow-ups start queueing in front of the people who have not been written
+ * to yet? Nobody works that out in their head, and it is entirely determined
+ * by numbers the app already has.
+ */
+function Projection({ sid }: { sid: number }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['projection', sid],
+    queryFn: () => api.get<any>(`/api/sequences/${sid}/projection`),
+    retry: false,
+  });
+  if (isLoading) return <div className="center" style={{ padding: 40 }}><Spinner /></div>;
+  if (error) return <Callout kind="warning">{(error as Error).message}</Callout>;
+  if (!data?.days?.length) return <Callout>Nothing is scheduled. Enroll some contacts and this shows when their mail would actually go out.</Callout>;
+
+  const peak = Math.max(1, ...data.days.map((d: any) => d.first + d.followUp));
+  return (
+    <div style={{ maxWidth: 820 }}>
+      <div className="row gap-16 wrap mb-16">
+        <div><div className="strong">{data.enrollments}</div><div className="small muted">on the campaign</div></div>
+        <div><div className="strong">{data.lastFirstSend ? fmtDate(data.lastFirstSend) : '—'}</div><div className="small muted">last person hears from it</div></div>
+        <div><div className="strong">{data.finishes ? fmtDate(data.finishes) : '—'}</div><div className="small muted">last message of any kind</div></div>
+      </div>
+      <div className="projection">
+        {data.days.map((d: any) => (
+          <div key={d.day} className={cls('col', d.full && 'full')} title={`${d.day}: ${d.first} first send${d.first === 1 ? '' : 's'}, ${d.followUp} follow-up${d.followUp === 1 ? '' : 's'}, cap ${d.cap}${d.full ? ' (full)' : ''}`}>
+            <div className="followup" style={{ height: `${(100 * d.followUp) / peak}%` }} />
+            <div className="first" style={{ height: `${(100 * d.first) / peak}%` }} />
+            <span>{d.day.slice(8)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="small muted mt-16">
+        Solid is a first send, faded is a follow-up; an amber day is one where the cap was reached and work moved to the next day.
+      </div>
+      {data.contentionFrom && (
+        <Callout kind="warning">
+          From {fmtDate(data.contentionFrom)} the follow-ups and the first sends are queueing for the same daily cap, so new people start hearing from the campaign more slowly. Raising the cap, shortening the audience or lengthening the wait all fix it.
+        </Callout>
+      )}
+      {data.truncated && <Callout kind="warning">This is more than six months of sending at the current cap, so the chart stops there.</Callout>}
+      <div className="help-text mt-8">
+        Every enrollment is projected as though it runs to the end. Replies stop sequences, so the real volume is lower than this — never higher.
+      </div>
     </div>
   );
 }

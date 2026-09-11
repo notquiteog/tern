@@ -481,6 +481,100 @@ export function describeHits(hits: GuardHit[]): string {
   return hits.map((h) => `${label[h.kind]} "${h.sample}"`).join('; ');
 }
 
+// ---------- Reading the brief before a draft is spent on it ----------
+//
+// The guard already knows every way a campaign draft goes wrong: an invented
+// figure, an invented date, a promise of an attachment, no ask. Nearly all of
+// them are decided by the brief rather than by the model — a brief that says
+// "mention our pricing" and contains no prices has one outcome, and a small
+// model asked for a price it was never given does not leave a gap, it invents
+// something plausible.
+//
+// Running that same vocabulary over the brief itself says so in a tenth of a
+// second, instead of forty seconds of generation followed by a held draft and
+// a person working backwards from "invented figure" to the sentence that
+// caused it.
+//
+// ── Why these are notes and not errors ──────────────────────────────────────
+//
+// `findBriefProblems` throws, because an unrendered merge field in a brief is
+// certainly wrong. These are not certain: "have a look and let me know" is an
+// ask that no keyword list contains, and a brief that mentions a discount may
+// be describing one the reader already has. So they are shown beside the
+// button, they never block it, and the wording says what the guard will
+// probably do rather than what is definitely wrong.
+
+export interface BriefNote {
+  /** The guard outcome this predicts, so the wording and the hold agree. */
+  kind: 'no_ask' | 'invented_figure' | 'invented_date' | 'false_attachment' | 'merge_field' | 'placeholder';
+  note: string;
+  sample?: string;
+}
+
+// An ask, in the forms people actually write one. Deliberately wide: a false
+// "there is no ask here" on a brief that has one is the annoying failure, and
+// a missed one costs only a note that was not shown.
+const ASK_RE = /\b(?:ask|asking|book|booking|reply|replies|respond|call|calls?\b|meet|meeting|demo|chat|speak|talk|catch up|get in touch|let me know|worth a|interested|introduc|send (?:them|me|over)|share|schedule|set up|sign up|try|trial|visit|register|join|download|forward|put (?:us|me) in touch|happy to|free to|available)\b|\?/i;
+
+// Words that promise something specific a brief has to supply. Each pairs with
+// the kind of specific `extractSpecifics` would have to find for the model to
+// have been told it.
+const WANTS_FIGURE_RE = /\b(?:pric(?:e|es|ing)|cost|costs|fee|fees|rate|rates|discount|saving|savings|percent|percentage|roi|budget|quote|cheaper|per (?:seat|user|month|year)|how much)\b/i;
+const WANTS_DATE_RE = /\b(?:deadline|expires?|expiry|cut ?off|by (?:the )?end of|next week|this week|next month|launch(?:es|ing)?|webinar|event|offer ends|closing|available (?:on|from)|starts? on|renewal)\b/i;
+
+/**
+ * What the guard will probably say about drafts written from this brief.
+ *
+ * Deterministic and cheap enough to run on every keystroke's worth of pause.
+ * Returns an empty list far more often than not, which is the point: a brief
+ * with nothing wrong with it should say nothing at all.
+ */
+export function coachBrief(brief: string): BriefNote[] {
+  const text = String(brief ?? '').trim();
+  if (text.length < 20) return [];
+  const notes: BriefNote[] = [];
+
+  // The certain ones first, in the guard's own words. These are the same hits
+  // `findBriefProblems` throws on, surfaced early so the fix happens here
+  // rather than at the moment somebody presses send.
+  for (const h of findBriefProblems(text)) {
+    notes.push({
+      kind: h.kind === 'placeholder' ? 'placeholder' : 'merge_field',
+      sample: h.sample,
+      note: h.kind === 'placeholder'
+        ? `“${h.sample}” is a placeholder. A small model fills a gap like that in rather than leaving it alone.`
+        : `“${h.sample}” is a merge field. Briefs are instructions, not templates — write the value, or describe it.`,
+    });
+  }
+
+  const specifics = extractSpecifics(text);
+  const has = (k: SpecificKind) => specifics.some((sp) => sp.kind === k);
+
+  // The one the whole idea started from: a brief with nothing to do in it.
+  if (!ASK_RE.test(text)) {
+    notes.push({ kind: 'no_ask', note: 'There is no ask in this brief. Every draft from it will describe something and stop, which is the commonest reason a campaign gets no replies.' });
+  }
+
+  // Asked for a number it was never given.
+  const figure = text.match(WANTS_FIGURE_RE);
+  if (figure && !has('figure')) {
+    notes.push({ kind: 'invented_figure', sample: figure[0], note: `This asks for something about ${figure[0]} and gives no number. The guard holds a draft that invents a figure, so most of these will be held — put the real number in the brief.` });
+  }
+
+  // Asked for timing it was never given.
+  const when = text.match(WANTS_DATE_RE);
+  if (when && !has('date')) {
+    notes.push({ kind: 'invented_date', sample: when[0], note: `This mentions “${when[0]}” without a date. A model asked to be specific about time and given none will invent one, and the guard holds that.` });
+  }
+
+  // A promise the send cannot keep.
+  const attach = text.match(ATTACHMENT_CLAIM_RE);
+  if (attach) {
+    notes.push({ kind: 'false_attachment', sample: attach[0], note: `This mentions something “${attach[0]}”. Campaign mail carries no attachment, so a draft that says so is held. Link to it instead.` });
+  }
+  return notes;
+}
+
 export class TemplateGuardError extends Error {
   hits: GuardHit[];
   constructor(hits: GuardHit[]) {

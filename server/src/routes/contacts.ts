@@ -11,6 +11,9 @@ import { powGuard } from '../services/workGuard.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { digestFor, summarise } from '../services/contactDigest.js';
 import { suggestFor } from '../services/enrich.js';
+import { REPLY_INTENTS } from '../services/replyIntent.js';
+import { audienceChips, audienceQuery, AUDIENCE_STATUSES, draftAudience, type AudienceFilter } from '../services/nlAudience.js';
+import { searchContacts } from '../services/semantic.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(requireAuth);
@@ -72,19 +75,107 @@ export async function reblindAll(userId: number): Promise<number> {
   return rows.length;
 }
 
-contactsRouter.get('/', async (req, res) => {
-  const q = String(req.query.q ?? '').trim();
-  const tag = String(req.query.tag ?? '').trim();
-  const status = String(req.query.status ?? '').trim();
-  const page = Math.max(1, Number(req.query.page ?? 1));
-  const size = Math.min(200, Math.max(10, Number(req.query.size ?? 50)));
-  const sort = ['created_at', 'email', 'last_contacted_at', 'last_replied_at', 'company'].includes(String(req.query.sort)) ? String(req.query.sort) : 'created_at';
-  const dir = req.query.dir === 'asc' ? 'ASC' : 'DESC';
+/**
+ * The contact list, as one function over one set of parameters.
+ *
+ * Extracted from the route so the audience preview runs the *same* SQL rather
+ * than a second implementation of what a chip means. Two definitions of
+ * "quiet for 60 days" would drift the first time either was touched, and the
+ * one place that would show up is a campaign enrolling the wrong people.
+ *
+ * Takes URLSearchParams rather than Express's parsed query so a caller that
+ * has a filter in hand can build one without pretending to be a request.
+ */
+export async function listContacts(userId: number, sp: URLSearchParams): Promise<{ contacts: any[]; total: number; page: number; size: number }> {
+  const q = (sp.get('q') ?? '').trim();
+  // Meaning search over what was written about somebody, as opposed to the
+  // words in it. `?meaning=1` switches the `q` above from the word index to
+  // the vector one; everything else on the query string still applies, so
+  // "people who mentioned month-end pain, tagged customers, quiet 90 days" is
+  // one request.
+  const byMeaning = sp.get('meaning') === '1' && q.length > 2;
+  const tag = (sp.get('tag') ?? '').trim();
+  const status = (sp.get('status') ?? '').trim();
+  const page = Math.max(1, Number(sp.get('page') ?? 1));
+  const size = Math.min(200, Math.max(10, Number(sp.get('size') ?? 50)));
+  const sort = ['created_at', 'email', 'last_contacted_at', 'last_replied_at', 'company'].includes(String(sp.get('sort'))) ? String(sp.get('sort')) : 'created_at';
+  const dir = sp.get('dir') === 'asc' ? 'ASC' : 'DESC';
   const where = ['c.user_id=$1'];
-  const params: unknown[] = [req.user!.id];
-  if (q) { params.push(q); where.push(`(c.search_tsv @@ websearch_to_tsquery('simple', $${params.length}) OR c.email ILIKE '%' || $${params.length} || '%')`); }
+  const params: unknown[] = [userId];
+  if (q && byMeaning) {
+    const hits = await searchContacts(userId, q, { limit: 200 });
+    // No matches is an empty set, not "no filter": falling through to every
+    // contact would answer a question nobody asked with the whole address
+    // book, which reads as the search being broken.
+    params.push(hits.map((h) => h.id));
+    where.push(`c.id = ANY($${params.length})`);
+  } else if (q) { params.push(q); where.push(`(c.search_tsv @@ websearch_to_tsquery('simple', $${params.length}) OR c.email ILIKE '%' || $${params.length} || '%')`); }
   if (tag) { params.push(tag); where.push(`$${params.length} = ANY(c.tags)`); }
   if (status) { params.push(status); where.push(`c.status = $${params.length}`); }
+
+  // ---------- The three filters an audience is actually described with ----------
+  //
+  // "Customers on Sage who went quiet in March" is one tag, one custom field
+  // and one date arithmetic, and until now the list could express exactly the
+  // first of them. These are the filters a sentence would have to compile
+  // down to, so they exist as query parameters first and can be driven by
+  // chips, by a saved segment or by a model later without any of those having
+  // to invent their own SQL.
+
+  // What they last said back. `send_log` carries one row per send and a reply
+  // intent on the ones that were answered, so the newest labelled reply per
+  // contact is what "everyone who said not now" means. DISTINCT ON is the
+  // cheapest way to say "their most recent one" against the index that
+  // already exists.
+  const intent = sp.get('intent') ?? ''.trim();
+  if (intent && (REPLY_INTENTS as readonly string[]).includes(intent)) {
+    params.push(intent);
+    const p = params.length;
+    let window = '';
+    // A date range on the reply, not on the contact: "said not now this
+    // spring" is a statement about when they said it.
+    if (sp.get('intentFrom')) { params.push(new Date(String(sp.get('intentFrom')))); window += ` AND l.replied_at >= $${params.length}`; }
+    if (sp.get('intentTo')) { params.push(new Date(String(sp.get('intentTo')))); window += ` AND l.replied_at < $${params.length}`; }
+    where.push(`EXISTS (
+      SELECT 1 FROM (
+        SELECT DISTINCT ON (l.contact_id) l.contact_id, l.reply_intent, l.replied_at
+          FROM send_log l
+         WHERE l.user_id=c.user_id AND l.contact_id=c.id AND l.reply_intent IS NOT NULL${window}
+         ORDER BY l.contact_id, l.replied_at DESC
+      ) last WHERE last.reply_intent = $${p})`);
+  }
+
+  // Gone quiet: written to, and nothing back since. Null rather than zero is
+  // the common case — somebody who has never replied at all is the quietest
+  // there is — so the test is on the absence of a recent reply and not on the
+  // age of an old one.
+  const quietDays = Number(sp.get('quietDays') ?? 0);
+  if (Number.isFinite(quietDays) && quietDays > 0) {
+    params.push(String(Math.min(3650, Math.round(quietDays))));
+    where.push(`(c.last_contacted_at IS NOT NULL AND (c.last_replied_at IS NULL OR c.last_replied_at < now() - ($${params.length} || ' days')::interval))`);
+  }
+
+  // Custom fields, as repeated `field=key:value` parameters. Both halves are
+  // bound, never interpolated: the key is a JSONB path and the value is
+  // compared case-insensitively, because a CSV import decides the casing and
+  // nobody remembers what it chose.
+  const rawFields = sp.getAll('field');
+  for (const raw of rawFields.slice(0, 10)) {
+    const text = String(raw);
+    const colon = text.indexOf(':');
+    if (colon <= 0) continue;
+    const key = text.slice(0, colon).trim();
+    const value = text.slice(colon + 1).trim();
+    if (!key) continue;
+    params.push(key);
+    const kp = params.length;
+    // A key with no value asks for everybody who has the field set at all,
+    // which is how "people we know the renewal date for" is expressed.
+    if (!value) { where.push(`(c.fields ? $${kp})`); continue; }
+    params.push(value);
+    where.push(`lower(c.fields->>$${kp}) = lower($${params.length})`);
+  }
+
   const w = where.join(' AND ');
   const total = await one<{ n: number }>(`SELECT count(*)::int AS n FROM contacts c WHERE ${w}`, params);
   const rows = await query<any>(
@@ -95,7 +186,74 @@ contactsRouter.get('/', async (req, res) => {
      FROM contacts c WHERE ${w} ORDER BY c.${sort} ${dir} NULLS LAST, c.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`,
     params,
   );
-  res.json({ contacts: rows, total: total?.n ?? 0, page, size });
+  return { contacts: rows, total: total?.n ?? 0, page, size };
+}
+
+contactsRouter.get('/', async (req, res) => {
+  // Express's parsed query, handed on in the one shape `listContacts` takes.
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(req.query)) {
+    for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) sp.append(k, String(one));
+  }
+  res.json(await listContacts(req.user!.id, sp));
+});
+
+/**
+ * A sentence becomes an audience, as chips somebody can take apart.
+ *
+ * Behind the campaigns capability rather than the rules one: this reads a
+ * person's tags and custom field keys to build the prompt, and it exists to
+ * decide who gets mail.
+ *
+ * Returns the filter, the chips and — the part that makes it trustworthy — the
+ * count and a handful of names it actually matches. A filter shown without its
+ * size is a guess somebody has to enroll in order to check.
+ */
+contactsRouter.post('/audience', requireCapability('ai.campaigns'), powGuard('ai'), rateLimit({ name: 'audience', perMinute: 12, message: 'Still working out the last one; wait a moment' }), async (req, res) => {
+  const { sentence } = parse(z.object({ sentence: z.string().min(3).max(400) }), req.body);
+  const filter = await draftAudience(req.user!.id, sentence);
+  const preview = await audiencePreview(req.user!.id, filter);
+  res.json({ filter, chips: audienceChips(filter), ...preview });
+});
+
+/**
+ * The same, for a filter the person has already edited.
+ *
+ * Taking a chip off has to re-count without going near the model: the filter
+ * is the thing being edited now, and sending the original sentence back would
+ * let the model reinstate the chip that was just removed.
+ */
+contactsRouter.post('/audience/count', async (req, res) => {
+  const filter = parse(audienceFilterSchema, req.body) as AudienceFilter;
+  const preview = await audiencePreview(req.user!.id, filter);
+  res.json({ filter, chips: audienceChips(filter), ...preview });
+});
+
+// Who the filter actually matches, run through the same SQL the list uses so
+// the two can never disagree about what a chip means.
+async function audiencePreview(userId: number, filter: AudienceFilter): Promise<{ total: number; sample: { id: number; email: string; name: string; company: string }[] }> {
+  const p = audienceQuery(filter);
+  p.set('size', '10');
+  const rows = await listContacts(userId, p);
+  return {
+    total: rows.total,
+    sample: rows.contacts.slice(0, 10).map((c: any) => ({
+      id: c.id, email: c.email, company: c.company ?? '',
+      name: [c.first_name, c.last_name].filter(Boolean).join(' '),
+    })),
+  };
+}
+
+const audienceFilterSchema = z.object({
+  tag: z.string().max(120).optional(),
+  status: z.enum(AUDIENCE_STATUSES).optional(),
+  intent: z.enum(['interested', 'question', 'not_now', 'not_interested', 'wrong_person']).optional(),
+  period: z.string().max(60).optional(),
+  intentFrom: z.string().max(40).optional(),
+  intentTo: z.string().max(40).optional(),
+  quietDays: z.number().int().min(1).max(3650).optional(),
+  fields: z.array(z.object({ key: z.string().max(120), value: z.string().max(200) })).max(5).optional(),
+  q: z.string().max(200).optional(),
 });
 
 contactsRouter.get('/tags', async (req, res) => {

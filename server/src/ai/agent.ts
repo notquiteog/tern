@@ -288,7 +288,11 @@ function describeFocus(view: ViewContext): string {
   }
   const how = {
     contact: 'Look them up with find_contacts before saying anything specific about them, and search their mail if the question is about what was said.',
-    sequence: 'You cannot read sequences directly. Answer from what is here, or from their mail and contacts, and say plainly when you do not have it.',
+    // Was "you cannot read sequences directly", which stopped being true the
+    // moment `campaign_status` existed. A model told it is blind to something
+    // it can in fact see answers from the one line on screen instead of
+    // looking, which is worse than not having the tool at all.
+    sequence: 'Call campaign_status for its real numbers, what the replies said, and why it paused — do not answer about a campaign from the line above. propose_enrollment adds people to it and propose_review_decisions clears its queue; both show the person a card and wait.',
     day: 'Use my_day for what is actually in the calendar rather than answering from this line.',
   }[f.kind];
   return [

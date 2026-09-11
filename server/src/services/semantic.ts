@@ -19,9 +19,10 @@
 // another's rotation anyway.
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
+import { config } from '../config.js';
 import * as vectors from './vectorStore.js';
 import { modelSlug, parseCollection } from './vectorStore.js';
-import { embed, getAiSettings } from '../ai/llm.js';
+import { embed, embedIdentity, getAiSettings, modelOfIdentity } from '../ai/llm.js';
 import { embedInputChars } from '../ai/providers.js';
 import { dataKey } from './vault.js';
 import { fromBuffer, project, rotationFor, similarity, toBuffer, type Rotation } from './embeddings.js';
@@ -72,17 +73,48 @@ async function rotationFor_(userId: number, dims: number): Promise<Rotation> {
 export function forgetRotations(): void { rotations.clear(); }
 
 /**
- * The Qdrant collection for one user and one embedding model.
+ * The Qdrant collection for one user and one embedder.
  *
  * Both halves matter. The user, because vectors are rotated with a per-user
  * key and one collection holding several rotations gives HNSW a graph built
  * from distances that mean nothing across users — which costs recall *within*
- * a user, not just across them. The model, because vectors from two models are
- * not comparable at all, so a model change writes into a new collection rather
+ * a user, not just across them. The embedder, because vectors from two of them
+ * are not comparable at all, so a change writes into a new collection rather
  * than poisoning the old one.
+ *
+ * The second argument is an `embedIdentity`, not a model name: provider, host
+ * and model together. `all-minilm` on the Ollama next door and `all-minilm`
+ * through a gateway are different embedders wearing the same string, and while
+ * only the name was used they shared a collection and a manifest scope — so
+ * changing where embeddings came from left every stored vector in place and
+ * silently searched a space nothing was in any more.
  */
-function vectorCollection(userId: number, model: string): string {
-  return vectors.collectionFor(userId, model);
+function vectorCollection(userId: number, identity: string): string {
+  return vectors.collectionFor(userId, identity);
+}
+
+/**
+ * Where a person's contact notes live, for one embedder.
+ *
+ * A separate collection from their mail rather than a flag on the points.
+ * Point ids are the row's own id, and a contact 12 and an email 12 would
+ * collide — and a `kind` filter on every search would be paying the filtered-
+ * HNSW cost this whole layout exists to avoid.
+ */
+function contactCollection(userId: number, identity: string): string {
+  return vectors.collectionFor(userId, `contacts|${identity}`);
+}
+
+/** Every collection that is current for this embedder, by slug. */
+function keepSlugs(identity: string): Set<string> {
+  const base = modelSlug(identity);
+  if (!base) return new Set();
+  return new Set([base, modelSlug(`contacts|${identity}`)]);
+}
+
+/** Whether a collection slug is one this embedder writes to now. */
+export function isCurrentSlug(identity: string, slug: string): boolean {
+  return keepSlugs(identity).has(slug);
 }
 
 // ---------- Indexing ----------
@@ -133,11 +165,11 @@ let reconciledFor: string | null = null;
 /** Tests only: the memo is process-wide state. */
 export function forgetEmbedReconciliation(): void { reconciledFor = null; }
 
-async function reconcileEmbedModel(model: string): Promise<void> {
-  if (!model || reconciledFor === model) return;
-  reconciledFor = model;
-  const queued = await invalidateVectorsFrom(model);
-  if (queued) log.info('the embedding model no longer matches the index; queued a rebuild', { model, messages: queued });
+async function reconcileEmbedModel(identity: string): Promise<void> {
+  if (!identity || reconciledFor === identity) return;
+  reconciledFor = identity;
+  const queued = await invalidateVectorsFrom(identity);
+  if (queued) log.info('the embedder no longer matches the index; queued a rebuild', { identity, messages: queued });
 }
 
 // One batch for one person. Returns how many were written, so the caller can
@@ -150,8 +182,9 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   // The model the SETTINGS name. What actually made the vectors comes back
   // from `embed` below and is what gets written to the row — they agree, but
   // only one of them is a measurement, and the row must carry that one.
-  const configuredModel = (await getAiSettings()).embedModel;
-  await reconcileEmbedModel(configuredModel);
+  const settings = await getAiSettings();
+  const configuredModel = settings.embedModel;
+  await reconcileEmbedModel(embedIdentity(settings));
   const rows = await query<any>(
     `SELECT e.id, e.account_id, e.subject, e.preview, e.body_text, e.body_html
        FROM emails e JOIN accounts a ON a.id=e.account_id
@@ -194,7 +227,10 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
   // It also keeps the cascade: `email_vectors.email_id` still references
   // `emails(id) ON DELETE CASCADE`, so deleting a message still removes its
   // manifest row without Qdrant having to take part in the transaction.
-  const collection = vectorCollection(userId, model);
+  // Built from the model the embedder actually answered with, over the
+  // endpoint the settings resolved to.
+  const identity = embedIdentity(settings, model);
+  const collection = vectorCollection(userId, identity);
   const points: { emailId: number; accountId: number; vector: number[] }[] = [];
   const indexed: { id: number; accountId: number }[] = [];
   for (let k = 0; k < usable.length; k++) {
@@ -221,7 +257,9 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
         `INSERT INTO email_vectors (email_id, account_id, dims, model)
          VALUES ($1,$2,$3,$4)
          ON CONFLICT (email_id) DO UPDATE SET dims=EXCLUDED.dims, model=EXCLUDED.model, created_at=now()`,
-        [row.id, row.accountId, points[0]!.vector.length, model],
+        // The manifest's `model` column carries the whole identity, because it
+        // is the scope every read filters on — see `vectorCollection`.
+        [row.id, row.accountId, points[0]!.vector.length, identity],
       );
     }
   }
@@ -247,7 +285,7 @@ export async function indexBatch(userId: number, limit = INDEX_BATCH): Promise<{
 // different embedder, which is what lets the page say how much work that just
 // asked for; `reconcileEmbedModel` above calls it for every other way the
 // model can change, none of which pass through a route at all.
-export async function invalidateVectorsFrom(model: string): Promise<number> {
+export async function invalidateVectorsFrom(identity: string): Promise<number> {
   // The manifest first, the index second, and the order is the same argument
   // `indexBatch` makes pointing the other way. A message marked for rebuild
   // whose old collection still exists is recoverable — the next pass rewrites
@@ -258,9 +296,9 @@ export async function invalidateVectorsFrom(model: string): Promise<number> {
     `UPDATE emails SET embedded=false
       WHERE embedded AND id IN (SELECT email_id FROM email_vectors WHERE model <> $1)
       RETURNING id`,
-    [model],
+    [identity],
   );
-  await dropCollectionsNotFrom(model);
+  await dropCollectionsNotFrom(identity);
   return rows.length;
 }
 
@@ -300,17 +338,21 @@ export async function invalidateVectorsFrom(model: string): Promise<number> {
  * embedder — the SQL above has already run, the rebuild is queued, and the
  * next model change or a capability revocation sweeps whatever was missed.
  */
-export async function dropCollectionsNotFrom(model: string): Promise<number> {
-  const keep = modelSlug(model);
+export async function dropCollectionsNotFrom(identity: string): Promise<number> {
+  // Two collections per user per embedder now: their mail, and their contact
+  // notes. Both are current under the same identity, so the keep-set has to
+  // name both — a sweep that knew only about mail would drop the contact
+  // index on every pass and rebuild it on the next, for ever.
+  const keep = keepSlugs(identity);
   // An empty slug would match every collection with no model segment, which is
   // not a model change — it is a missing setting, and dropping the index on
   // one would be a spectacular way to react to it.
-  if (!keep) return 0;
+  if (!keep.size) return 0;
   let dropped = 0;
   try {
     for (const name of await vectors.listCollections()) {
       const parsed = parseCollection(name);
-      if (!parsed || parsed.slug === keep) continue;
+      if (!parsed || keep.has(parsed.slug)) continue;
       try {
         await vectors.dropCollection(name);
         dropped += 1;
@@ -320,11 +362,11 @@ export async function dropCollectionsNotFrom(model: string): Promise<number> {
     }
   } catch (err) {
     log.error('the vector index could not be reached to drop superseded collections; they remain', {
-      model, err: String(err),
+      identity, err: String(err),
     });
     return dropped;
   }
-  if (dropped) log.info(`dropped ${dropped} vector collections built by a previous embedder`, { model });
+  if (dropped) log.info(`dropped ${dropped} vector collections built by a previous embedder`, { identity });
   return dropped;
 }
 
@@ -343,8 +385,10 @@ export async function semanticSearch(
 ): Promise<SemanticHit[]> {
   const query_ = String(text ?? '').trim();
   if (!query_ || !accountIds.length) return [];
+  const settings = await getAiSettings();
   const { vectors: embedded, dims, model } = await embed([query_], { userId, capability: 'semantic' }, undefined, 'query');
   if (!embedded[0]?.length || !dims) return [];
+  const identity = embedIdentity(settings, model);
   const rot = await rotationFor_(userId, dims);
   const needle = project(rot, embedded[0]);
 
@@ -372,7 +416,7 @@ export async function semanticSearch(
   // move. The cost is that the filter is applied after the top-k, so the top-k
   // has to be big enough to survive it.
   const filtered = Boolean(opts.mailboxIds?.length);
-  const found = await vectors.search(vectorCollection(userId, model), Array.from(needle), {
+  const found = await vectors.search(vectorCollection(userId, identity), Array.from(needle), {
     accountIds,
     limit: filtered ? Math.min(want * 8, 1000) : want,
     minScore,
@@ -561,4 +605,312 @@ export async function relatedContext(userId: number, accountIds: number[], quest
       date: new Date(m.received_at).toDateString(),
       text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').slice(0, 1200),
     }));
+}
+
+// ---------- Looking at the index, and emptying it ----------
+//
+// The index has always been something that happened to an install rather than
+// something anybody could see or steer: it filled in the background, it
+// rebuilt itself when the embedder changed, and if it went wrong the only
+// instrument was `indexPending` on the settings page saying a number that was
+// not going down.
+//
+// These are the two operations an operator actually needs. `indexStatus`
+// answers "what is in there, and does it match what this install is
+// configured to use" — including, deliberately, collections that are NOT
+// ours, so that a shared Qdrant is legible rather than mysterious.
+// `resetIndex` throws it away and queues the rebuild.
+
+export interface CollectionView {
+  name: string;
+  /** Null when the name is not one of Tern's. */
+  userId: number | null;
+  points: number;
+  dims: number;
+  /**
+   * `current`    the collection this install writes to and reads from now.
+   * `superseded` Tern's, but built by an embedder no longer configured.
+   * `orphaned`   Tern's, for a user who no longer exists.
+   * `foreign`    not Tern's at all. Listed so a shared index is legible, and
+   *              never touched by anything here.
+   */
+  state: 'current' | 'superseded' | 'orphaned' | 'foreign';
+}
+
+export interface IndexStatus {
+  reachable: boolean;
+  url: string;
+  /** What went wrong, when it did. Empty otherwise. */
+  detail: string;
+  /** The whole embedder identity, and the readable half of it. */
+  identity: string;
+  model: string;
+  users: { userId: number; username: string; indexed: number; pending: number; collection: string }[];
+  collections: CollectionView[];
+}
+
+/**
+ * What is in the index, and whether it matches what this install would write.
+ *
+ * Never throws on an unreachable index: "Qdrant is down" is the single most
+ * useful thing this can report, and a status endpoint that 500s when the thing
+ * it reports on is down tells an operator nothing they did not already fear.
+ */
+export async function indexStatus(): Promise<IndexStatus> {
+  const settings = await getAiSettings();
+  const identity = embedIdentity(settings);
+  const health = await vectors.reachable();
+
+  const users = await query<{ id: number; username: string; indexed: number; pending: number }>(
+    `SELECT u.id, u.username,
+            (SELECT count(*)::int FROM email_vectors v JOIN accounts a ON a.id=v.account_id
+              WHERE a.user_id=u.id AND v.model=$1) AS indexed,
+            (SELECT count(*)::int FROM emails e JOIN accounts a ON a.id=e.account_id
+              WHERE a.user_id=u.id AND NOT e.embedded) AS pending
+       FROM users u ORDER BY u.id`,
+    [identity],
+  );
+
+  const out: IndexStatus = {
+    reachable: health.ok,
+    url: config.qdrantUrl,
+    detail: health.ok ? '' : health.detail,
+    identity,
+    model: modelOfIdentity(identity),
+    users: users.map((u) => ({
+      userId: u.id, username: u.username, indexed: u.indexed, pending: u.pending,
+      collection: vectorCollection(u.id, identity),
+    })),
+    collections: [],
+  };
+  if (!health.ok) return out;
+
+  const live = new Set(users.map((u) => u.id));
+  const current = keepSlugs(identity);
+  let names: string[] = [];
+  try { names = await vectors.listCollections(); } catch { return out; }
+  for (const name of names) {
+    const parsed = parseCollection(name);
+    let info: { points: number; dims: number } | null = null;
+    // One bad collection must not cost the whole listing: an operator looking
+    // at this is usually looking at it because something is wrong.
+    try { info = await vectors.collectionInfo(name); } catch { /* reported as zeroes */ }
+    const state: CollectionView['state'] = !parsed ? 'foreign'
+      : !live.has(parsed.userId) ? 'orphaned'
+        : current.has(parsed.slug) ? 'current' : 'superseded';
+    out.collections.push({
+      name, userId: parsed?.userId ?? null,
+      points: info?.points ?? 0, dims: info?.dims ?? 0, state,
+    });
+  }
+  // Ours first, and within that the ones that need attention before the ones
+  // that do not.
+  const rank = { orphaned: 0, superseded: 1, current: 2, foreign: 3 };
+  out.collections.sort((a, b) => rank[a.state] - rank[b.state] || a.name.localeCompare(b.name));
+  return out;
+}
+
+export interface ResetResult { collectionsDropped: number; manifestRows: number; queued: number }
+
+/**
+ * Throw the index away and queue it to be built again.
+ *
+ * ── Why this is safe, and what it costs ─────────────────────────────────────
+ *
+ * Vectors are derived data. Everything here can be made again from mail that
+ * is still in Postgres, so the worst case of running it is time: meaning
+ * search is thin until the background pass catches up, and ordinary word
+ * search is unaffected throughout. That is the whole risk, and it is why this
+ * can be offered as a button rather than as a documented recovery procedure.
+ *
+ * ── Why the order is this way round ─────────────────────────────────────────
+ *
+ * The manifest is cleared first and the collections dropped second, the same
+ * argument `invalidateVectorsFrom` makes. A message marked for rebuild whose
+ * collection still exists is recoverable — the next pass overwrites it. A
+ * collection dropped while the manifest still claims the message is indexed
+ * leaves a row nothing will ever look for again.
+ *
+ * ── What it will not touch ──────────────────────────────────────────────────
+ *
+ * Collections it cannot parse as Tern's. This Qdrant may be shared, and a
+ * reset that emptied everything it could see would be a reset that deletes a
+ * stranger's data. Scoped to one user, it will not touch another user's
+ * collections either.
+ */
+export async function resetIndex(opts: { userId?: number } = {}): Promise<ResetResult> {
+  const scoped = typeof opts.userId === 'number';
+  const manifest = scoped
+    ? await query<{ email_id: number }>(
+      `DELETE FROM email_vectors v USING accounts a
+        WHERE a.id=v.account_id AND a.user_id=$1 RETURNING v.email_id`,
+      [opts.userId],
+    )
+    : await query<{ email_id: number }>('DELETE FROM email_vectors RETURNING email_id');
+  const queued = scoped
+    ? await query<{ id: number }>(
+      `UPDATE emails e SET embedded=false FROM accounts a
+        WHERE a.id=e.account_id AND a.user_id=$1 AND e.embedded RETURNING e.id`,
+      [opts.userId],
+    )
+    : await query<{ id: number }>('UPDATE emails SET embedded=false WHERE embedded RETURNING id');
+  // Contacts are indexed into their own collection off the same manifest
+  // idea, so a reset that left them behind would drop their vectors and go on
+  // believing they were indexed.
+  if (scoped) {
+    await query('DELETE FROM contact_vectors WHERE user_id=$1', [opts.userId]);
+    await query('UPDATE contacts SET embedded=false WHERE user_id=$1 AND embedded', [opts.userId]);
+  } else {
+    await query('DELETE FROM contact_vectors');
+    await query('UPDATE contacts SET embedded=false WHERE embedded');
+  }
+
+  let dropped = 0;
+  try {
+    for (const name of await vectors.listCollections()) {
+      const parsed = parseCollection(name);
+      if (!parsed) continue;
+      if (scoped && parsed.userId !== opts.userId) continue;
+      try { await vectors.dropCollection(name); dropped += 1; }
+      catch (err) { log.error('could not drop a collection during a reset', { name, err: String(err) }); }
+    }
+  } catch (err) {
+    // The rebuild is already queued and the manifest is already clear, so an
+    // unreachable index leaves the install in a state that heals itself: the
+    // next pass rewrites into whatever is there, and the sweep removes the
+    // rest. Reported rather than thrown for exactly that reason.
+    log.error('the vector index could not be reached during a reset; collections remain', { err: String(err) });
+  }
+  // The per-process memo of which collections exist is now wrong.
+  vectors.forgetEnsuredCollections();
+  forgetEmbedReconciliation();
+  log.warn('the vector index was reset', { user: opts.userId ?? 'all', dropped, queued: queued.length });
+  return { collectionsDropped: dropped, manifestRows: manifest.length, queued: queued.length };
+}
+
+// ---------- Contacts ----------
+//
+// The search vector covers notes and custom fields, so "Sage" finds everybody
+// whose plan is Sage. What it cannot do is find "people who mentioned
+// month-end pain", because nobody wrote that phrase — they wrote "always
+// chasing invoices in the last week of the month". Word search and meaning
+// search fail in opposite directions, which is the whole argument for having
+// both, and contacts were the one place only one of them was pointed.
+
+/** What of a contact is worth embedding. Everything somebody typed, nothing generated. */
+export function contactText(c: { first_name?: string; last_name?: string; company?: string; title?: string; notes?: string; fields?: Record<string, unknown> }): string {
+  const fields = Object.entries(c.fields ?? {})
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim())
+    .map(([k, v]) => `${k}: ${String(v).trim()}`);
+  // The notes first and at full length: they are the only free text a person
+  // wrote about this contact, and the only part a meaning search can find
+  // something in that a word search could not.
+  return [
+    String(c.notes ?? '').trim(),
+    [c.first_name, c.last_name].filter(Boolean).join(' '),
+    [c.title, c.company].filter(Boolean).join(', '),
+    ...fields,
+  ].filter(Boolean).join('\n').slice(0, 4000);
+}
+
+export async function contactIndexPending(userId: number): Promise<number> {
+  const r = await one<{ n: number }>('SELECT count(*)::int AS n FROM contacts WHERE user_id=$1 AND NOT embedded', [userId]);
+  return r?.n ?? 0;
+}
+
+/**
+ * One batch of contacts for one person.
+ *
+ * Mirrors `indexBatch` deliberately, down to the order of the two writes: the
+ * index first and the manifest second, so a failure between them leaves a
+ * point with no manifest row — which the next pass rewrites — rather than a
+ * manifest row with no point, which nothing would ever look for again.
+ */
+export async function indexContactsBatch(userId: number, limit = INDEX_BATCH): Promise<{ done: number; remaining: number }> {
+  if (!(await allowed(userId, 'semantic'))) return { done: 0, remaining: 0 };
+  const settings = await getAiSettings();
+  const rows = await query<any>(
+    `SELECT id, first_name, last_name, company, title, notes, fields FROM contacts
+      WHERE user_id=$1 AND NOT embedded ORDER BY updated_at DESC LIMIT $2`,
+    [userId, limit],
+  );
+  if (!rows.length) return { done: 0, remaining: 0 };
+
+  const texts = rows.map((c) => contactText(c));
+  // A contact with nothing written about them still gets marked, or the pass
+  // finds them again for ever. A name alone is not worth a vector: the word
+  // index already finds a name, and embedding one produces a point that
+  // matches every other name.
+  const usable = texts.map((t, i) => ({ t, i })).filter((x) => x.t.length > 24);
+  if (!usable.length) {
+    await query('UPDATE contacts SET embedded=true WHERE id = ANY($1)', [rows.map((r) => r.id)]);
+    return { done: rows.length, remaining: await contactIndexPending(userId) };
+  }
+
+  const { vectors: embedded, model, dims } = await embed(usable.map((x) => x.t), { userId, capability: 'semantic' }, undefined, 'document');
+  if (!embedded.length || !dims) return { done: 0, remaining: await contactIndexPending(userId) };
+  const rot = await rotationFor_(userId, dims);
+  const identity = embedIdentity(settings, model);
+  const collection = contactCollection(userId, identity);
+
+  const points: { emailId: number; accountId: number; vector: number[] }[] = [];
+  const indexed: number[] = [];
+  for (let k = 0; k < usable.length; k++) {
+    const v = embedded[k];
+    if (!Array.isArray(v) || !v.length) continue;
+    const row = rows[usable[k].i];
+    // `accountId` is the store's filter field and a contact belongs to no
+    // account, so 0 stands for "this person's, all of them" — the contact
+    // search passes the same 0 and nothing else can match it.
+    points.push({ emailId: row.id, accountId: 0, vector: Array.from(project(rot, v)) });
+    indexed.push(row.id);
+  }
+  if (points.length) {
+    await vectors.ensureCollection(collection, points[0]!.vector.length);
+    await vectors.upsert(collection, points);
+    for (const id of indexed) {
+      await query(
+        `INSERT INTO contact_vectors (contact_id, user_id, dims, model) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (contact_id) DO UPDATE SET dims=EXCLUDED.dims, model=EXCLUDED.model, created_at=now()`,
+        [id, userId, points[0]!.vector.length, identity],
+      );
+    }
+  }
+  await query('UPDATE contacts SET embedded=true WHERE id = ANY($1)', [rows.map((r) => r.id)]);
+  const remaining = await contactIndexPending(userId);
+  log.info(`indexed ${rows.length} contacts`, { user: userId, remaining });
+  return { done: rows.length, remaining };
+}
+
+export interface ContactHit { id: number; score: number }
+
+/**
+ * Contacts whose notes mean something like this.
+ *
+ * Ids and scores only, joined back to `contacts` by the caller — the same
+ * split mail search uses, and for the same reason: a point that outlived its
+ * contact joins to no row and disappears before anything is rendered.
+ */
+export async function searchContacts(userId: number, text: string, opts: { limit?: number; minScore?: number } = {}): Promise<ContactHit[]> {
+  const q = String(text ?? '').trim();
+  if (!q) return [];
+  if (!(await allowed(userId, 'semantic'))) return [];
+  const settings = await getAiSettings();
+  const { vectors: embedded, dims, model } = await embed([q], { userId, capability: 'semantic' }, undefined, 'query');
+  if (!embedded[0]?.length || !dims) return [];
+  const rot = await rotationFor_(userId, dims);
+  const needle = project(rot, embedded[0]);
+  const found = await vectors.search(contactCollection(userId, embedIdentity(settings, model)), Array.from(needle), {
+    accountIds: [0],
+    limit: opts.limit ?? 50,
+    minScore: opts.minScore ?? 0.28,
+  });
+  if (!found.length) return [];
+  // Scoped to this person's own rows, whatever the index said.
+  const live = await query<{ id: number }>(
+    'SELECT id FROM contacts WHERE user_id=$1 AND id = ANY($2)',
+    [userId, found.map((h) => h.emailId)],
+  );
+  const ok = new Set(live.map((r) => r.id));
+  return found.filter((h) => ok.has(h.emailId)).map((h) => ({ id: h.emailId, score: h.score }));
 }

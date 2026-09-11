@@ -153,6 +153,40 @@ async function main(): Promise<void> {
       if (!dropped) console.log('nothing to do: every collection belongs to a user who still exists');
       break;
     }
+    case 'vectors-status': {
+      // What is actually in the index, for when meaning search is returning
+      // nothing and the question is whether that is Qdrant being down, an
+      // embedder that has moved, or a mailbox that simply has not been
+      // indexed yet. Those want three different responses and looked
+      // identical from outside.
+      const { indexStatus } = await import('./services/semantic.js');
+      const st = await indexStatus();
+      console.log(`index:    ${st.url} ${st.reachable ? 'reachable' : `UNREACHABLE — ${st.detail}`}`);
+      console.log(`embedder: ${st.model}`);
+      console.log(`identity: ${st.identity}`);
+      if (st.users.length) { console.log('\nper user:'); console.table(st.users); }
+      if (st.collections.length) { console.log('\ncollections:'); console.table(st.collections); }
+      else if (st.reachable) console.log('\nno collections: nothing has been indexed yet');
+      break;
+    }
+    case 'vectors-reset': {
+      // Throws the index away and queues the rebuild. Everything here is
+      // derived from mail that is still in Postgres, so the cost is time
+      // rather than data: meaning search is thin until the background pass
+      // catches up and word search is unaffected throughout.
+      const { resetIndex } = await import('./services/semantic.js');
+      const who = arg('user');
+      let userId: number | undefined;
+      if (who) {
+        const u = (await query<{ id: number }>('SELECT id FROM users WHERE username=$1 OR id::text=$1', [who]))[0];
+        if (!u) { console.error(`no such user: ${who}`); process.exitCode = 1; break; }
+        userId = u.id;
+      }
+      const r = await resetIndex(userId === undefined ? {} : { userId });
+      console.log(`dropped ${r.collectionsDropped} collection(s), cleared ${r.manifestRows} manifest row(s), queued ${r.queued} message(s) to be indexed again`);
+      console.log('the background pass rebuilds them; `vectors-status` shows the progress');
+      break;
+    }
     case 'list-users': {
       const rows = await query('SELECT id, username, display_name, role, disabled, totp_enabled, last_login_at FROM users ORDER BY id');
       console.table(rows);
@@ -257,7 +291,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | vectors-sweep | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status | recover-key');
+      console.log('commands: migrate | create-user | set-password | disable-totp | list-users | vectors-status | vectors-reset [--user ID|NAME] | vectors-sweep | accounts [--reconnect ID|EMAIL|all] | add-mailbox | dns-check | ai-slots | stats | encrypt-cache | encryption-status | recover-key');
   }
   await pool.end();
 }

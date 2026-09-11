@@ -30,11 +30,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import {
-  Archive, BookOpen, ClipboardCheck, Contact, Inbox, Mail, Search, Send, Settings, Sparkles,
-  Star, Telescope, Trash2, Workflow, Wrench, Clock, Bot, ListFilter, Home, FileText, Newspaper,
-  KeyRound, Palette, Moon, Upload, Plus, ShieldCheck, MailOpen, AlarmClock, Users, VenetianMask,
-} from 'lucide-react';
+import { Archive, BookOpen, ClipboardCheck, Contact, Inbox, Mail, Search, Send, Settings, Sparkles, Star, Telescope, Trash2, Workflow, Wrench, Clock, Bot, ListFilter, Home, FileText, Newspaper, KeyRound, Palette, Moon, Upload, Plus, ShieldCheck, MailOpen, AlarmClock, Users, VenetianMask, Reply } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { useCompose } from '../state/compose';
@@ -144,6 +140,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       go('Sequences', '/sequences', <Workflow size={15} />, 'g q'),
       go('Templates', '/templates', <BookOpen size={15} />),
       go('AI review queue', '/review', <Sparkles size={15} />, 'g r'),
+      go('Campaign replies', '/sequences/replies', <Reply size={15} />),
       go('AI responders', '/responders', <Bot size={15} />),
       go('Inbox rules', '/rules', <ListFilter size={15} />),
       ...(can('brief') ? [go('Brief', '/brief', <Newspaper size={15} />)] : []),

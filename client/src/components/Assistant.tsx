@@ -20,10 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import {
-  AlertTriangle, Bot, CalendarPlus, Check, ChevronLeft, ClipboardCheck, ImagePlus, Layers,
-  ListFilter, Loader2, Mail, MessageSquare, Mic, Plus, Search, Square, Trash2, Volume2, VolumeX, X,
-} from 'lucide-react';
+import { AlertTriangle, Bot, CalendarPlus, Check, ChevronLeft, ClipboardCheck, ImagePlus, Layers, ListFilter, Loader2, Mail, MessageSquare, Mic, Plus, Search, Square, Trash2, Volume2, VolumeX, X, UserPlus, Contact } from 'lucide-react';
 import { api } from '../api';
 import { streamWithWork, withWork } from '../lib/work';
 import { textToHtml } from '../lib/format';
@@ -56,6 +53,19 @@ type Proposal =
       counterparty: string | null; dueAt: string | null; accountId: number | null; threadId: string | null;
     }
   | { kind: 'rule'; rule: DraftRule; sentence: string }
+  | {
+      kind: 'enrollment'; sequenceId: number; sequenceName: string; reason: string;
+      contacts: { id: number; email: string; name: string; company: string }[];
+      skipped: { email: string; why: string }[];
+    }
+  | {
+      kind: 'review_decisions'; action: 'approve' | 'reject'; reason: string;
+      items: { id: number; subject: string; to: string; heldFor: string | null }[];
+    }
+  | {
+      kind: 'contact_change'; contactId: number; email: string; name: string; reason: string;
+      changes: { field: string; from: string; to: string }[];
+    }
   | {
       kind: 'triage'; action: 'archive' | 'label' | 'snooze' | 'mute';
       mailbox: { id: string; name: string } | null; until: string | null;
@@ -326,6 +336,143 @@ function RuleCard({ p }: { p: Extract<Proposal, { kind: 'rule' }> }) {
  *   and the undo token the server hands back is passed to the same toast the
  *   list uses, so a wrong set costs one click.
  */
+/**
+ * Everybody a proposed enrolment would write to, listed in full.
+ *
+ * Never truncated, for the reason the triage card is never truncated: a card
+ * that says "and 340 more" is asking somebody to approve mail to people they
+ * cannot see, which is the whole thing a proposal exists to prevent. Each row
+ * can be taken off before the button is pressed.
+ */
+function EnrollmentCard({ p }: { p: Extract<Proposal, { kind: 'enrollment' }> }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [dropped, setDropped] = useState<Set<number>>(new Set());
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');
+  const kept = p.contacts.filter((c) => !dropped.has(c.id));
+
+  async function run() {
+    if (!kept.length || state !== 'idle') return;
+    setState('busy');
+    try {
+      const r = await api.post<any>(`/api/sequences/${p.sequenceId}/enroll`, { contactIds: kept.map((c) => c.id) });
+      setState('done');
+      toast.success(`${r.enrolled} enrolled in ${p.sequenceName}${r.suppressed ? `, ${r.suppressed} suppressed` : ''}`);
+      void qc.invalidateQueries({ queryKey: ['sequences'] });
+    } catch (e) { toast.error(e); setState('idle'); }
+  }
+
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head"><UserPlus size={14} /><span>{p.reason}</span></div>
+      <div className="assistant-card-row"><span className="faint">Campaign</span> {p.sequenceName}</div>
+      <div className="assistant-list-compact">
+        {kept.map((c) => (
+          <div key={c.id} className="row small">
+            <span className="truncate">{c.name || c.email}{c.company ? ` · ${c.company}` : ''}</span>
+            {state === 'idle' && <button type="button" className="chip-x" aria-label={`Leave out ${c.email}`} onClick={() => setDropped((d) => new Set(d).add(c.id))}>×</button>}
+          </div>
+        ))}
+      </div>
+      {p.skipped.length > 0 && (
+        <div className="small faint mt-8">{p.skipped.length} left out: {p.skipped.slice(0, 4).map((s) => `${s.email} (${s.why})`).join(', ')}{p.skipped.length > 4 ? '…' : ''}</div>
+      )}
+      <div className="assistant-card-actions">
+        {state === 'done'
+          ? <span className="small muted">Enrolled.</span>
+          : <Button size="sm" variant="primary" loading={state === 'busy'} disabled={!kept.length} onClick={run}>Enrol {kept.length}</Button>}
+      </div>
+    </div>
+  );
+}
+
+/** A set of queued drafts, decided in one press. */
+function ReviewDecisionsCard({ p }: { p: Extract<Proposal, { kind: 'review_decisions' }> }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [dropped, setDropped] = useState<Set<number>>(new Set());
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');
+  const kept = p.items.filter((i) => !dropped.has(i.id));
+
+  async function run() {
+    if (!kept.length || state !== 'idle') return;
+    setState('busy');
+    try {
+      // The bulk route applies the ordinary single decision to each, so an
+      // approval still sends and a rejection still pauses its enrolment.
+      await api.post('/api/review/bulk', { ids: kept.map((i) => i.id), action: p.action });
+      setState('done');
+      toast.success(`${kept.length} ${p.action === 'approve' ? 'approved' : 'rejected'}`);
+      void qc.invalidateQueries({ queryKey: ['review'] });
+      void qc.invalidateQueries({ queryKey: ['counts'] });
+    } catch (e) { toast.error(e); setState('idle'); }
+  }
+
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head"><ClipboardCheck size={14} /><span>{p.reason}</span></div>
+      <div className="assistant-list-compact">
+        {kept.map((i) => (
+          <div key={i.id} className="row small">
+            <span className="truncate">{i.subject} <span className="faint">to {i.to}</span>{i.heldFor ? <span style={{ color: 'var(--warning-text)' }}> · held</span> : null}</span>
+            {state === 'idle' && <button type="button" className="chip-x" aria-label="Leave this one out" onClick={() => setDropped((d) => new Set(d).add(i.id))}>×</button>}
+          </div>
+        ))}
+      </div>
+      <div className="assistant-card-actions">
+        {state === 'done'
+          ? <span className="small muted">Done.</span>
+          : <Button size="sm" variant={p.action === 'approve' ? 'primary' : 'default'} loading={state === 'busy'} disabled={!kept.length} onClick={run}>{p.action === 'approve' ? 'Approve' : 'Reject'} {kept.length}</Button>}
+      </div>
+    </div>
+  );
+}
+
+/** What a contact says now, beside what it would say. */
+function ContactChangeCard({ p }: { p: Extract<Proposal, { kind: 'contact_change' }> }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');
+
+  async function run() {
+    if (state !== 'idle') return;
+    setState('busy');
+    try {
+      // The whole record is fetched and written back, because the contact
+      // route takes a complete object — and reading it here means the write
+      // is against what is on disk now rather than against what the model saw.
+      const current = await api.get<any>(`/api/contacts/${p.contactId}`);
+      const next: any = { ...current.contact };
+      for (const c of p.changes) {
+        if (c.field === 'tags') next.tags = c.to === '(none)' ? [] : c.to.split(',').map((t) => t.trim()).filter(Boolean);
+        else next[c.field] = c.to;
+      }
+      await api.put(`/api/contacts/${p.contactId}`, next);
+      setState('done');
+      toast.success(`${p.name} updated`);
+      void qc.invalidateQueries({ queryKey: ['contacts'] });
+    } catch (e) { toast.error(e); setState('idle'); }
+  }
+
+  return (
+    <div className="assistant-card">
+      <div className="assistant-card-head"><Contact size={14} /><span>{p.reason}</span></div>
+      <div className="assistant-card-row"><span className="faint">Contact</span> {p.name} &lt;{p.email}&gt;</div>
+      {p.changes.map((c) => (
+        <div key={c.field} className="assistant-card-row">
+          <span className="faint">{c.field.replace(/_/g, ' ')}</span>
+          <span className="small"><span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{c.from || '(empty)'}</span> → <b>{c.to || '(empty)'}</b></span>
+        </div>
+      ))}
+      <div className="assistant-card-actions">
+        {state === 'done'
+          ? <span className="small muted">Saved.</span>
+          : <Button size="sm" variant="primary" loading={state === 'busy'} onClick={run}>Save the change{p.changes.length === 1 ? '' : 's'}</Button>}
+      </div>
+    </div>
+  );
+}
+
 function TriageCard({ p }: { p: Extract<Proposal, { kind: 'triage' }> }) {
   const toast = useToast();
   const qc = useQueryClient();
@@ -746,6 +893,9 @@ export function AssistantDock() {
                 {m.proposal?.kind === 'commitment' ? <CommitmentCard p={m.proposal} /> : null}
                 {m.proposal?.kind === 'rule' ? <RuleCard p={m.proposal} /> : null}
                 {m.proposal?.kind === 'triage' ? <TriageCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'enrollment' ? <EnrollmentCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'review_decisions' ? <ReviewDecisionsCard p={m.proposal} /> : null}
+                {m.proposal?.kind === 'contact_change' ? <ContactChangeCard p={m.proposal} /> : null}
                 {m.references?.length ? <ReferenceList refs={m.references} /> : null}
               </div>
             ))}

@@ -13,6 +13,8 @@ import { openEmail, openEmailWith, openReview, openReviewWith, sealReview } from
 import { dataKey, openWith, seal } from '../services/vault.js';
 import { describeHits, findTemplateArtifacts, type GuardHit, type GuardInput } from '../ai/guard.js';
 import { generateResponderReply, personalize, renderStep } from '../workers/scheduler.js';
+import { recordEdit } from '../services/voiceLearning.js';
+import { allowed } from '../services/capabilities.js';
 
 export const reviewRouter = Router();
 reviewRouter.use(requireAuth);
@@ -69,7 +71,7 @@ function fixesFor(hits: GuardHit[], contact: Record<string, unknown> | null): { 
 
 reviewRouter.get('/', async (req, res) => {
   const rows = await query<any>(
-    `SELECT r.*, c.email, c.first_name, c.last_name, c.company, c.title AS contact_title, c.fields AS contact_fields, s.name AS sequence_name, s.id AS sequence_id, a.email AS account_email, st.position AS step_position, rp.name AS responder_name,
+    `SELECT r.*, c.email, c.first_name, c.last_name, c.company, c.title AS contact_title, c.fields AS contact_fields, c.notes AS contact_notes, s.name AS sequence_name, s.id AS sequence_id, a.email AS account_email, st.position AS step_position, rp.name AS responder_name,
             -- The thread the reply belongs to, so the queue can offer the
             -- conversation rather than only a two-line quotation of it.
             -- Deciding whether a draft is right usually means reading what
@@ -232,6 +234,107 @@ reviewRouter.post(
   },
 );
 
+/**
+ * Keep a steering note, so a fix for one draft is a fix for the rest.
+ *
+ * "Not like that — stop calling it a solution" fixes the draft in front of you
+ * and is then thrown away, so the next forty drafts from the same step call it
+ * a solution and you type the same sentence forty times. The step's
+ * `ai_instructions` is the field that actually changes what gets written, and
+ * this appends the note to it.
+ *
+ * Appends rather than replaces, and returns the result, because instructions
+ * are cumulative and somebody who has tuned a step over a week should not lose
+ * that to a one-line correction. The step editor is the place to prune them.
+ */
+reviewRouter.post('/:id/keep-note', async (req, res) => {
+  const id = idParam(req.params.id);
+  const { note } = parse(z.object({ note: z.string().min(1).max(2000) }), req.body);
+  const item = await one<any>('SELECT * FROM review_queue WHERE id=$1 AND user_id=$2', [id, req.user!.id]);
+  if (!item) throw notFound('Review item not found');
+  const line = note.trim().replace(/\s+/g, ' ').slice(0, 500);
+  if (!line) throw badRequest('Say what you want changed');
+
+  // A responder draft and a sequence draft keep their notes in different
+  // columns on different tables; both are the field the generator is handed.
+  if (item.kind === 'reply' && item.responder_id) {
+    const r = await one<{ instructions: string }>(
+      // Scoped by user_id: a responder id off a request must not be able to
+      // reach somebody else's row.
+      `UPDATE responders SET instructions = trim(both E'\n' from coalesce(instructions,'') || E'\n' || $3), updated_at=now()
+        WHERE id=$1 AND user_id=$2 RETURNING instructions`,
+      [item.responder_id, req.user!.id, line],
+    );
+    if (!r) throw notFound('That responder has been deleted');
+    return res.json({ ok: true, target: 'responder', instructions: r.instructions });
+  }
+  if (!item.step_id) throw badRequest('This draft did not come from a sequence step or a responder');
+  const step = await one<{ instructions: string }>(
+    // Through the sequence, which is the row that carries the owner:
+    // `sequence_steps` has no user_id of its own.
+    `UPDATE sequence_steps st SET ai_instructions = trim(both E'\n' from coalesce(st.ai_instructions,'') || E'\n' || $3)
+       FROM sequences s WHERE st.id=$1 AND s.id=st.sequence_id AND s.user_id=$2
+       RETURNING st.ai_instructions AS instructions`,
+    [item.step_id, req.user!.id, line],
+  );
+  if (!step) throw notFound('That step has been deleted');
+  res.json({ ok: true, target: 'step', instructions: step.instructions });
+});
+
+/**
+ * How long an approval can be taken back.
+ *
+ * The same reasoning as undo send: the decision is reversible for exactly as
+ * long as nothing has left, and saying so plainly is better than a window
+ * somebody has to guess at. Fifteen seconds is a shade under the scheduler's
+ * tick, so in practice the draft is still sitting where it was.
+ */
+export const UNDO_SECONDS = 15;
+
+/**
+ * Put an approved draft back in the queue.
+ *
+ * Approvals wait for a send slot anyway, so the window costs nothing and the
+ * mis-click it catches — approving the draft above the one you meant, on a
+ * page built for working quickly — is otherwise unrecoverable.
+ *
+ * The guard is not the clock but the send: a draft that has gone out cannot be
+ * recalled, whatever the stopwatch says, so the revert is conditional on there
+ * being no send for this enrollment and step. The enrollment goes back to
+ * waiting_review, which is where approving it took it from.
+ */
+reviewRouter.post('/:id/undo', async (req, res) => {
+  const id = idParam(req.params.id);
+  const item = await one<any>(`SELECT * FROM review_queue WHERE id=$1 AND user_id=$2`, [id, req.user!.id]);
+  if (!item) throw notFound('Review item not found');
+  if (item.status !== 'approved') throw badRequest('That draft was not approved');
+  // A responder reply is sent inside the approval itself, so there is nothing
+  // to put back. Said plainly rather than failing quietly.
+  if (item.kind === 'reply' || !item.enrollment_id) throw badRequest('That reply has already gone out and cannot be recalled');
+
+  const sent = await one(
+    `SELECT 1 FROM send_log WHERE enrollment_id=$1 AND step_id IS NOT DISTINCT FROM $2 AND sent_at >= $3`,
+    [item.enrollment_id, item.step_id, item.decided_at],
+  );
+  if (sent) throw badRequest('That one has already been sent');
+
+  // Conditional on both rows still being where the approval left them, so a
+  // scheduler tick that claimed the step a millisecond ago wins rather than
+  // being quietly overwritten.
+  const back = await query<{ id: number }>(
+    `UPDATE review_queue SET status='pending', decided_at=NULL WHERE id=$1 AND status='approved' RETURNING id`,
+    [id],
+  );
+  if (!back.length) throw badRequest('That one has already been sent');
+  await query(
+    `UPDATE enrollments SET status='waiting_review', next_run_at=NULL, updated_at=now() WHERE id=$1 AND status='active'`,
+    [item.enrollment_id],
+  );
+  const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [req.user!.id]);
+  publish({ type: 'review', userId: req.user!.id, count: pending?.n ?? 0 });
+  res.json({ ok: true, pending: pending?.n ?? 0 });
+});
+
 // ---------- Deciding a lot of them at once ----------
 //
 // Every item was decided one at a time, which is fine for three and absurd for
@@ -277,6 +380,31 @@ reviewRouter.post('/bulk', async (req, res) => {
  * Returns false for an item that has already been decided, so a bulk call over
  * a stale selection reports what it really did.
  */
+/**
+ * Keep a queue edit beside the draft it replaced, when the two differ.
+ *
+ * Behind the writing-help capability like the composer's own version, because
+ * it is the same capability's output being corrected, and never allowed to
+ * throw: an approval that failed because a learning table was busy would be an
+ * absurd trade for a suggestion nobody has asked for yet. `recordEdit` does
+ * the rest of the filtering — an untouched draft teaches nothing and is
+ * dropped there rather than here.
+ */
+async function rememberQueueEdit(userId: number, item: { body_html?: string | null; kind?: string | null }, edit?: { body_html?: string }): Promise<void> {
+  try {
+    if (!edit?.body_html || !item.body_html) return;
+    if (!(await allowed(userId, 'ai.compose'))) return;
+    await recordEdit(userId, {
+      accountId: null,
+      // A campaign draft and a reply are different writing problems, and the
+      // suggestion prompt is shown which of the two each example came from.
+      mode: item.kind === 'reply' ? 'responder' : 'campaign',
+      generated: item.body_html,
+      sent: edit.body_html,
+    });
+  } catch { /* learning is never worth failing an approval for */ }
+}
+
 async function decide(
   userId: number,
   id: number,
@@ -288,6 +416,18 @@ async function decide(
   if (stored.status !== 'pending') return false;
   const item = (await openReview(userId, stored))!;
   if (action === 'approve') {
+    // An edit made here is the most direct evidence there is of how a campaign
+    // should sound.
+    //
+    // The writing-voice pass has only ever been fed from the composer's send
+    // path, so the one place where somebody sits and rewrites a model's draft
+    // on purpose — this queue, one message after another, before approving
+    // each one — taught it nothing at all. The pair is exactly the pair it
+    // wants: what the model wrote is on the stored row, and what the person
+    // approved is in the request.
+    //
+    // Before the update, because the update overwrites the first half of it.
+    await rememberQueueEdit(userId, item, edit);
     // What the person edited comes back in the clear and is sealed again.
     const edited = await sealReview(userId, { subject: edit?.subject ?? item.subject ?? '', body_html: edit?.body_html ?? item.body_html ?? '' });
     await query(`UPDATE review_queue SET status='approved', subject=$2, body_html=$3, decided_at=now() WHERE id=$1`, [id, edited.subject, edited.body_html]);
@@ -301,7 +441,13 @@ async function decide(
         else await composeAndSend(acc, payload as any);
       }
     } else if (item.enrollment_id) {
-      await query(`UPDATE enrollments SET status='active', next_run_at=now(), updated_at=now() WHERE id=$1 AND status='waiting_review'`, [item.enrollment_id]);
+      // A few seconds' grace, so "undo" has something to undo.
+      //
+      // The scheduler ticks every twenty seconds and then has to reserve a
+      // send slot behind a randomised gap, so an approved step was never going
+      // out immediately anyway — this only makes the delay that already
+      // existed into a guaranteed one, and costs a campaign nothing.
+      await query(`UPDATE enrollments SET status='active', next_run_at=now() + interval '${UNDO_SECONDS} seconds', updated_at=now() WHERE id=$1 AND status='waiting_review'`, [item.enrollment_id]);
     }
   } else {
     await query(`UPDATE review_queue SET status='rejected', decided_at=now() WHERE id=$1`, [id]);

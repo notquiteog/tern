@@ -242,12 +242,26 @@ Nothing leaves your server except the mail itself.
   window is sent more of each message than a 512-token one — the window is
   what decides it, rather than a constant — and the Qwen3 and Gemini models
   are given the task instruction their training expects on a search and
-  deliberately not on a stored message. Changing the model queues a rebuild and
-  drops the index the previous embedder built, so the old vectors are removed
+  deliberately not on a stored message. Changing the embedder queues a rebuild
+  and drops the index the previous one built, so the old vectors are removed
   rather than left sitting there unread; until the rebuild finishes, search
   answers from what has been rebuilt rather than scoring the old model's
   vectors, which are in a different geometry and would come back as confident
-  nonsense.
+  nonsense. "The embedder" means the model *and* where it is reached — the
+  same name served by two different hosts is two different embedders, and
+  changing only the address rebuilds just as changing the model does.
+- **The index can be looked at and emptied.** Admin → AI model shows what is
+  actually in Qdrant: which collections exist, how many vectors each holds,
+  which belong to an embedder no longer in use or a user who no longer exists,
+  and which are not Tern's at all — a shared index is legible rather than
+  mysterious, and nothing here ever touches a collection it cannot prove is
+  ours. One person's index can be rebuilt on its own, the whole install can be
+  reset, and leftovers can be swept, all without shell access;
+  `./bin/tern cli vectors-status` and `./bin/tern cli vectors-reset
+  [--user NAME]` do the same from the command line. Nothing here destroys
+  anything that cannot be made again — vectors are derived from mail that is
+  still in Postgres — so the cost of a reset is time, not data, and word
+  search is unaffected throughout.
 
 **Accounts and admin**
 - Sign in with username and password, TOTP two-factor with recovery codes,

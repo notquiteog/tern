@@ -16,6 +16,7 @@ import { contactsRouter } from './routes/contacts.js';
 import { templatesRouter } from './routes/templates.js';
 import { sequencesRouter } from './routes/sequences.js';
 import { reviewRouter } from './routes/review.js';
+import { repliesRouter } from './routes/replies.js';
 import { rulesRouter } from './routes/rules.js';
 import { aiRouter } from './routes/ai.js';
 import { settingsRouter, logoRouter, manifestRouter, iconsRouter } from './routes/settings.js';
@@ -88,6 +89,7 @@ export function createApp(): express.Express {
   app.use('/api/templates', templatesRouter);
   app.use('/api/sequences', sequencesRouter);
   app.use('/api/review', reviewRouter);
+  app.use('/api/replies', repliesRouter);
   app.use('/api/rules', rulesRouter);
   app.use('/api/responders', respondersRouter);
   app.use('/api/stalwart', stalwartRouter);

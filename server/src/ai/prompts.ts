@@ -21,6 +21,17 @@ export interface DraftInput {
   draft?: string;
   template?: string;
   subject?: string;
+  // One finished email, written for somebody else on the same list, that the
+  // person edited until it was right.
+  //
+  // This is the strongest steering a small model responds to. A sentence of
+  // instruction ("warmer", "shorter", "less salesy") is abstract and gets
+  // interpreted differently every generation; a concrete example of the
+  // output is unambiguous, and the model matches its register, its length and
+  // its shape without being told what any of those are. It is shown as
+  // something to imitate the *manner* of and explicitly not the content of,
+  // because the one failure mode is copying the other recipient's facts.
+  exemplar?: string;
   systemPrompt?: string;
   voice?: string;
   // The ledger entry a reschedule or a nudge is about. Every field here comes
@@ -426,7 +437,16 @@ export function buildMessages(input: DraftInput): ChatMessage[] {
         // model paraphrases the offer at length and drops the ask, which is
         // the only part that needed to survive.
         `Every specific in the brief — the offer, the price, the dates, and the question it ends with — appears in the email, in the brief's own words where it is a number or a date. The last paragraph is the ask. Write in ordinary sentences, not one long one.`,
-        input.instruction ? `Extra direction: ${input.instruction}` : '', tone, len,
+        input.instruction ? `Extra direction: ${input.instruction}` : '',
+        // Last, and framed tightly. Put earlier it competes with the brief;
+        // framed loosely the model lifts the example's company and numbers
+        // into this email, which is the one way this can do real damage — so
+        // the instruction that its facts are not to be reused is part of the
+        // same sentence rather than a separate line that can be skimmed.
+        input.exemplar
+          ? `Here is an email the sender wrote to somebody else on this list and was happy with. Match its length, its tone and the way it opens and closes. Do not reuse any of its facts, names, numbers or specifics — they belong to a different recipient:\n\n${String(input.exemplar).slice(0, 2000)}`
+          : '',
+        tone, len,
       );
       break;
     // ---------- Moving a commitment ----------

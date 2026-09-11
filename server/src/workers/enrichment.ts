@@ -22,7 +22,7 @@ import { query } from '../db.js';
 import { logger } from '../log.js';
 import { listAccounts, type AccountRow } from '../services/accounts.js';
 import { allowed, type Capability } from '../services/capabilities.js';
-import { indexBatch, indexPending } from '../services/semantic.js';
+import { indexBatch, indexContactsBatch, indexPending } from '../services/semantic.js';
 import { retrain, scorePending } from '../services/triage.js';
 import { guardBatch } from '../services/guard.js';
 import { extractPending } from '../services/attachments.js';
@@ -134,6 +134,17 @@ const PASSES: Pass[] = [
     capability: 'semantic',
     usesModel: true,
     run: (userId) => indexBatch(userId).then((r) => r.done),
+  },
+  {
+    // Contact notes, so "people who mentioned month-end pain" is a real
+    // query. Its own pass rather than part of the mail one: a mailbox has
+    // tens of thousands of messages and an address book has hundreds, so
+    // sharing a batch would mean contacts waiting behind the mail backlog
+    // for days to index something that takes one pass.
+    name: 'semantic-contacts',
+    capability: 'semantic',
+    usesModel: true,
+    run: (userId) => indexContactsBatch(userId).then((r) => r.done),
   },
   {
     name: 'commitments-scan',

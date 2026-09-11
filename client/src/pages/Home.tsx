@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, Sparkles, Workflow, Send, Reply, AlertTriangle, Contact, ClipboardCheck, Clock, Newspaper, Timer } from 'lucide-react';
+import { ArrowRight, Sparkles, Workflow, Send, Reply, AlertTriangle, Contact, ClipboardCheck, Clock, Newspaper, Timer, ThumbsUp, PauseCircle } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../state/auth';
 import { useCan } from '../state/features';
@@ -32,7 +32,19 @@ export default function HomePage() {
         <div className="card stat"><div className="stat-value">{fmtNumber(data.enrollments?.active ?? 0)}</div><div className="stat-label"><Workflow size={12} /> contacts in sequences</div></div>
         <div className="card stat" style={data.reviewPending ? { borderColor: 'var(--accent)' } : {}}><div className="stat-value">{fmtNumber(data.reviewPending)}</div><div className="stat-label"><Sparkles size={12} /> drafts to review</div>{data.reviewPending > 0 && <Button size="sm" variant="soft" className="mt-8" onClick={() => nav('/review')}>Review now <ArrowRight size={13} /></Button>}</div>
         {(data.week.bounced > 0 || data.week.failed > 0) && <div className="card stat"><div className="stat-value" style={{ color: 'var(--danger-text)' }}>{fmtNumber(data.week.bounced + data.week.failed)}</div><div className="stat-label"><AlertTriangle size={12} /> bounced or failed</div></div>}
+        {/* The number this page has never been able to show. "Sent" and
+            "replies" answer whether the machine was running; "three
+            interested" answers whether any of it worked, and is the only one
+            worth crossing the room for. */}
+        {(data.outreach?.replies?.interested ?? 0) > 0 && (
+          <div className="card stat" style={{ borderColor: 'var(--success)' }}>
+            <div className="stat-value">{fmtNumber(data.outreach.replies.interested)}</div>
+            <div className="stat-label"><ThumbsUp size={12} /> interested</div>
+            <Button size="sm" variant="soft" className="mt-8" onClick={() => nav('/sequences/replies')}>Open replies <ArrowRight size={13} /></Button>
+          </div>
+        )}
       </div>
+      <Outreach data={data} />
       <div className="grid-cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
         <div className="card">
           <div className="card-title"><h2>Sending today</h2><Button size="sm" variant="ghost" onClick={() => nav('/settings/accounts')}>Policy</Button></div>
@@ -111,6 +123,59 @@ function Today() {
           </div>
         </Link>
       )}
+    </div>
+  );
+}
+
+
+/**
+ * What the outreach did, rather than how much of it there was.
+ *
+ * Two facts, both of which the page could count and neither of which it could
+ * say: the replies that are waiting for an answer, broken down by what they
+ * actually said, and the campaigns that have stopped themselves — with the
+ * sentence explaining why, which until now lived only in the error column of
+ * an enrollment nobody opens.
+ *
+ * Renders nothing at all when there is nothing to report. A home page that
+ * always shows a campaigns section is a home page with an empty campaigns
+ * section on it for everybody who does not run campaigns.
+ */
+function Outreach({ data }: { data: any }) {
+  const nav = useNavigate();
+  const replies = data.outreach?.replies;
+  const paused: { id: number; name: string; pause_reason: string | null }[] = data.outreach?.paused ?? [];
+  const waiting = [
+    ['interested', 'interested', replies?.interested ?? 0],
+    ['question', 'asked something', replies?.question ?? 0],
+    ['wrong_person', 'pointed elsewhere', replies?.wrong_person ?? 0],
+    ['not_now', 'said not now', replies?.not_now ?? 0],
+  ].filter(([, , n]) => Number(n) > 0) as [string, string, number][];
+  if (!waiting.length && !paused.length) return null;
+  return (
+    <div className="card mb-16">
+      <div className="card-title">
+        <h2>Your campaigns</h2>
+        <Button size="sm" variant="ghost" onClick={() => nav('/sequences/replies')}>All replies</Button>
+      </div>
+      {waiting.length > 0 && (
+        <div className="row gap-4 wrap mb-8">
+          {waiting.map(([key, label, n]) => (
+            <button key={key} type="button" className="chip" onClick={() => nav(`/sequences/replies`)}>
+              <b>{fmtNumber(n)}</b> {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {paused.map((p) => (
+        <div key={p.id} className="row small mb-8" style={{ alignItems: 'flex-start', gap: 6 }}>
+          <PauseCircle size={14} style={{ color: 'var(--warning-text)', flex: 'none', marginTop: 1 }} />
+          <span>
+            <a style={{ cursor: 'pointer' }} onClick={() => nav(`/sequences/${p.id}`)}><b>{p.name}</b></a>
+            {' is paused'}{p.pause_reason ? `: ${p.pause_reason}` : ''}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

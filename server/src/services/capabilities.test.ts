@@ -166,6 +166,12 @@ test('the raw key is only reachable from files that are meant to have it', () =>
     // shape as summaries.ts: one person's rows, their own key, nobody else's
     // anything.
     'services/voiceLearning.ts',
+    // The Replies tab opens the subject, preview and body of replies to the
+    // owner's own campaigns — their mail, in their app, because they asked
+    // for it — to show the row and to read a handover out of a "wrong person"
+    // answer. Every statement is scoped by user_id, and no model is involved:
+    // the body is read by a regular expression and then dropped.
+    'services/campaignReplies.ts',
     'routes/mail.ts',
     'routes/review.ts',
     'routes/contacts.ts',

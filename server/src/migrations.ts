@@ -1426,4 +1426,269 @@ CREATE INDEX IF NOT EXISTS ai_draft_edits_user_idx ON ai_draft_edits(user_id, cr
 ALTER TABLE review_queue ADD COLUMN IF NOT EXISTS hold_hits TEXT;
 `,
   },
+  {
+    // What a reply said, made into something a person can work through; and
+    // the two filters an audience is actually described with.
+    id: '20260910_1730_reply_intents_surfaced',
+    up: `
+-- A reply that has been dealt with.
+--
+-- \`reply_intent\` has been written onto every answered send since the
+-- classifier shipped and nothing has ever read it, so there was no need for
+-- this column. A Replies tab is a queue rather than a report — "three
+-- interested" means three people to write to, and the count has to be able to
+-- go down — and without somewhere to record that a reply has been handled the
+-- same three sit at the top of the list for ever.
+--
+-- Deliberately not a status enum. Whether a reply was answered, forwarded or
+-- simply read and dismissed is not a distinction the tab can act on, and every
+-- extra state is one more thing for a route to get wrong.
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS reply_handled_at TIMESTAMPTZ;
+
+-- The index the tab reads on. The existing reply_intent index is keyed on
+-- sequence_id, which answers "what did this campaign get"; a person's Replies
+-- across every campaign, newest first, is a different question and the one
+-- Home and the brief both ask.
+CREATE INDEX IF NOT EXISTS send_log_reply_open_idx
+  ON send_log(user_id, replied_at DESC)
+  WHERE reply_intent IS NOT NULL AND reply_handled_at IS NULL;
+
+-- Why a campaign stopped.
+--
+-- A campaign paused for a hole in its brief says so today in one place: the
+-- \`error\` column of whichever enrollment happened to trip it, on a table
+-- nobody opens until they have already noticed the sends stopped. The card,
+-- Home and the toast all want the same sentence, so it belongs on the
+-- sequence rather than on one of its enrollments.
+--
+-- Cleared on resume, so a stale reason can never explain a running campaign.
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS pause_reason TEXT;
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+
+-- Notes and custom fields, findable.
+--
+-- The search vector covered the five columns a contact form has and not the
+-- two places everything specific about somebody is actually written down: the
+-- notes field and whatever the CSV import put in \`fields\`. "Sage" typed into
+-- a custom column was invisible to the search box that sits above it, which
+-- reads as the search being broken rather than as a design decision.
+--
+-- \`fields::text\` rather than its values alone: a subquery is not allowed in a
+-- generated column, the cast is immutable, and having the key names searchable
+-- too is worth having — "renewal" finds everybody with a renewal_date whether
+-- or not they remember what they put in it.
+--
+-- Dropping and re-adding is the only way to change a generated column. It
+-- rewrites the table, which at contact-list sizes is a table scan and not a
+-- migration to be afraid of.
+ALTER TABLE contacts DROP COLUMN IF EXISTS search_tsv;
+ALTER TABLE contacts ADD COLUMN search_tsv TSVECTOR GENERATED ALWAYS AS (
+  to_tsvector('simple',
+    coalesce(email,'') || ' ' || coalesce(first_name,'') || ' ' || coalesce(last_name,'') || ' ' ||
+    coalesce(company,'') || ' ' || coalesce(title,'') || ' ' || coalesce(notes,'') || ' ' ||
+    coalesce(fields::text,''))
+) STORED;
+CREATE INDEX IF NOT EXISTS contacts_search_idx ON contacts USING GIN (search_tsv);
+`,
+  },
+  {
+    // The three things that should happen while a campaign runs and currently
+    // do not: a ramp on a new mailbox, a send held for the recipient's own
+    // morning, and a campaign that stops itself when the replies turn bad.
+    id: '20260910_1900_warmup_local_windows_valves',
+    up: `
+-- The ramp the README describes, made into something the scheduler enforces.
+--
+-- The advice has always been to start a new mailbox at 20 to 30 a day and
+-- build up. It was a paragraph of documentation next to a \`daily_cap\` field
+-- that did exactly one thing, so following the advice meant somebody
+-- remembering to raise the number by hand every morning for a fortnight, and
+-- nobody does that.
+--
+-- Expressed as a start, a step and a date rather than as a schedule table:
+-- the effective cap is \`start + step × days elapsed\`, clamped to the real
+-- \`daily_cap\`, which needs no rows, cannot drift, and answers "what is the
+-- cap today" with arithmetic instead of a lookup. Reaching the ceiling is
+-- therefore self-limiting — there is nothing to turn off when it gets there.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS warmup_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS warmup_started_at TIMESTAMPTZ;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS warmup_start_cap INT NOT NULL DEFAULT 20;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS warmup_step INT NOT NULL DEFAULT 5;
+
+-- Send in the recipient's morning, not in yours.
+--
+-- \`contacts.timezone\` has existed since the first schema and drives exactly
+-- one thing: whether the greeting merge field says morning or afternoon. The
+-- account's send window is the sender's working hours, so a campaign run from
+-- London lands in California at two in the morning — technically inside the
+-- window it was told about, and nowhere near the window it was meant for.
+--
+-- Per sequence rather than per account, because it is a property of the
+-- campaign: a follow-up to people you already know can go whenever the window
+-- is open, and a cold first touch across eight timezones cannot.
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS contact_local_window BOOLEAN NOT NULL DEFAULT false;
+
+-- The valves that make "send automatically" defensible.
+--
+-- Auto mode sends what a model wrote without anybody reading it. The argument
+-- for offering that at all is that the guard checks every draft — but the
+-- guard reads one message and cannot see the thing that actually signals a
+-- campaign going wrong, which is the shape of what comes back: addresses that
+-- do not exist, and people leaving in numbers.
+--
+-- Both thresholds are per campaign and both can be turned off by setting them
+-- to zero. The bounce rate carries a minimum sample with it in code, because
+-- one bounce out of the first two sends is 50% and means nothing.
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS pause_on_bounce_pct INT NOT NULL DEFAULT 8;
+ALTER TABLE sequences ADD COLUMN IF NOT EXISTS pause_on_unsubscribes INT NOT NULL DEFAULT 5;
+`,
+  },
+  {
+    // Why somebody left, asked once and never insisted on.
+    id: '20260910_2000_unsub_reason',
+    up: `
+-- The unsubscribe page takes one click and says thank you. That click is the
+-- only moment anybody who is leaving will ever tell you why, and the page has
+-- never asked — so "too many emails" and "I never signed up for this" are the
+-- same event in the database, although one is a pacing problem and the other
+-- is a consent problem and they want opposite fixes.
+--
+-- On the enrollment rather than on the suppression, because the interesting
+-- question is per campaign — "this brief loses people on step three" — and an
+-- enrollment is the only row that already knows both the person and the
+-- campaign. A contact who was on three campaigns records it against all three,
+-- which is honest: they did not say which one it was about.
+--
+-- Nullable and staying that way. It is asked after the unsubscribe is already
+-- done, on a page the person has no reason to still be reading, so most rows
+-- will never have one and the feature has to be useful at a low answer rate.
+ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS unsub_reason TEXT;
+`,
+  },
+  {
+    // `email_vectors.model` becomes the whole embedder identity.
+    //
+    // It held a model name, and a name is not what decides whether two vectors
+    // can be compared. `all-minilm` served by the Ollama next door and
+    // `all-minilm` reached through an OpenAI-compatible gateway are different
+    // embedders sharing a string — different builds, different pooling,
+    // sometimes different normalisation — and the same is true of one name on
+    // two hosts, or of `embedProvider: 'same'` when the language model's
+    // address moves out from under it.
+    //
+    // Because the name was the scope, changing only the provider or the URL
+    // invalidated nothing: the manifest still matched, the collection name was
+    // unchanged, and meaning search went on scoring vectors from the old
+    // endpoint against needles from the new one. That is the failure mode this
+    // whole subsystem is arranged to avoid, arrived at through the one door
+    // nobody had shut.
+    //
+    // The column now carries `provider|host|model`. Existing rows hold bare
+    // names that will never match an identity, so every message goes back in
+    // the queue — vectors are derived data and re-embedding is a path this
+    // install already has to be good at. The superseded collections are swept
+    // by `dropCollectionsNotFrom` on the next index pass, which recognises
+    // them precisely because their names no longer match.
+    id: '20260910_2100_embed_identity',
+    up: `
+UPDATE emails SET embedded = false WHERE embedded;
+`,
+  },
+  {
+    // "Write the rest like this one."
+    //
+    // The campaign modal shows three drafts and offers only "try again", which
+    // rolls the same dice at the same prompt. Letting somebody edit one until
+    // it is right and mark it as the example puts a concrete sample of the
+    // wanted output into the prompt — the strongest steering a small model
+    // responds to, and far stronger than another adjective in the
+    // instructions, because an example is unambiguous where "warmer" is not.
+    //
+    // On the step rather than on the campaign: each step is a different email
+    // with a different job, and the follow-up that should sound like the
+    // exemplar is the follow-up, not the first touch.
+    id: '20260910_2200_step_exemplar',
+    up: `
+ALTER TABLE sequence_steps ADD COLUMN IF NOT EXISTS ai_exemplar TEXT NOT NULL DEFAULT '';
+`,
+  },
+  {
+    // A responder that answers one campaign's replies, and a contact filter
+    // worth keeping.
+    id: '20260910_2300_scoped_responders_segments',
+    up: `
+-- Answer only the replies to one campaign.
+--
+-- Every piece of this existed: responders match on conditions and answer in
+-- draft mode, campaign replies are classified, and a brief is a block of text
+-- a model can be handed. What was missing was the scoping — a responder either
+-- answered everything that matched its conditions or nothing, so "reply to the
+-- questions this campaign gets, from its brief" could not be expressed without
+-- also answering every other question in the mailbox.
+--
+-- Null means what it has always meant: not scoped to a campaign.
+ALTER TABLE responders ADD COLUMN IF NOT EXISTS sequence_id BIGINT REFERENCES sequences(id) ON DELETE SET NULL;
+-- And optionally only replies the classifier gave a particular label. The
+-- combination the feature exists for is (sequence, 'question').
+ALTER TABLE responders ADD COLUMN IF NOT EXISTS reply_intent TEXT;
+
+-- A contact filter worth keeping.
+--
+-- Mail has kept saved searches in the sidebar since they shipped. Contacts
+-- grew the same query-string filters — tags, custom fields, quiet days, what
+-- they last replied — and no way to keep one, so the audience somebody works
+-- out on a Tuesday is retyped on the Thursday.
+--
+-- The same table as saved searches rather than a second one: it is the same
+-- idea, the same storage and the same sidebar behaviour, and a \`kind\` column
+-- is cheaper than a parallel table that would need its own routes to stay in
+-- step. Existing rows are mail searches, which is what they have always been.
+ALTER TABLE saved_searches ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'mail';
+`,
+  },
+  {
+    // Contact notes, findable by meaning rather than by word.
+    //
+    // The search vector now covers notes and custom fields, so "Sage" finds
+    // the people whose plan is Sage. It cannot find "people who mentioned
+    // month-end pain", because nobody wrote that phrase — they wrote "always
+    // chasing invoices in the last week of the month". That is the gap meaning
+    // search exists for, and contacts were the one place it was never pointed.
+    //
+    // The same manifest shape as `email_vectors`: which contacts are indexed
+    // and under which embedder identity, with the vectors in Qdrant. `model`
+    // carries the whole identity for the reason it does there — provider, host
+    // and model together decide whether two vectors are comparable.
+    id: '20260910_2400_contact_vectors',
+    up: `
+CREATE TABLE IF NOT EXISTS contact_vectors (
+  contact_id BIGINT PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dims INT NOT NULL,
+  model TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS contact_vectors_user_idx ON contact_vectors(user_id, model);
+
+-- Which contacts still need embedding, the same flag emails carry.
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS embedded BOOLEAN NOT NULL DEFAULT false;
+
+-- A note that changes has to be indexed again, so the flag is cleared whenever
+-- the text behind it moves. A trigger rather than a sweep: the write is the
+-- only moment that reliably knows something changed, and a nightly diff of
+-- every contact's notes would be both slower and wrong for a day.
+CREATE OR REPLACE FUNCTION tern_contact_reembed() RETURNS trigger AS $fn$
+BEGIN
+  IF NEW.notes IS DISTINCT FROM OLD.notes OR NEW.fields IS DISTINCT FROM OLD.fields
+     OR NEW.company IS DISTINCT FROM OLD.company OR NEW.title IS DISTINCT FROM OLD.title THEN
+    NEW.embedded := false;
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS contacts_reembed ON contacts;
+CREATE TRIGGER contacts_reembed BEFORE UPDATE ON contacts
+  FOR EACH ROW EXECUTE FUNCTION tern_contact_reembed();
+`,
+  },
 ];

@@ -62,6 +62,9 @@ const SORTS: { value: string; label: string; sort: string; dir: 'asc' | 'desc' }
 export default function ContactsPage() {
   const { id } = useParams();
   const nav = useNavigate();
+  // The campaigns the selection can be put into, for the bulk bar.
+  const { data: sequences = [] } = useSequences();
+  const canMeaning = useCan('semantic');
   const [params, setParams] = useSearchParams();
   const qc = useQueryClient();
   const toast = useToast();
@@ -70,6 +73,17 @@ export default function ContactsPage() {
   const dq = useDebounced(q, 250);
   const tag = params.get('tag') ?? '';
   const status = params.get('status') ?? '';
+  // What they last said back, and how long they have been quiet. Both are
+  // filters the list has never had and both are how an audience is actually
+  // described — "everyone who said not now", "customers who went quiet in the
+  // spring" — so they live in the query string with the rest, which makes a
+  // built audience a link somebody can keep.
+  const intent = params.get('intent') ?? '';
+  // Search what was written about somebody by meaning rather than by word.
+  // "Month-end pain" is not a phrase anybody types into a note; "always
+  // chasing invoices at close" is, and only one of the two searches finds it.
+  const meaning = params.get('meaning') === '1';
+  const quietDays = params.get('quietDays') ?? '';
   const sortKey = params.get('sort') ?? 'added';
   const sorting = SORTS.find((x) => x.value === sortKey) ?? SORTS[0];
   const page = Math.max(1, Number(params.get('page') ?? 1));
@@ -82,7 +96,13 @@ export default function ContactsPage() {
   const { data: tags = [] } = useContactTags();
   const canWrite = useCan('ai.compose');
   const { nudge, busy: nudging } = useNudge();
-  const { data, isLoading } = useQuery({ queryKey: ['contacts', dq, tag, status, page, sortKey], queryFn: () => api.get<{ contacts: any[]; total: number; size: number }>(`/api/contacts?q=${encodeURIComponent(dq)}&tag=${encodeURIComponent(tag)}&status=${status}&page=${page}&sort=${sorting.sort}&dir=${sorting.dir}`), placeholderData: (p) => p });
+  const { data, isLoading } = useQuery({
+    queryKey: ['contacts', dq, tag, status, intent, quietDays, meaning, page, sortKey],
+    queryFn: () => api.get<{ contacts: any[]; total: number; size: number }>(
+      `/api/contacts?q=${encodeURIComponent(dq)}&tag=${encodeURIComponent(tag)}&status=${status}&intent=${intent}&quietDays=${quietDays}&meaning=${meaning ? '1' : ''}&page=${page}&sort=${sorting.sort}&dir=${sorting.dir}`,
+    ),
+    placeholderData: (p) => p,
+  });
   const { data: stats } = useQuery({ queryKey: ['contact-stats'], queryFn: () => api.get<any>('/api/contacts/stats') });
   const rows = data?.contacts ?? [];
   const total = data?.total ?? 0;
@@ -90,6 +110,18 @@ export default function ContactsPage() {
   useEffect(() => { setSelected(new Set()); }, [dq, tag, status, page, sortKey]);
   const setParam = (k: string, v: string) => setParams((p) => { if (v) p.set(k, v); else p.delete(k); p.delete('page'); return p; });
   const invalidate = () => { qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['contact-stats'] }); qc.invalidateQueries({ queryKey: ['contact-tags'] }); };
+
+  // Enrol whatever is ticked. The enrol route does the refusing — suppressed,
+  // already on it, not active — and reports what it skipped, so this never has
+  // to reproduce those rules.
+  async function enrol(seq: { id: number; name: string }) {
+    const n = selected.size;
+    try {
+      const r = await api.post<any>(`/api/sequences/${seq.id}/enroll`, { contactIds: [...selected] });
+      setSelected(new Set());
+      toast.success(`${r.enrolled} of ${n} enrolled in ${seq.name}${r.skipped ? `, ${r.skipped} skipped` : ''}${r.suppressed ? `, ${r.suppressed} suppressed` : ''}`);
+    } catch (e) { toast.error(e); }
+  }
 
   async function bulk(action: string, extra: Record<string, unknown> = {}) {
     const n = selected.size;
@@ -127,9 +159,38 @@ export default function ContactsPage() {
           <Button variant="primary" icon={<Plus size={15} />} onClick={() => setEditing('new')}>New contact</Button>
         </>} />
       <div className="list-toolbar">
-        <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => { setQ(e.target.value); setParam('q', e.target.value); }} placeholder="Search name, email, company" /></div>
+        <div className="search"><Search size={15} className="faint" /><input value={q} onChange={(e) => { setQ(e.target.value); setParam('q', e.target.value); }} placeholder={meaning ? 'Describe what they said or care about' : 'Search name, email, company, notes'} /></div>
+        {/* The two searches fail in opposite directions, which is the whole
+            argument for having both rather than picking one. */}
+        {canMeaning && (
+          <Button size="sm" variant={meaning ? 'primary' : 'ghost'} icon={<Sparkles size={14} />} title="Search notes by meaning rather than by word" onClick={() => setParam('meaning', meaning ? '' : '1')}>
+            By meaning
+          </Button>
+        )}
         <Select value={tag} onChange={(e) => setParam('tag', e.target.value)} style={{ width: 180 }}><option value="">All tags</option>{tags.map((t) => <option key={t.tag} value={t.tag}>{t.tag} ({t.n})</option>)}</Select>
         <Select value={status} onChange={(e) => setParam('status', e.target.value)} style={{ width: 170 }}><option value="">Any status</option><option value="active">Active</option><option value="replied">Replied</option><option value="unsubscribed">Unsubscribed</option><option value="bounced">Bounced</option><option value="do_not_contact">Do not contact</option></Select>
+        {/* The best-converting list a sender has is the people who already
+            answered and said something other than no, and there has never
+            been a way to build it. The label on each reply has existed since
+            the classifier shipped; this is the first thing that reads it. */}
+        <Select value={intent} onChange={(e) => setParam('intent', e.target.value)} style={{ width: 190 }}>
+          <option value="">Any reply</option>
+          <option value="interested">Said interested</option>
+          <option value="question">Asked a question</option>
+          <option value="not_now">Said not now</option>
+          <option value="wrong_person">Pointed elsewhere</option>
+          <option value="not_interested">Declined</option>
+        </Select>
+        {/* Written to, and nothing back since. Somebody who has never replied
+            at all is the quietest there is, so this counts silence rather
+            than the age of an old answer. */}
+        <Select value={quietDays} onChange={(e) => setParam('quietDays', e.target.value)} style={{ width: 165 }}>
+          <option value="">Any time</option>
+          <option value="30">Quiet 30 days</option>
+          <option value="60">Quiet 60 days</option>
+          <option value="90">Quiet 90 days</option>
+          <option value="180">Quiet 6 months</option>
+        </Select>
         {/* The server has always accepted these orderings and the page never
             offered them. "Quiet longest" is the one worth having: it is the
             list of people an outreach inbox exists to notice. */}
@@ -140,6 +201,19 @@ export default function ContactsPage() {
           <div className="row gap-4 ml-auto">
             <span className="small muted">{selected.size} selected</span>
             <Button size="sm" icon={<Workflow size={14} />} onClick={() => setEnrollOpen(true)}>Enroll in sequence</Button>
+            {/* Enrol the selection, from where the selection is.
+                The contact list is where somebody works out who to write to —
+                by tag, by custom field, by what they last replied — and there
+                has never been a way to act on that without going to the
+                campaign and describing the same audience again. */}
+            <Menu trigger={(open) => <Button size="sm" icon={<Workflow size={14} />} onClick={open}>Enrol in…</Button>}>{(c) => (
+              <>
+                {sequences.filter((q: any) => q.status !== 'archived').map((q: any) => (
+                  <MenuItem key={q.id} onClick={() => { c(); void enrol(q); }}>{q.name}</MenuItem>
+                ))}
+                {!sequences.length && <MenuItem onClick={() => { c(); nav('/sequences?new=1'); }}>No campaigns yet — make one</MenuItem>}
+              </>
+            )}</Menu>
             <TagMenu tags={tags} onPick={(t) => bulk('tag', { tag: t })} label="Add tag" />
             <TagMenu tags={tags} onPick={(t) => bulk('untag', { tag: t })} label="Remove tag" />
             <Menu trigger={(open) => <Button size="sm" icon={<Ban size={14} />} onClick={open}>Status</Button>}>{(c) => <><MenuItem onClick={() => { c(); void bulk('status', { status: 'active' }); }}>Active</MenuItem><MenuItem onClick={() => { c(); void bulk('status', { status: 'unsubscribed' }); }}>Unsubscribed</MenuItem><MenuItem onClick={() => { c(); void bulk('status', { status: 'do_not_contact' }); }}>Do not contact</MenuItem></>}</Menu>

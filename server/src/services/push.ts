@@ -110,3 +110,85 @@ export async function notifyNewMail(acc: AccountRow, emails: any[]): Promise<voi
   const senders = [...new Set(fresh.map((e) => display(e.from?.[0])))];
   await notifyUser(acc.user_id, { title: `${fresh.length} new messages`, body: senders.slice(0, 4).join(', ') + (senders.length > 4 ? ` and ${senders.length - 4} more` : ''), url: '/mail/inbox', tag: `mail-batch-${acc.id}` });
 }
+
+// ---------- Outreach ----------
+//
+// Push has only ever been for new mail, which is the event that matters least:
+// mail arrives all day and the app is already showing it. These three are the
+// ones worth a phone buzz because each of them is a thing that has stopped, or
+// is about to stop, and none of them recovers on its own.
+//
+// Nothing here carries a message body. Same rule as new mail: a notification
+// says what happened and where to look, and the content stays on the server.
+
+/**
+ * Somebody said yes.
+ *
+ * The single most time-sensitive event the app has. A reply saying "yes, can
+ * we talk Tuesday" answered on Wednesday is a different outcome from the same
+ * reply answered in ten minutes, and the whole point of classifying replies is
+ * to be able to tell this one apart from the four that can wait.
+ */
+export async function notifyInterestedReply(userId: number, from: { name?: string | null; email: string }, campaign: string): Promise<void> {
+  if ((await subscriptionCount(userId)) === 0) return;
+  const who = from.name?.trim() || from.email;
+  await notifyUser(userId, {
+    title: `${who} is interested`,
+    body: `Replied to ${campaign}`.slice(0, 140),
+    url: '/sequences/replies',
+    // Per person, so two replies from the same address collapse and two
+    // different people do not.
+    tag: `reply-interested-${userId}-${from.email.toLowerCase()}`,
+  });
+}
+
+/**
+ * A campaign stopped itself.
+ *
+ * Carries the reason rather than the fact, because "paused" is not actionable
+ * and "there is no ask in the brief" is: the notification is the whole of the
+ * message for somebody who is not at their desk.
+ */
+export async function notifyCampaignPaused(userId: number, sequenceId: number, name: string, reason: string): Promise<void> {
+  if ((await subscriptionCount(userId)) === 0) return;
+  await notifyUser(userId, {
+    title: `${name} paused`,
+    body: reason.slice(0, 140),
+    url: `/sequences/${sequenceId}`,
+    // One per campaign: a campaign cannot pause twice without being resumed
+    // in between, and if it does the second notice replaces the first.
+    tag: `campaign-paused-${sequenceId}`,
+  });
+}
+
+// Who has already been told their queue is long. A queue that grows from 20 to
+// 500 is one event, not 480 of them, so the notice fires on the way past the
+// threshold and re-arms only once the queue has been brought back under it.
+//
+// In memory because the process is single by design — the event bus makes the
+// same assumption — and because the worst case of losing it on restart is one
+// extra notification.
+const backlogNotified = new Set<number>();
+
+/** How many drafts waiting is too many to still be a queue rather than a pile. */
+export const QUEUE_BACKLOG = 20;
+
+/**
+ * The review queue got long.
+ *
+ * A queue is a promise to look at something. Past twenty it stops being one,
+ * and the drafts at the bottom are being held for a campaign whose brief
+ * probably has the same problem in it twenty times.
+ */
+export async function notifyQueueBacklog(userId: number, pending: number): Promise<void> {
+  if (pending < QUEUE_BACKLOG) { backlogNotified.delete(userId); return; }
+  if (backlogNotified.has(userId)) return;
+  backlogNotified.add(userId);
+  if ((await subscriptionCount(userId)) === 0) return;
+  await notifyUser(userId, {
+    title: `${pending} drafts waiting`,
+    body: 'The review queue is getting long.',
+    url: '/review',
+    tag: `queue-backlog-${userId}`,
+  });
+}

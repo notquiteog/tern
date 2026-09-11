@@ -3,7 +3,7 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, HttpError, notFound } from '../errors.js';
-import { chatStream, checkProvider, deleteModel, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { chatStream, checkProvider, deleteModel, embedIdentity, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { mayChooseThinking, saveThinkingPrefs, thinkingView } from '../ai/thinking.js';
@@ -28,7 +28,7 @@ import { openEmails } from '../services/mailVault.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
 import { adminEnabled, requireCapability } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
-import { invalidateVectorsFrom } from '../services/semantic.js';
+import { indexStatus, invalidateVectorsFrom, resetIndex, sweepOrphanedCollections } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
 import { clearEdits, editCount, suggestVoice, MIN_EDITS } from '../services/voiceLearning.js';
 import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
@@ -313,10 +313,18 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
   // different space, so they are queued for rebuilding rather than left to
   // degrade search silently. The count goes back so the page can say how much
   // work it just asked for.
+  //
+  // Compared on the whole identity rather than on the model name. Changing
+  // only the provider or the address left `embedModel` equal, so nothing was
+  // invalidated — while the vectors coming out of the new endpoint lived in a
+  // different space from the ones already stored, and search went on scoring
+  // both together and answering confidently out of the mixture.
   let reindex = 0;
-  if (b.embedModel !== undefined && b.embedModel !== before.embedModel) {
-    reindex = await invalidateVectorsFrom(next.embedModel).catch(() => 0);
-    if (reindex) log.info('embedding model changed; queued messages for re-indexing', { from: before.embedModel, to: next.embedModel, messages: reindex });
+  const wasIdentity = embedIdentity(before);
+  const nowIdentity = embedIdentity(next);
+  if (wasIdentity !== nowIdentity) {
+    reindex = await invalidateVectorsFrom(nowIdentity).catch(() => 0);
+    if (reindex) log.info('the embedder changed; queued messages for re-indexing', { from: wasIdentity, to: nowIdentity, messages: reindex });
   }
   const { apiKey, embedApiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.settings_updated',$2)`, [req.user!.id, JSON.stringify({
@@ -337,6 +345,61 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
 // expensive way to ask: it unloads the model the install was using, so an
 // admin checking a rented GPU box takes the assistant down to do it. This
 // answers from the form.
+// ---------- The vector index ----------
+//
+// Until now the index was something that happened to an install rather than
+// something anybody could see or steer. It filled in the background, it
+// rebuilt itself when the embedder changed, and when it went wrong the only
+// instrument was a pending count on the settings page that was not going down.
+//
+// Three operations, which between them cover every question an operator has
+// actually had about it: what is in there, throw it away and build it again,
+// and tidy up after users who no longer exist.
+
+aiRouter.get('/vectors', requireAdmin, async (_req, res) => {
+  // Admin-only because it lists every user's collections and their message
+  // counts. A member's own pending count is already on their settings page.
+  res.json(await indexStatus());
+});
+
+/**
+ * Throw the index away and queue the rebuild.
+ *
+ * Scoped to one user or to the whole install. A member may reset their own —
+ * it destroys nothing but derived data of their own, and "meaning search has
+ * gone strange" is a thing they will notice before an admin does — while only
+ * an admin may reset everybody's.
+ */
+aiRouter.post('/vectors/reset', async (req, res) => {
+  const b = parse(z.object({ scope: z.enum(['me', 'all']).default('me'), userId: z.number().int().positive().optional() }), req.body);
+  const admin = req.user!.role === 'admin';
+  if ((b.scope === 'all' || b.userId !== undefined) && !admin) {
+    throw forbidden('Only an admin can reset the index for other people');
+  }
+  const target = b.scope === 'all' ? undefined : b.userId ?? req.user!.id;
+  const result = await resetIndex(target === undefined ? {} : { userId: target });
+  // Worth an audit entry: it is destructive, it is offered as a button, and
+  // "meaning search was empty all Tuesday" is a question somebody will ask.
+  await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.vectors_reset',$2)`, [
+    req.user!.id, JSON.stringify({ scope: b.scope, userId: target ?? 'all', ...result }),
+  ]);
+  log.warn('vector index reset from the settings page', { by: req.user!.id, scope: b.scope, target: target ?? 'all', ...result });
+  res.json(result);
+});
+
+/**
+ * Drop collections belonging to users who no longer exist.
+ *
+ * The same sweep `bin/tern vectors-sweep` runs, which until now was the only
+ * way to reach it — so an admin who deleted a user while Qdrant was down had
+ * to have shell access to finish the job.
+ */
+aiRouter.post('/vectors/sweep', requireAdmin, async (req, res) => {
+  const result = await sweepOrphanedCollections();
+  log.info('orphaned vector collections swept from the settings page', { by: req.user!.id, ...result });
+  res.json(result);
+});
+
 aiRouter.post('/test', requireAdmin, async (req, res) => {
   const b = parse(z.object({
     provider: z.enum(['ollama', 'openai', 'anthropic']).optional(),

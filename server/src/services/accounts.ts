@@ -25,6 +25,9 @@ export interface AccountRow {
   mailbox_state: string | null; email_state: string | null;
   sync_status: string; sync_error: string | null; last_sync_at: Date | null; initial_sync_done: boolean; sync_limit: number;
   daily_cap: number; jitter_enabled: boolean; jitter_min_s: number; jitter_max_s: number; send_window: SendWindow;
+  // The ramp. `daily_cap` stays the ceiling somebody configured; these decide
+  // how much of it is available today. See `effectiveCap` in services/sending.ts.
+  warmup_enabled: boolean; warmup_started_at: Date | null; warmup_start_cap: number; warmup_step: number;
   next_send_at: Date | null; enabled: boolean; created_at: Date;
   vacation?: Partial<VacationSettings> | null;
   trash_retention_days?: number; junk_retention_days?: number; retention_enabled?: boolean; last_retention_at?: Date | null;

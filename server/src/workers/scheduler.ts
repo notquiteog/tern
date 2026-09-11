@@ -7,7 +7,7 @@ import { publish } from '../events.js';
 import { getAccount, type AccountRow } from '../services/accounts.js';
 import { composeAndSend, type ComposeInput } from '../services/compose.js';
 import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '../services/merge.js';
-import { jitterMs, reserveSendSlot, sendingBlocked } from '../services/sending.js';
+import { contactWindowOpen, jitterMs, nextContactWindow, reserveSendSlot, sendingBlocked } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
 import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
 import { describeBriefProblems, describeHits, findBriefProblems, findTemplateArtifacts, type GuardInput } from '../ai/guard.js';
@@ -22,6 +22,7 @@ import { openEmail, openEmails, openReview, sealReview } from '../services/mailV
 import { open, seal } from '../services/vault.js';
 import { backfillBatch, backfillDraftsAndOutbox, backfillPending, categorizeBatch, categorizePending } from '../services/backfill.js';
 import { enrichmentTick } from './enrichment.js';
+import { notifyCampaignPaused, notifyQueueBacklog } from '../services/push.js';
 import { retentionSettings, type RetentionPolicy } from '../services/retentionPolicy.js';
 
 const log = logger('scheduler');
@@ -289,7 +290,7 @@ async function processOutbox(): Promise<void> {
 
 // ---------- Sequences ----------
 
-interface StepRow { id: number; sequence_id: number; position: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean }
+interface StepRow { id: number; sequence_id: number; position: number; kind: 'email' | 'wait'; template_id: number | null; subject: string; body_html: string; wait_days: number; wait_hours: number; ai_personalize: boolean; ai_instructions: string; reply_in_thread: boolean; ai_exemplar: string }
 
 async function processEnrollments(): Promise<void> {
   const due = await query<{ id: number }>(
@@ -380,6 +381,8 @@ async function parkForReview(enrollmentId: number, seq: any, acc: AccountRow): P
   const pending = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [seq.user_id]);
   publish({ type: 'review', userId: seq.user_id, count: pending?.n ?? 0 });
   publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId, status: 'waiting_review' });
+  // A queue this long usually means one brief with one hole in it, repeated.
+  try { await notifyQueueBacklog(seq.user_id, pending?.n ?? 0); } catch (err) { log.error('backlog notification failed', { err: (err as Error).message }); }
   return true;
 }
 
@@ -413,6 +416,23 @@ async function runEnrollment(enr: any): Promise<void> {
   if (suppressed) { await finish(enr, 'unsubscribed'); return; }
   const acc = await getAccount(enr.account_id);
   if (!acc || !acc.enabled) { await query(`UPDATE enrollments SET next_run_at = now() + interval '1 hour', error='Sending account is paused', updated_at=now() WHERE id=$1`, [enr.id]); return; }
+
+  // Land it in their morning, not in yours.
+  //
+  // The account's send window is the sender's working day, so a campaign run
+  // from London reaches California at two in the morning — inside the window
+  // it was told about and nowhere near the one it was meant for. Checked here,
+  // before anything expensive: a draft written now for a contact whose own
+  // window opens in nine hours is nine hours of staleness and a model call
+  // that could as easily have happened then.
+  //
+  // Contacts with no timezone are unaffected, which is most of them.
+  if (seq.contact_local_window && !contactWindowOpen(acc.send_window, contact.timezone)) {
+    const at = nextContactWindow(acc.send_window, contact.timezone);
+    await query(`UPDATE enrollments SET next_run_at=$2, updated_at=now(), error=NULL WHERE id=$1`, [enr.id, deferUntil(at)]);
+    log.debug(`enrollment ${enr.id} held for ${contact.timezone} until ${at.toISOString()}`);
+    return;
+  }
 
   // Content: an approved review, or the template, or the LLM.
   const approved = await openReview(seq.user_id, await one<any>(`SELECT * FROM review_queue WHERE enrollment_id=$1 AND step_id=$2 AND status='approved' ORDER BY decided_at DESC LIMIT 1`, [enr.id, step.id]));
@@ -453,10 +473,19 @@ async function runEnrollment(enr: any): Promise<void> {
         // way. Pausing the campaign says it once; pausing five hundred
         // enrollments individually says it five hundred times and leaves
         // somebody to work out that it was always the same sentence.
-        await query(`UPDATE sequences SET status='paused', updated_at=now() WHERE id=$1 AND status='active'`, [seq.id]);
+        // The reason goes on the sequence as well as on the enrollment. It
+        // used to live only in the enrollment's error column — a table nobody
+        // opens until they have already noticed the sends stopped — so the
+        // card, Home and the toast all said "paused" and none of them could
+        // say why.
+        await query(`UPDATE sequences SET status='paused', pause_reason=$2, paused_at=now(), updated_at=now() WHERE id=$1 AND status='active'`, [seq.id, e.message.slice(0, 500)]);
         await query(`UPDATE enrollments SET status='paused', error=$2, next_run_at=NULL, updated_at=now() WHERE id=$1 AND status='active'`, [enr.id, e.message.slice(0, 500)]);
         publish({ type: 'enrollment', userId: seq.user_id, sequenceId: seq.id, enrollmentId: enr.id, status: 'paused' });
         log.warn('campaign paused: the brief is incomplete', { sequence: seq.id, reason: e.message });
+        // Worth a phone buzz: a campaign that has stopped is not going to
+        // start again on its own, and the longer it sits the more of the
+        // sending window it wastes.
+        try { await notifyCampaignPaused(seq.user_id, seq.id, seq.name, e.message); } catch (err) { log.error('pause notification failed', { err: (err as Error).message }); }
         return;
       }
       throw e;
@@ -635,6 +664,11 @@ export async function personalize(acc: AccountRow, step: StepRow, contact: any, 
     recipient: { name: name.full || undefined, email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields },
     template: brief,
     subject: rendered.subject,
+    // One email from this step that somebody edited until it was right. See
+    // `DraftInput.exemplar`: a concrete example steers a small model harder
+    // than any adjective, and it travels with the step so every later draft
+    // gets it too, not just the next one.
+    exemplar: step.ai_exemplar || undefined,
     length: 'medium',
   });
   const recipient = { name: name.full || undefined, email: contact.email };
@@ -847,9 +881,80 @@ export interface CampaignPreview {
   heldFor: string | null;
 }
 
+/**
+ * How many of a larger sample the guard would hold, and what for.
+ *
+ * The preview answers "is this any good" over three drafts, which is the right
+ * question and the wrong sample size for the other one: whether the *brief*
+ * will survive contact with four hundred contacts. Three clean drafts from a
+ * brief that invents a date on one contact in five look exactly like three
+ * clean drafts from a brief that never will.
+ *
+ * So this writes a larger sample and shows nobody any of it. Only the
+ * arithmetic comes back — "two of ten would be held, usually for an invented
+ * date" — which is the sentence that decides whether to fix the brief now or
+ * queue hundreds of drafts and find out in the review queue.
+ *
+ * Costs a real generation per contact, so it is asked for explicitly rather
+ * than run beside the preview, and it stops at the first sign the model is
+ * unreachable rather than failing ten times over.
+ */
+export interface HeldRate {
+  sampled: number;
+  held: number;
+  /** The commonest reason, in the guard's own words, or null when none were held. */
+  commonest: string | null;
+  /** Every reason with its count, worst first. */
+  reasons: { kind: string; label: string; n: number }[];
+}
+
+export async function sampleHeldRate(
+  acc: AccountRow,
+  opts: { brief: string; instructions?: string; exemplar?: string; contacts: any[] },
+): Promise<HeldRate> {
+  const step: StepRow = {
+    id: 0, sequence_id: 0, position: 0, kind: 'email', template_id: null,
+    subject: '', body_html: textToHtml(opts.brief), wait_days: 0, wait_hours: 0,
+    ai_personalize: true, ai_instructions: opts.instructions ?? '', reply_in_thread: false,
+    ai_exemplar: opts.exemplar ?? '',
+  };
+  const counts = new Map<string, { label: string; n: number }>();
+  let sampled = 0;
+  let held = 0;
+  for (const contact of opts.contacts) {
+    let gen;
+    try {
+      gen = await personalize(acc, step, contact, { subject: '', html: step.body_html, brief: opts.brief });
+    } catch (e) {
+      // A hole in the brief fails identically for every contact, so there is
+      // nothing to learn from trying the other nine.
+      if (e instanceof BriefIncompleteError) throw e;
+      log.warn('held-rate sample gave up on a contact', { err: (e as Error).message });
+      break;
+    }
+    sampled += 1;
+    const hits = findTemplateArtifacts({
+      subject: gen.subject, html: gen.html,
+      greeting: { first: gen.greetingFirst, forbidden: [acc.name] },
+      specifics: { facts: gen.facts, hasAttachment: false },
+    });
+    if (!hits.length) continue;
+    held += 1;
+    // One reason per draft — the first hit — so ten drafts held for the same
+    // thing read as ten, not as thirty.
+    const h = hits[0]!;
+    const key = h.kind;
+    const prev = counts.get(key);
+    if (prev) prev.n += 1;
+    else counts.set(key, { label: describeHits([h]).replace(/ "[^"]*"$/, ''), n: 1 });
+  }
+  const reasons = [...counts.entries()].map(([kind, v]) => ({ kind, ...v })).sort((a, b) => b.n - a.n);
+  return { sampled, held, commonest: reasons[0]?.label ?? null, reasons };
+}
+
 export async function previewCampaign(
   acc: AccountRow,
-  opts: { brief: string; instructions?: string; contacts: any[] },
+  opts: { brief: string; instructions?: string; contacts: any[]; exemplar?: string },
 ): Promise<CampaignPreview[]> {
   const out: CampaignPreview[] = [];
   // A synthetic step: exactly the shape the scheduler builds from a saved
@@ -858,6 +963,7 @@ export async function previewCampaign(
     id: 0, sequence_id: 0, position: 0, kind: 'email', template_id: null,
     subject: '', body_html: textToHtml(opts.brief), wait_days: 0, wait_hours: 0,
     ai_personalize: true, ai_instructions: opts.instructions ?? '', reply_in_thread: false,
+    ai_exemplar: opts.exemplar ?? '',
   };
   for (const contact of opts.contacts) {
     const gen = await personalize(acc, step, contact, { subject: '', html: step.body_html, brief: opts.brief });

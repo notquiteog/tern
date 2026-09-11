@@ -279,6 +279,31 @@ export async function listCollections(): Promise<string[]> {
     .filter((n) => n.startsWith('tern_u'));
 }
 
+/**
+ * How many points a collection holds, and how wide they are.
+ *
+ * For the status page and for `bin/tern vectors-status`: "the index is
+ * reachable" is not the question an operator has when meaning search is
+ * returning nothing, and "this collection exists and holds zero points" is.
+ *
+ * A collection that is not there answers null rather than throwing — an
+ * un-indexed mailbox is an ordinary state, and the caller is usually asking
+ * about several at once.
+ */
+export async function collectionInfo(name: string): Promise<{ points: number; dims: number } | null> {
+  const res = await outboundFetch(`${config.qdrantUrl}/collections/${name}`, { headers: headers() }, trust());
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`qdrant could not be asked about ${name}: ${res.status} ${body.slice(0, 200)}`);
+  }
+  const body = await res.json() as { result?: { points_count?: unknown; config?: { params?: { vectors?: { size?: unknown } } } } };
+  return {
+    points: Number(body.result?.points_count ?? 0) || 0,
+    dims: Number(body.result?.config?.params?.vectors?.size ?? 0) || 0,
+  };
+}
+
 /** Is the index reachable? Used by the settings page and by `bin/tern`. */
 export async function reachable(): Promise<{ ok: boolean; detail: string }> {
   try {

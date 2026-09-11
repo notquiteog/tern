@@ -10,6 +10,8 @@ import { autocryptHeadersOf, updatePeerFromMessage } from './autocrypt.js';
 import { maybeVacationReply, vacationActive } from './vacation.js';
 import { openEmails } from './mailVault.js';
 import { classifyReply } from './replyIntent.js';
+import { notifyInterestedReply } from './push.js';
+import { checkValves } from './valves.js';
 
 const log = logger('automation');
 
@@ -119,6 +121,26 @@ async function enqueueResponders(acc: AccountRow, e: any, responders: any[], tex
   if (!fromEmail) return false;
   for (const r of responders) {
     if (r.skip_lists && isListMail(e)) continue;
+    // A responder scoped to a campaign answers that campaign's replies and
+    // nothing else.
+    //
+    // Every piece of this already existed — responders match on conditions and
+    // answer in draft mode, replies are classified, a brief is text a model can
+    // be handed — and the scoping was the missing one, so "answer the questions
+    // this campaign gets" also answered every other question in the mailbox.
+    if (r.sequence_id || r.reply_intent) {
+      const match = await one<{ reply_intent: string | null }>(
+        `SELECT reply_intent FROM send_log
+          WHERE user_id=$1 AND account_id=$2 AND thread_id=$3
+            ${r.sequence_id ? 'AND sequence_id=$4' : ''}
+          ORDER BY replied_at DESC NULLS LAST, sent_at DESC LIMIT 1`,
+        r.sequence_id ? [acc.user_id, acc.id, e.threadId, r.sequence_id] : [acc.user_id, acc.id, e.threadId],
+      );
+      // Not this campaign's thread at all.
+      if (!match) continue;
+      // Or this campaign's, but not the kind of reply it was told to answer.
+      if (r.reply_intent && match.reply_intent !== r.reply_intent) continue;
+    }
     const conds: RuleCondition[] = Array.isArray(r.conditions) ? r.conditions : [];
     if (conds.length && !ruleMatches(r, e, text)) continue;
     if (r.only_contacts) {
@@ -160,6 +182,12 @@ async function handleBounce(acc: AccountRow, e: any, logs: SendLogRow[]): Promis
     await query(`INSERT INTO suppressions (user_id, email, reason, source) VALUES ($1, lower($2), 'bounce', $3) ON CONFLICT (user_id, email) DO NOTHING`, [acc.user_id, l.to_email, `bounce report ${e.id}`]);
   }
   log.info('bounce recorded', { account: acc.id, matched: logs.length });
+  // A bounce is one of the two events that can move a valve. Checked here
+  // rather than on a timer so a campaign sending to a dead list stops within a
+  // sync of going wrong rather than within an hour of it.
+  for (const sid of new Set(logs.map((l) => l.sequence_id).filter(Boolean) as number[])) {
+    try { await checkValves(sid); } catch (err) { log.error('valve check failed', { sequence: sid, err: (err as Error).message }); }
+  }
 }
 
 async function handleReply(acc: AccountRow, e: any, logs: SendLogRow[], contact: any, enrollmentIds: number[], text: string): Promise<void> {
@@ -206,6 +234,27 @@ async function handleReply(acc: AccountRow, e: any, logs: SendLogRow[], contact:
       await query(`UPDATE enrollments SET status='replied', updated_at=now(), finished_at=now() WHERE id=$1 AND status IN ('active','waiting_review','paused')`, [id]);
       await query(`UPDATE review_queue SET status='rejected', decided_at=now() WHERE enrollment_id=$1 AND status='pending'`, [id]);
       publish({ type: 'enrollment', userId: acc.user_id, sequenceId: enr.sequence_id, enrollmentId: id, status: 'replied' });
+    }
+  }
+  // The one reply worth interrupting somebody for. Answered in ten minutes it
+  // is a meeting; answered on Wednesday it is usually nothing, and that
+  // difference is the whole reason the classifier exists.
+  if (intent === 'interested' && repliedFrom) {
+    const withSeq = logs.find((l) => l.sequence_id);
+    const campaign = withSeq ? (await one<{ name: string }>('SELECT name FROM sequences WHERE id=$1', [withSeq.sequence_id]))?.name : null;
+    try {
+      await notifyInterestedReply(acc.user_id, { name: e.from?.[0]?.name ?? contact?.first_name ?? null, email: repliedFrom }, campaign ?? 'a campaign');
+    } catch (err) { log.error('interested notification failed', { err: (err as Error).message }); }
+  }
+  // The other event a valve watches. Only when somebody actually left: a
+  // reply that merely declines is not a signal about the campaign's health,
+  // and counting it as one would pause campaigns that are working.
+  if (wantsStop) {
+    for (const id of enrollmentIds) {
+      const row = await one<{ sequence_id: number }>('SELECT sequence_id FROM enrollments WHERE id=$1', [id]);
+      if (row?.sequence_id) {
+        try { await checkValves(row.sequence_id); } catch (err) { log.error('valve check failed', { sequence: row.sequence_id, err: (err as Error).message }); }
+      }
     }
   }
   log.info('reply recorded', { account: acc.id, contact: contactId, enrollments: enrollmentIds.length, stop: wantsStop, intent, route, byModel });

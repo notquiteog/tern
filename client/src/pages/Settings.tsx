@@ -143,7 +143,7 @@ function AccountCard({ a, onEdit }: { a: Account; onEdit: () => void }) {
           {a.sync_error && a.sync_status !== 'idle' && <div className="small mt-8" style={{ color: 'var(--danger-text)' }}>{a.sync_error}</div>}
           {stats && (
             <div className="mt-16" style={{ maxWidth: 520 }}>
-              <div className="row small mb-8"><span className="strong">Today</span><span className="muted">{stats.sentToday} of {stats.dailyCap} sends</span><span className="ml-auto muted">{stats.windowOpen ? 'window open' : `window opens ${fmtRelative(stats.nextWindowOpen)}`}</span></div>
+              <div className="row small mb-8"><span className="strong">Today</span><span className="muted">{stats.sentToday} of {stats.dailyCap} sends</span>{stats.warmup && !stats.warmup.done && <span className="muted">· warming up, day {stats.warmup.day} of {stats.configuredCap}</span>}<span className="ml-auto muted">{stats.windowOpen ? 'window open' : `window opens ${fmtRelative(stats.nextWindowOpen)}`}</span></div>
               <Progress value={stats.sentToday} max={stats.dailyCap} />
               <div className="small faint mt-8">{stats.windowText} · delay {a.jitter_enabled ? `${a.jitter_min_s}–${a.jitter_max_s}s` : 'off'} · last 7 days: {stats.week.sent} sent, {stats.week.replied} replied{stats.week.bounced ? `, ${stats.week.bounced} bounced` : ''}{stats.week.failed ? `, ${stats.week.failed} failed` : ''}</div>
             </div>
@@ -280,7 +280,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   const qc = useQueryClient();
   const toast = useToast();
   const [tab, setTab] = useState<'sending' | 'identity' | 'autoreply' | 'storage' | 'connection'>('sending');
-  const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin,
+  const [f, setF] = useState({ name: account.name, color: account.color, voice: account.voice ?? '', dailyCap: account.daily_cap, warmupEnabled: Boolean(account.warmup_enabled), warmupStartCap: account.warmup_start_cap ?? 20, warmupStep: account.warmup_step ?? 5, jitterEnabled: account.jitter_enabled, jitterMinS: account.jitter_min_s, jitterMaxS: account.jitter_max_s, sendWindow: { ...account.send_window, days: [...(account.send_window.days ?? [])] }, syncLimit: account.sync_limit, enabled: account.enabled, sendVia: account.send_via, smtp: account.smtp ? { ...account.smtp, pass: '' } : { host: '', port: 465, secure: true, user: '', pass: '' }, useSmtp: Boolean(account.smtp), secret: '', authUser: account.auth_user ?? '', sessionUrl: account.session_url, pinOrigin: account.pin_origin,
     vacation: { ...{ enabled: false, subject: '', body: '', start: null as string | null, end: null as string | null, onlyContacts: false, intervalDays: 4 }, ...(account.vacation ?? {}) },
     retentionEnabled: account.retention?.enabled !== false, trashRetentionDays: account.retention?.trashDays ?? 30, junkRetentionDays: account.retention?.junkDays ?? 30,
     syncDrafts: account.sync_drafts !== false });
@@ -291,7 +291,7 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
   async function save() {
     setBusy(true);
     try {
-      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null,
+      const body: any = { name: f.name, color: f.color, signatureHtml: sig.current, voice: f.voice, dailyCap: f.dailyCap, warmupEnabled: f.warmupEnabled, warmupStartCap: Number(f.warmupStartCap) || 20, warmupStep: Number(f.warmupStep) || 0, jitterEnabled: f.jitterEnabled, jitterMinS: f.jitterMinS, jitterMaxS: f.jitterMaxS, sendWindow: f.sendWindow, syncLimit: f.syncLimit, enabled: f.enabled, sendVia: f.sendVia, smtp: f.useSmtp ? { host: f.smtp.host, port: Number(f.smtp.port), secure: f.smtp.secure, user: f.smtp.user, pass: f.smtp.pass || undefined } : null,
         vacation: { ...f.vacation, start: f.vacation.start || null, end: f.vacation.end || null, intervalDays: Number(f.vacation.intervalDays) || 4 },
         retentionEnabled: f.retentionEnabled, trashRetentionDays: Number(f.trashRetentionDays) || 30, junkRetentionDays: Number(f.junkRetentionDays) || 30, syncDrafts: f.syncDrafts };
       if (body.vacation.enabled && !body.vacation.body.trim()) { toast.error('Write the auto-reply message before turning it on'); setTab('autoreply'); setBusy(false); return; }
@@ -328,6 +328,16 @@ function EditAccount({ account, onClose }: { account: Account; onClose: () => vo
       {tab === 'sending' && (
         <>
           <Callout>These limits apply to sequences and to "send with a natural delay". Manual sends are never blocked. A new mailbox should start low, around 20 to 30 a day, and rise over a few weeks.</Callout>
+          {/* The paragraph above has been advice since the first version, and
+              following it meant remembering to raise the cap by hand every
+              morning for a fortnight. This is the same advice, enforced. */}
+          <div className="row mt-16"><Toggle checked={f.warmupEnabled} onChange={(v) => set({ warmupEnabled: v })} /><div><div className="strong small">Warm this mailbox up gradually</div><div className="help-text">Starts at the lower cap and raises it a little each day until it reaches the daily cap above, then stops. Turning it off and on again starts the ramp over.</div></div></div>
+          {f.warmupEnabled && (
+            <div className="form-row mt-8">
+              <Field label="Start at" hint="Sends a day on the first day."><Input type="number" min={1} max={500} value={f.warmupStartCap} onChange={(e) => set({ warmupStartCap: Number(e.target.value) })} /></Field>
+              <Field label="Raise by each day" hint={`Reaches the cap of ${f.dailyCap} in about ${Math.max(1, Math.ceil((f.dailyCap - Number(f.warmupStartCap || 0)) / Math.max(1, Number(f.warmupStep || 1))) + 1)} days.`}><Input type="number" min={0} max={100} value={f.warmupStep} onChange={(e) => set({ warmupStep: Number(e.target.value) })} /></Field>
+            </div>
+          )}
           <div className="form-row mt-16">
             <Field label="Daily cap" hint="Automated sends per local day."><Input type="number" min={0} max={5000} value={f.dailyCap} onChange={(e) => set({ dailyCap: Number(e.target.value) })} /></Field>
             <Field label="Timezone for the window"><Select value={f.sendWindow.tz} onChange={(e) => set({ sendWindow: { ...f.sendWindow, tz: e.target.value } })}>{[...new Set([f.sendWindow.tz, ...TZS])].map((t) => <option key={t} value={t}>{t}</option>)}</Select></Field>

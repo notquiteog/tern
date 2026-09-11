@@ -117,12 +117,54 @@ export default function ReviewPage() {
   // than down the order the server happened to return.
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
+  // A shade under the server's 15 seconds, so the ring never finishes counting
+  // on an offer the server has already stopped honouring.
+  const UNDO_MS = 14_000;
+
+  // Approvals made on this page with nothing changed, per group.
+  //
+  // "Spot check, then trust" is how people actually read a queue of forty
+  // near-identical drafts: they check a few, find them all fine, and then want
+  // the rest gone. Bulk approve already existed; what was missing was anything
+  // noticing that the moment had arrived and saying so. Counted in the session
+  // rather than stored — it is a fact about this sitting, not about the
+  // campaign — and reset the moment somebody edits one, because an edit is
+  // evidence that reading them was worth it after all.
+  const [cleanRun, setCleanRun] = useState<Record<string, number>>({});
+  const noteClean = useCallback((groupKey: string | undefined, edited: boolean) => {
+    if (!groupKey) return;
+    setCleanRun((r) => ({ ...r, [groupKey]: edited ? 0 : (r[groupKey] ?? 0) + 1 }));
+  }, []);
+
   const decide = useCallback(async (id: number, action: 'approve' | 'reject', patch?: { subject?: string; body_html?: string }) => {
     try {
       await api.post(`/api/review/${id}`, { action, ...patch });
       qc.invalidateQueries({ queryKey: ['review'] });
       qc.invalidateQueries({ queryKey: ['counts'] });
-      toast.success(action === 'approve' ? 'Approved, sending at the next open slot' : 'Rejected; enrollment paused');
+      if (action !== 'approve') { toast.success('Rejected; enrollment paused'); return; }
+      // The same offer undo send makes, for the same reason: an approval waits
+      // for a send slot anyway, so taking it back costs nothing, and this is a
+      // page built for working quickly down a list — approving the draft above
+      // the one you meant is the mistake it invites.
+      //
+      // The server refuses once anything has left, whatever the ring says, so
+      // the countdown is a promise about the button and not about the send.
+      toast.toast('Approved, sending at the next open slot', {
+        kind: 'success',
+        countdownMs: UNDO_MS,
+        ttl: UNDO_MS,
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            try {
+              await api.post(`/api/review/${id}/undo`);
+              qc.invalidateQueries({ queryKey: ['review'] });
+              qc.invalidateQueries({ queryKey: ['counts'] });
+              toast.success('Put back in the queue');
+            } catch (e) { toast.error(e); }
+          },
+        },
+      });
     } catch (e) { toast.error(e); }
   }, [qc, toast]);
 
@@ -233,8 +275,16 @@ export default function ReviewPage() {
                   </span>
                   <span className="small muted truncate">{g.sub} · {g.items.length} draft{g.items.length === 1 ? '' : 's'}</span>
                 </span>
+                {/* Five in a row approved without a change is the moment the
+                    reading has stopped being worth it. Bulk approve has always
+                    been there; nothing ever pointed at it. */}
+                {(cleanRun[g.key] ?? 0) >= 5 && safe > 1 && (
+                  <span className="small ml-auto" style={{ color: 'var(--success-text, var(--text-2))' }}>
+                    {cleanRun[g.key]} approved unchanged — approve the rest?
+                  </span>
+                )}
                 {g.items.length > 1 && (
-                  <div className="row gap-4 ml-auto">
+                  <div className={cls('row gap-4', (cleanRun[g.key] ?? 0) >= 5 ? '' : 'ml-auto')}>
                     {safe > 1 && (
                       <Button
                         size="sm"
@@ -271,6 +321,7 @@ export default function ReviewPage() {
                     onEdit={(on) => setEditing(on ? it.id : null)}
                     onFocus={() => setFocus(flat.findIndex((f) => f.id === it.id))}
                     onDecide={decide}
+                    onClean={(edited) => noteClean(g.key, edited)}
                     threadTo={threadOf(it)}
                   />
                 ))}
@@ -299,13 +350,45 @@ export default function ReviewPage() {
   );
 }
 
-function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadTo }: {
+/**
+ * The contact's own notes and custom fields, beside the draft that used them.
+ *
+ * Folded away by default: on a clean draft it is noise, and the moment it
+ * earns its place is when the guard has said "a figure it was never given" and
+ * somebody has to decide whether £2,400 came from anywhere real. Opened
+ * automatically when the draft was held, for exactly that reason.
+ */
+function ContactFacts({ item }: { item: any }) {
+  const fields: [string, string][] = Object.entries(item.contact_fields ?? {})
+    .map(([k, v]) => [k, v === null || v === undefined ? '' : String(v)] as [string, string])
+    .filter(([, v]) => v.trim());
+  const notes = String(item.contact_notes ?? '').trim();
+  const [open, setOpen] = useState(Boolean(item.hold_reason));
+  if (!notes && !fields.length) return null;
+  return (
+    <div className="review-facts mt-8">
+      <button type="button" className="link small" onClick={() => setOpen((o) => !o)}>
+        {open ? 'Hide' : 'Show'} what this draft knew about {item.first_name || item.email}
+      </button>
+      {open && (
+        <div className="small mt-8">
+          {fields.map(([k, v]) => <div key={k}><span className="faint">{k}</span> {v}</div>)}
+          {notes && <div className="mt-4" style={{ whiteSpace: 'pre-wrap' }}><span className="faint">notes</span> {notes}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadTo, onClean }: {
   item: any;
   focused: boolean;
   editing: boolean;
   onEdit: (on: boolean) => void;
   onFocus: () => void;
   onDecide: (id: number, a: 'approve' | 'reject', patch?: any) => Promise<void>;
+  /** Called on approve with whether the draft was edited first. */
+  onClean?: (edited: boolean) => void;
   threadTo: string | null;
 }) {
   const nav = useNavigate();
@@ -316,6 +399,10 @@ function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadT
   const [busy, setBusy] = useState<string | null>(null);
   const [redoing, setRedoing] = useState(false);
   const [note, setNote] = useState('');
+  // The note that was just used, kept so it can be offered to the step it came
+  // from. Steering notes were spent on one draft and thrown away, so the same
+  // sentence got typed again for every draft the same step produced.
+  const [keptNote, setKeptNote] = useState('');
   const [fixes, setFixes] = useState<any[]>(item.fixes ?? []);
   const [heldReason, setHeldReason] = useState<string | null>(item.hold_reason ?? null);
   const toast = useToast();
@@ -433,6 +520,9 @@ function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadT
       setFixes(r.hold_hits?.length ? [] : []);
       setHeldReason(r.hold_reason ?? null);
       setRedoing(false);
+      // Kept before the field is cleared: this is the whole point of the
+      // offer below, and the field is about to be emptied.
+      if (note.trim() && (item.step_id || item.responder_id)) setKeptNote(note.trim());
       setNote('');
       if (r.hold_reason) toast.toast('Written again, and held again for the same kind of reason — read it before approving', { kind: 'error' });
       else toast.success('Written again');
@@ -441,6 +531,18 @@ function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadT
       void qc.invalidateQueries({ queryKey: ['review'] });
     } catch (e) { toast.error(e); } finally { setBusy(null); }
   }
+  async function keepNote() {
+    setBusy('keep');
+    try {
+      const r = await api.post<{ target: string }>(`/api/review/${item.id}/keep-note`, { note: keptNote });
+      toast.success(r.target === 'responder' ? 'Added to the responder’s instructions' : 'Added to the step’s instructions');
+      setKeptNote('');
+      // The sequence editor shows that field, so it must not keep showing the
+      // version from before this was appended.
+      void qc.invalidateQueries({ queryKey: ['sequence'] });
+    } catch (e) { toast.error(e); } finally { setBusy(null); }
+  }
+
   // The keyboard moved the focus, so the page follows it.
   useEffect(() => { if (focused) card.current?.scrollIntoView({ block: 'nearest' }); }, [focused]);
 
@@ -525,6 +627,19 @@ function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadT
         ) : null
       )}
 
+      {/* A fix for one draft, offered to the rest of them.
+          The note that was just used steered a single regeneration and was
+          then discarded, so the next forty drafts from the same step have the
+          same problem and get the same sentence typed at them. The step's own
+          instructions are the field that actually changes what gets written. */}
+      {keptNote && (
+        <div className="review-keep-note">
+          <span className="small">Should the {item.responder_id ? 'responder' : 'step'} always do that?</span>
+          <Button size="sm" loading={busy === 'keep'} onClick={() => void keepNote()}>Add to its instructions</Button>
+          <Button size="sm" variant="ghost" onClick={() => setKeptNote('')}>No, just this one</Button>
+        </div>
+      )}
+
       {reply && item.original && (
         <button
           type="button"
@@ -549,9 +664,18 @@ function ReviewCard({ item, focused, editing, onEdit, onFocus, onDecide, threadT
           </div>
         : <SafeHtml className="msg-text" html={reply ? String(item.body_html).split('<div class="tern-quote"')[0] : item.body_html} />}
 
+      {/* What the draft was allowed to know.
+          The guard's whole "invented figure" judgement is made against this
+          set, and it was the one thing the queue never showed — so checking
+          whether a number in a draft is real meant leaving the page, opening
+          the contact and coming back. It is a few lines of text sitting two
+          columns from the complaint. */}
+      <ContactFacts item={item} />
+
       <div className="row mt-16">
         <Button variant="primary" icon={<Check size={15} />} loading={busy === 'approve'} onClick={async () => {
           setBusy('approve');
+          onClean?.(touched.current);
           await onDecide(item.id, 'approve', editing ? { subject, body_html: html.current } : undefined);
           setBusy(null);
         }}>{editing ? 'Approve edited' : 'Approve'}</Button>

@@ -3,7 +3,7 @@
 // answers with nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiDefaults, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions, predictTokens, openAiMaxTokens, anthropicMaxTokens } from './llm.js';
+import { aiDefaults, embedIdentity, modelOfIdentity, emptyAnswer, isValidKeepAlive, keepAliveValue, sameModel, samplingOptions, predictTokens, openAiMaxTokens, anthropicMaxTokens } from './llm.js';
 
 test('a duration keeps its unit and travels as a string', () => {
   for (const v of ['10m', '1h', '30s', '500ms']) assert.equal(keepAliveValue(v), v);
@@ -192,4 +192,68 @@ test('each API says "no ceiling" in its own way, and none of them says it with a
   assert.equal(anthropicMaxTokens(0, 16_000, 64_000), 64_000);
   assert.equal(anthropicMaxTokens(700, 4_000, 64_000), 4_700);
   assert.equal(anthropicMaxTokens(100_000, 0, 64_000), 64_000, 'never ask for more than the model takes');
+});
+
+// ---------- What counts as a change of embedder ----------
+
+const embedBase = () => ({
+  ...aiDefaults(),
+  embedProvider: 'openai' as const,
+  embedBaseUrl: 'https://vectors.example/v1',
+  embedModel: 'all-minilm',
+});
+
+test('the same name at two providers is two different embedders', () => {
+  // The bug this exists for: `all-minilm` on the Ollama next door and
+  // `all-minilm` through a gateway share a string and not a vector space. While
+  // only the name was compared, switching between them invalidated nothing and
+  // search scored both together.
+  const a = embedIdentity({ ...embedBase(), embedProvider: 'openai' });
+  const b = embedIdentity({ ...embedBase(), embedProvider: 'ollama' });
+  assert.notEqual(a, b);
+});
+
+test('the same name on two hosts is two different embedders', () => {
+  const a = embedIdentity({ ...embedBase(), embedBaseUrl: 'https://vectors.example/v1' });
+  const b = embedIdentity({ ...embedBase(), embedBaseUrl: 'https://other.example/v1' });
+  assert.notEqual(a, b);
+});
+
+test('a path or a trailing slash is not a different embedder', () => {
+  // A rebuild of every mailbox is far too expensive to spend on a URL that was
+  // retyped, so the identity keeps the origin and drops the rest.
+  const a = embedIdentity({ ...embedBase(), embedBaseUrl: 'https://vectors.example/v1' });
+  const b = embedIdentity({ ...embedBase(), embedBaseUrl: 'https://vectors.example/v1/' });
+  const c = embedIdentity({ ...embedBase(), embedBaseUrl: 'https://vectors.example/openai/v1' });
+  assert.equal(a, b);
+  assert.equal(a, c);
+});
+
+test('changing the model is still a change of embedder', () => {
+  assert.notEqual(
+    embedIdentity({ ...embedBase(), embedModel: 'all-minilm' }),
+    embedIdentity({ ...embedBase(), embedModel: 'qwen3-embedding:4b' }),
+  );
+});
+
+test('an inherited embedder follows the language model’s address', () => {
+  // `embedProvider: 'same'` means the embedder moves when the drafting server
+  // moves, with nobody touching an embedding setting at all.
+  const a = embedIdentity({ ...aiDefaults(), embedProvider: 'same', baseUrl: 'http://a.example:11434', embedModel: 'all-minilm' });
+  const b = embedIdentity({ ...aiDefaults(), embedProvider: 'same', baseUrl: 'http://b.example:11434', embedModel: 'all-minilm' });
+  assert.notEqual(a, b);
+});
+
+test('the identity is stable for settings that did not change', () => {
+  // It is compared on every settings save and every index pass; an identity
+  // that varied would rebuild the whole mailbox for nothing.
+  assert.equal(embedIdentity(embedBase()), embedIdentity(embedBase()));
+});
+
+test('the model can be read back out of an identity for a page to show', () => {
+  assert.equal(modelOfIdentity(embedIdentity(embedBase())), 'all-minilm');
+  // A model name with the separator in it still comes back whole.
+  assert.equal(modelOfIdentity('ollama|h|a|b'), 'a|b');
+  // And something that is not an identity at all is returned as it is.
+  assert.equal(modelOfIdentity('all-minilm'), 'all-minilm');
 });

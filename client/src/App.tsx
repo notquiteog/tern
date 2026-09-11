@@ -25,6 +25,7 @@ const ContactsPage = lazy(() => import('./pages/Contacts'));
 const TemplatesPage = lazy(() => import('./pages/Templates'));
 const SequencesPage = lazy(() => import('./pages/Sequences'));
 const SequenceEditorPage = lazy(() => import('./pages/SequenceEditor'));
+const SequenceRepliesPage = lazy(() => import('./pages/SequenceReplies'));
 const RulesPage = lazy(() => import('./pages/Rules'));
 const ReviewPage = lazy(() => import('./pages/Review'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
@@ -60,6 +61,7 @@ function Gate() {
           <Route path="/contacts/:id" element={<ContactsPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/sequences" element={<SequencesPage />} />
+          <Route path="/sequences/replies" element={<SequenceRepliesPage />} />
           <Route path="/sequences/:id" element={<SequenceEditorPage />} />
           <Route path="/rules" element={<RulesPage />} />
           <Route path="/responders" element={<RespondersPage />} />

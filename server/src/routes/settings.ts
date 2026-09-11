@@ -7,6 +7,7 @@ import { appSettings } from '../services/compose.js';
 import { clearLogo, getBranding, getIcon, getLogo, ICON_NAMES, LOGO_MAX_BYTES, LOGO_TYPES, manifest, publicBranding, setAppName, setIcons, setLogo } from '../services/branding.js';
 import { badRequest, notFound } from '../errors.js';
 import { APPEARANCE_DEFAULTS, getAppearanceSettings, saveAppearanceSettings } from '../services/appearance.js';
+import { replyCounts } from '../services/campaignReplies.js';
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
@@ -137,5 +138,16 @@ settingsRouter.get('/stats', async (req, res) => {
   const enrollments = await one<any>(`SELECT count(*) FILTER (WHERE e.status='active')::int AS active, count(*) FILTER (WHERE e.status='waiting_review')::int AS waiting_review, count(*) FILTER (WHERE e.status='replied')::int AS replied FROM enrollments e JOIN sequences s ON s.id=e.sequence_id WHERE s.user_id=$1`, [uid]);
   const review = await one<{ n: number }>(`SELECT count(*)::int AS n FROM review_queue WHERE user_id=$1 AND status='pending'`, [uid]);
   const recent = await query<any>(`SELECT l.id, l.kind, l.subject, l.to_email, l.sent_at, l.status, l.error, l.replied_at, l.bounced_at, a.email AS account_email, a.color FROM send_log l JOIN accounts a ON a.id=l.account_id WHERE l.user_id=$1 ORDER BY l.sent_at DESC LIMIT 15`, [uid]);
-  res.json({ accounts: perAccount, week, daily, enrollments, reviewPending: review?.n ?? 0, recent });
+  // What the outreach is actually doing, rather than how much of it there was.
+  //
+  // Home has counted sends and replies since the first version, which answers
+  // "was the machine running" and not "did any of it work". A reply that says
+  // yes and a campaign that has stopped are the two facts worth walking across
+  // the room for, and neither was on this page.
+  const replies = await replyCounts(uid);
+  const paused = await query<{ id: number; name: string; pause_reason: string | null }>(
+    `SELECT id, name, pause_reason FROM sequences WHERE user_id=$1 AND status='paused' AND pause_reason IS NOT NULL ORDER BY paused_at DESC NULLS LAST LIMIT 5`,
+    [uid],
+  );
+  res.json({ accounts: perAccount, week, daily, enrollments, reviewPending: review?.n ?? 0, recent, outreach: { replies, paused } });
 });

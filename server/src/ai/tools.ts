@@ -45,7 +45,7 @@
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { allowed, type Capability } from '../services/capabilities.js';
-import { openEmails } from '../services/mailVault.js';
+import { openEmails, openReviews } from '../services/mailVault.js';
 import { semanticSearch } from '../services/semantic.js';
 import { htmlToText } from '../services/merge.js';
 import { listCommitments } from '../services/commitments.js';
@@ -125,6 +125,36 @@ export type Proposal =
       /** Exactly what the ordinary rules editor takes, opened unsaved. */
       rule: DraftRule;
       sentence: string;
+    }
+  | {
+      kind: 'enrollment';
+      sequenceId: number;
+      sequenceName: string;
+      /** Why these people, in one line, for the card's heading. */
+      reason: string;
+      /**
+       * Everybody who would be enrolled, in full and never truncated: a card
+       * that says "and 340 more" is asking somebody to approve mail to people
+       * they cannot see, which is the one thing this must not do.
+       */
+      contacts: { id: number; email: string; name: string; company: string }[];
+      /** Already suppressed or already on it, so the card can say so. */
+      skipped: { email: string; why: string }[];
+    }
+  | {
+      kind: 'review_decisions';
+      action: 'approve' | 'reject';
+      reason: string;
+      items: { id: number; subject: string; to: string; heldFor: string | null }[];
+    }
+  | {
+      kind: 'contact_change';
+      contactId: number;
+      email: string;
+      name: string;
+      reason: string;
+      /** One row per field, showing what it is now and what it would become. */
+      changes: { field: string; from: string; to: string }[];
     }
   | {
       kind: 'triage';
@@ -1165,9 +1195,254 @@ const proposeTriage: AssistantTool = {
  * failure mode of a small model with a drafting tool is drafting first and
  * finding out afterwards.
  */
+// ---------- Outreach ----------
+//
+// The assistant could read mail, contacts, the calendar, commitments and
+// drafts, and could touch nothing in the half of the app that sends campaigns.
+// "Why are so many drafts being held" and "put the people who said not now
+// back in for the spring" were questions it had no way to answer or act on,
+// although both are answerable from tables it already had access to.
+//
+// Three of these four propose rather than act, in the card-with-a-button shape
+// the calendar and triage tools already use. Enrolling people, approving
+// drafts and editing a contact record are all things where being wrong is
+// expensive and being slow is not, so a person presses the button.
+
+const campaignStatus: AssistantTool = {
+  needs: ['ai.assistant', 'ai.campaigns'],
+  spec: {
+    name: 'campaign_status',
+    description: 'How the person\'s outreach campaigns are doing: how many are enrolled, sent, replied and bounced, how many drafts are waiting for review, whether a campaign has paused itself and why, and what the replies actually said — interested, a question, the wrong person, not now. USE THIS for any question about a campaign, a sequence, why sends have stopped, why drafts are being held, or who has replied.',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Part of a campaign name. Omit for all of them.' } },
+    },
+  },
+  async run(ctx, args) {
+    const q = str(args, 'query', 120);
+    const rows = await query<any>(
+      `SELECT s.id, s.name, s.status, s.pause_reason,
+              (SELECT count(*)::int FROM enrollments e WHERE e.sequence_id=s.id) AS enrolled,
+              (SELECT count(*)::int FROM send_log l WHERE l.sequence_id=s.id AND l.status='sent') AS sent,
+              (SELECT count(*)::int FROM send_log l WHERE l.sequence_id=s.id AND l.replied_at IS NOT NULL) AS replied,
+              (SELECT count(*)::int FROM send_log l WHERE l.sequence_id=s.id AND l.bounced_at IS NOT NULL) AS bounced,
+              (SELECT count(*)::int FROM review_queue r JOIN enrollments e ON e.id=r.enrollment_id WHERE e.sequence_id=s.id AND r.status='pending') AS queued,
+              (SELECT count(*)::int FROM review_queue r JOIN enrollments e ON e.id=r.enrollment_id WHERE e.sequence_id=s.id AND r.status='pending' AND r.hold_reason IS NOT NULL) AS held
+         FROM sequences s
+        WHERE s.user_id=$1 AND s.status <> 'archived' ${q ? 'AND s.name ILIKE \'%\' || $2 || \'%\'' : ''}
+        ORDER BY s.updated_at DESC LIMIT 12`,
+      q ? [ctx.userId, q] : [ctx.userId],
+    );
+    if (!rows.length) return { text: q ? `No campaign matches "${q}".` : 'There are no campaigns.' };
+
+    // What the replies said, per campaign. The label has been written onto
+    // every answered send since the classifier shipped; this is the assistant
+    // finally able to read it.
+    const intents = await query<{ sequence_id: number; reply_intent: string; n: number }>(
+      `SELECT sequence_id, reply_intent, count(*)::int AS n FROM send_log
+        WHERE user_id=$1 AND sequence_id = ANY($2) AND reply_intent IS NOT NULL AND reply_handled_at IS NULL
+        GROUP BY sequence_id, reply_intent`,
+      [ctx.userId, rows.map((r) => r.id)],
+    );
+    const bySeq = new Map<number, string[]>();
+    for (const i of intents) {
+      const list = bySeq.get(i.sequence_id) ?? [];
+      list.push(`${i.n} ${i.reply_intent.replace(/_/g, ' ')}`);
+      bySeq.set(i.sequence_id, list);
+    }
+    const lines = rows.map((r) => {
+      const bits = [`${r.enrolled} enrolled`, `${r.sent} sent`, `${r.replied} replied`];
+      if (r.bounced) bits.push(`${r.bounced} bounced`);
+      if (r.queued) bits.push(`${r.queued} waiting for review${r.held ? ` (${r.held} held by the guard)` : ''}`);
+      const waiting = bySeq.get(r.id);
+      return [
+        `- "${r.name}" (id ${r.id}) — ${r.status}${r.pause_reason ? `: ${r.pause_reason}` : ''}`,
+        `  ${bits.join(', ')}`,
+        waiting ? `  replies still to deal with: ${waiting.join(', ')}` : '',
+      ].filter(Boolean).join('\n');
+    });
+    return { text: `${rows.length} campaign(s):\n${lines.join('\n')}` };
+  },
+};
+
+const proposeEnrollment: AssistantTool = {
+  needs: ['ai.assistant', 'ai.campaigns'],
+  spec: {
+    name: 'propose_enrollment',
+    description: 'Offer to put a set of contacts into one of the person\'s campaigns. USE THIS when they ask to enrol, add, put or sign somebody up to a campaign or sequence: find the people with find_contacts first, then call this. The person sees every contact and presses a button; nobody is enrolled and no mail is sent until they do. Never list the contacts in your reply instead of calling this.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sequenceId: { type: 'integer', description: 'The campaign, by the id campaign_status gives.' },
+        contactIds: { type: 'array', description: 'The contacts, by the ids find_contacts gives.', items: { type: 'integer' } },
+        reason: { type: 'string', description: 'Why these ones, in one short line. It is the heading on the card.' },
+      },
+      required: ['sequenceId', 'contactIds'],
+    },
+  },
+  async run(ctx, args) {
+    const sequenceId = num(args, 'sequenceId', 0, 1, Number.MAX_SAFE_INTEGER);
+    const seq = await one<{ id: number; name: string; account_id: number | null }>(
+      'SELECT id, name, account_id FROM sequences WHERE id=$1 AND user_id=$2',
+      [sequenceId, ctx.userId],
+    );
+    if (!seq) throw new Error(`There is no campaign with id ${sequenceId} belonging to this person. Call campaign_status to see the real ones.`);
+    if (!seq.account_id) throw new Error(`"${seq.name}" has no sending account, so nobody can be enrolled in it yet.`);
+    const ids = (Array.isArray(args.contactIds) ? args.contactIds : [])
+      .map((n) => Number(n)).filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, 500);
+    if (!ids.length) throw new Error('No contacts were given. Find them with find_contacts and pass their ids.');
+
+    const rows = await query<any>(
+      `SELECT c.id, c.email, c.first_name, c.last_name, c.company, c.status,
+              EXISTS (SELECT 1 FROM suppressions s WHERE s.user_id=c.user_id AND lower(s.email)=lower(c.email)) AS suppressed,
+              EXISTS (SELECT 1 FROM enrollments e WHERE e.contact_id=c.id AND e.sequence_id=$3) AS already
+         FROM contacts c WHERE c.user_id=$1 AND c.id = ANY($2)`,
+      [ctx.userId, ids, sequenceId],
+    );
+    const contacts: { id: number; email: string; name: string; company: string }[] = [];
+    const skipped: { email: string; why: string }[] = [];
+    for (const c of rows) {
+      // The same three refusals the enrol route makes, applied here so the
+      // card never offers to write to somebody the sender would then refuse.
+      if (c.suppressed) { skipped.push({ email: c.email, why: 'unsubscribed or bounced before' }); continue; }
+      if (c.already) { skipped.push({ email: c.email, why: 'already on this campaign' }); continue; }
+      if (!['active', 'replied'].includes(c.status)) { skipped.push({ email: c.email, why: c.status }); continue; }
+      contacts.push({ id: c.id, email: c.email, name: [c.first_name, c.last_name].filter(Boolean).join(' '), company: c.company ?? '' });
+    }
+    if (!contacts.length) {
+      return { text: `None of those ${rows.length} can be enrolled: ${skipped.map((s) => `${s.email} (${s.why})`).join(', ')}. Tell the person that rather than proposing anything.` };
+    }
+    return {
+      text: `Proposed enrolling ${contacts.length} contact(s) in "${seq.name}". The person has the card and will press the button or not; do not enrol anybody yourself and do not repeat the list.${skipped.length ? ` ${skipped.length} were left out: ${skipped.map((s) => `${s.email} (${s.why})`).join(', ')}.` : ''}`,
+      proposal: {
+        kind: 'enrollment', sequenceId: seq.id, sequenceName: seq.name,
+        reason: str(args, 'reason', 200) || `Enrol ${contacts.length} in ${seq.name}`,
+        contacts, skipped,
+      },
+    };
+  },
+};
+
+const proposeReviewDecisions: AssistantTool = {
+  needs: ['ai.assistant', 'ai.campaigns'],
+  spec: {
+    name: 'propose_review_decisions',
+    description: 'Offer to approve or reject a set of drafts waiting in the AI review queue. USE THIS when the person asks to clear, approve, reject or deal with the review queue. Call it with no ids to offer everything that is waiting, or with ids to offer a subset. The person sees each draft and presses a button; nothing is sent or rejected until they do.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'approve or reject.' },
+        ids: { type: 'array', description: 'Review item ids. Omit to offer everything pending.', items: { type: 'integer' } },
+        heldOnly: { type: 'boolean', description: 'Only the ones the guard held back. Useful with reject.' },
+        reason: { type: 'string', description: 'Why, in one short line. It is the heading on the card.' },
+      },
+      required: ['action'],
+    },
+  },
+  async run(ctx, args) {
+    const action = need(args, 'action', 20).toLowerCase();
+    if (action !== 'approve' && action !== 'reject') throw new Error(`"${action}" is not something this tool does. It can only approve or reject.`);
+    const ids = (Array.isArray(args.ids) ? args.ids : []).map((n) => Number(n)).filter((n) => Number.isSafeInteger(n) && n > 0);
+    const heldOnly = args.heldOnly === true;
+    const rows = await query<any>(
+      `SELECT q.id, q.subject, q.hold_reason, c.email, c.first_name, c.last_name
+         FROM review_queue q LEFT JOIN contacts c ON c.id=q.contact_id
+        WHERE q.user_id=$1 AND q.status='pending'
+          ${ids.length ? 'AND q.id = ANY($2)' : ''}
+          ${heldOnly ? 'AND q.hold_reason IS NOT NULL' : ''}
+        ORDER BY q.created_at LIMIT 100`,
+      ids.length ? [ctx.userId, ids] : [ctx.userId],
+    );
+    if (!rows.length) return { text: 'There is nothing pending in the review queue that matches.' };
+
+    // The subject is sealed like the rest of a queued draft. Opened through
+    // the vault's own helper rather than by reaching for the raw key: this is
+    // the owner's queue, and `openReviews` is the sanctioned way to say so.
+    const opened = await openReviews(ctx.userId, rows);
+    const items = opened.map((r: any) => ({
+      id: Number(r.id),
+      subject: r.subject || '(no subject)',
+      to: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.email || 'someone',
+      heldFor: r.hold_reason ?? null,
+    }));
+    // Approving what the guard held is not something to offer in bulk from a
+    // sentence: the hold is the whole reason a person is meant to read it.
+    const held = items.filter((i) => i.heldFor).length;
+    if (action === 'approve' && held) {
+      return { text: `${held} of those were held back by the guard, and approving a held draft in bulk is not something this offers — each one has to be read. Tell the person to open the review queue for those, and offer to approve only the ${items.length - held} that were not held.` };
+    }
+    return {
+      text: `Proposed ${action === 'approve' ? 'approving' : 'rejecting'} ${items.length} draft(s). The person has the card; do not decide anything yourself and do not repeat the list.`,
+      proposal: {
+        kind: 'review_decisions', action: action as 'approve' | 'reject',
+        reason: str(args, 'reason', 200) || `${action === 'approve' ? 'Approve' : 'Reject'} ${items.length} drafts`,
+        items,
+      },
+    };
+  },
+};
+
+const proposeContactChange: AssistantTool = {
+  needs: ['ai.assistant', 'ai.campaigns'],
+  spec: {
+    name: 'propose_contact_change',
+    description: 'Offer to change something on a contact record: their name, company, title, tags, status, or a custom field. USE THIS when the person asks to update, correct, tag, untag or unsubscribe somebody. The person sees what is there now and what it would become, and presses a button; nothing is written until they do.',
+    parameters: {
+      type: 'object',
+      properties: {
+        contactId: { type: 'integer', description: 'The contact, by the id find_contacts gives.' },
+        first_name: { type: 'string' },
+        last_name: { type: 'string' },
+        company: { type: 'string' },
+        title: { type: 'string' },
+        notes: { type: 'string' },
+        status: { type: 'string', description: 'One of: active, unsubscribed, bounced, replied, do_not_contact.' },
+        addTags: { type: 'array', description: 'Tags to add.', items: { type: 'string' } },
+        removeTags: { type: 'array', description: 'Tags to take off.', items: { type: 'string' } },
+        reason: { type: 'string', description: 'Why, in one short line. It is the heading on the card.' },
+      },
+      required: ['contactId'],
+    },
+  },
+  async run(ctx, args) {
+    const id = num(args, 'contactId', 0, 1, Number.MAX_SAFE_INTEGER);
+    const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [id, ctx.userId]);
+    if (!c) throw new Error(`There is no contact with id ${id} belonging to this person. Find them with find_contacts first.`);
+
+    const changes: { field: string; from: string; to: string }[] = [];
+    for (const f of ['first_name', 'last_name', 'company', 'title', 'notes'] as const) {
+      const v = str(args, f, f === 'notes' ? 4000 : 200);
+      if (v && v !== String(c[f] ?? '')) changes.push({ field: f, from: String(c[f] ?? ''), to: v });
+    }
+    const status = str(args, 'status', 40).toLowerCase();
+    const STATUSES = ['active', 'unsubscribed', 'bounced', 'replied', 'do_not_contact'];
+    if (status) {
+      if (!STATUSES.includes(status)) throw new Error(`"${status}" is not a contact status. It must be one of: ${STATUSES.join(', ')}.`);
+      if (status !== c.status) changes.push({ field: 'status', from: c.status, to: status });
+    }
+    const add = (Array.isArray(args.addTags) ? args.addTags : []).map((t) => String(t).trim()).filter(Boolean).slice(0, 20);
+    const drop = (Array.isArray(args.removeTags) ? args.removeTags : []).map((t) => String(t).trim()).filter(Boolean).slice(0, 20);
+    const current: string[] = c.tags ?? [];
+    const next = [...new Set([...current.filter((t) => !drop.includes(t)), ...add])];
+    if (next.join(',') !== current.join(',')) changes.push({ field: 'tags', from: current.join(', ') || '(none)', to: next.join(', ') || '(none)' });
+
+    if (!changes.length) return { text: 'Nothing there would change; the contact already says all of that.' };
+    return {
+      text: `Proposed ${changes.length} change(s) to ${c.email}. The person has the card and will press the button or not; do not repeat the changes.`,
+      proposal: {
+        kind: 'contact_change', contactId: c.id, email: c.email,
+        name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+        reason: str(args, 'reason', 200) || `Update ${c.email}`,
+        changes,
+      },
+    };
+  },
+};
+
 export const TOOLS: AssistantTool[] = [
   searchMail, searchMailExact, readThread, readAttachment, findContacts, listTemplates, myCommitments, myDay,
   draftEmail, proposeEvent, recordCommitment, draftRuleTool, proposeTriage, makePicture,
+  campaignStatus, proposeEnrollment, proposeReviewDecisions, proposeContactChange,
 ];
 
 const BY_NAME = new Map(TOOLS.map((t) => [t.spec.name, t]));

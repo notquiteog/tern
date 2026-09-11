@@ -136,10 +136,31 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   const aiReply = () => last && openInline(lastInbound, prefs.defaultReplyAll ? 'reply_all' : 'reply', { autoAi: 'reply' });
   useEffect(() => {
     if (!last) return;
-    if (params.get('reply') === '1') { reply(lastInbound); setParams((p) => { p.delete('reply'); return p; }, { replace: true }); }
+    // `ai` is `reply` with the draft already asked for. The Replies tab sends
+    // somebody here from a reply it has already classified, and making them
+    // press "AI reply" again once they arrive would be asking a question the
+    // previous screen answered.
+    if (params.get('ai') === '1') { aiReply(); setParams((p) => { p.delete('ai'); p.delete('reply'); return p; }, { replace: true }); }
+    else if (params.get('reply') === '1') { reply(lastInbound); setParams((p) => { p.delete('reply'); return p; }, { replace: true }); }
     if (params.get('forward') === '1') { forward(last); setParams((p) => { p.delete('forward'); return p; }, { replace: true }); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [last?.id, params]);
+
+  // Slots offered because of what the reply *meant*, not because of what it
+  // said. `asksAboutTime` reads the message for a question about dates, which
+  // misses "yes, let's talk" — the most interested thing somebody can write
+  // and the one most likely to want a time in the answer. The Replies tab
+  // knows the intent and says so here.
+  const timesAsked = params.get('times') === '1';
+
+  // A thread that is a campaign answering back says so.
+  //
+  // The conversation already knew which sends belonged to it; what it could
+  // not say is that this is a reply *to a campaign* and what the classifier
+  // made of it — which changes what to do here, and what a reply should sound
+  // like. The step's own instructions ride along, so an answer sounds like the
+  // campaign that started it rather than like a fresh email from nobody.
+  const campaign = data?.campaign as { id: number; name: string; reply_intent: string | null; ai_instructions: string | null } | null | undefined;
 
   async function summarize() {
     setSummarizing(true); setSummary(''); summaryThinking.reset();
@@ -188,7 +209,7 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
   // button stands down rather than repeating it.
   const timesChipShowing = Boolean(
     quick && !quick.loading && quick.items.length > 0
-    && asksAboutTime(lastInbound?.body_text || lastInbound?.preview),
+    && (timesAsked || asksAboutTime(lastInbound?.body_text || lastInbound?.preview)),
   );
 
   useHotkeys({
@@ -280,6 +301,22 @@ export function ThreadView({ accountId, threadId, box, onBack, onPrev, onNext, h
         </div>
       </div>
       {summary !== null && <div className="card mb-16 ai-card"><div className="row mb-8"><Sparkles size={15} /><span className="strong small">Summary</span>{summarizing && <Spinner size={14} />}<IconButton label="Close" className="btn-sm ml-auto" onClick={() => setSummary(null)}><X size={14} /></IconButton></div><AiThinking trace={summaryThinking} busy={summarizing} /><div className="pre" style={{ fontSize: 13.5 }}>{summary || (summaryThinking.text ? '' : '…')}</div></div>}
+      {/* This conversation is a campaign answering back.
+          Above the messages rather than on one of them: it is a statement
+          about the thread, and repeating it over every message in a five-step
+          sequence would be wallpaper. The intent is the classifier's own
+          label, which until now was written to the database and read by
+          nothing. */}
+      {campaign && (
+        <div className="campaign-line">
+          <Workflow size={13} />
+          <span>
+            Reply to <a onClick={() => nav(`/sequences/${campaign.id}`)} style={{ cursor: 'pointer' }}><b>{campaign.name}</b></a>
+            {campaign.reply_intent && campaign.reply_intent !== 'unclear' ? <> · they {campaign.reply_intent.replace(/_/g, ' ')}</> : null}
+          </span>
+          <a className="ml-auto small" style={{ cursor: 'pointer' }} onClick={() => nav('/sequences/replies')}>All replies</a>
+        </div>
+      )}
       <div className="thread-side">
         <div className="thread-main">
           {messages.map((m) => (

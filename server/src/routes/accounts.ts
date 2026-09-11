@@ -8,7 +8,7 @@ import { JmapClient, basicAuth, bearerAuth, jmapErrorMessage, SUBMISSION, CORE, 
 import { syncManager } from '../workers/syncManager.js';
 import { syncAccount } from '../jmap/sync.js';
 import { config } from '../config.js';
-import { describeWindow, isWindowOpen, nextWindowOpen, sentToday } from '../services/sending.js';
+import { describeWindow, effectiveCap, isWindowOpen, nextWindowOpen, sentToday, warmupProgress } from '../services/sending.js';
 import { decrypt, encrypt, verifyPassword } from '../crypto.js';
 import { isManagedAccount, stalwartAccountFor } from '../services/provision.js';
 import * as sw from '../services/stalwart.js';
@@ -199,6 +199,11 @@ const updateSchema = z.object({
   trashRetentionDays: z.number().int().min(RETENTION_MIN_DAYS).max(RETENTION_MAX_DAYS).optional(),
   junkRetentionDays: z.number().int().min(RETENTION_MIN_DAYS).max(RETENTION_MAX_DAYS).optional(),
   syncDrafts: z.boolean().optional(),
+  // The ramp. `warmupStartCap` and `warmupStep` are the two numbers the
+  // README's advice is made of; `warmupEnabled` starts the clock.
+  warmupEnabled: z.boolean().optional(),
+  warmupStartCap: z.number().int().min(1).max(500).optional(),
+  warmupStep: z.number().int().min(0).max(100).optional(),
 });
 
 accountsRouter.put('/:id', async (req, res) => {
@@ -226,11 +231,22 @@ accountsRouter.put('/:id', async (req, res) => {
        api_url = CASE WHEN $18 THEN NULL ELSE api_url END, sync_status = CASE WHEN $18 THEN 'idle' ELSE sync_status END, sync_error = CASE WHEN $18 THEN NULL ELSE sync_error END,
        voice=COALESCE($19, voice), vacation=COALESCE($20, vacation),
        retention_enabled=COALESCE($21, retention_enabled), trash_retention_days=COALESCE($22, trash_retention_days),
-       junk_retention_days=COALESCE($23, junk_retention_days), sync_drafts=COALESCE($24, sync_drafts)
+       junk_retention_days=COALESCE($23, junk_retention_days), sync_drafts=COALESCE($24, sync_drafts),
+       warmup_enabled=COALESCE($25, warmup_enabled), warmup_start_cap=COALESCE($26, warmup_start_cap), warmup_step=COALESCE($27, warmup_step),
+       -- The clock starts when the ramp is turned on and is not restarted by
+       -- later edits: somebody who raises the step on day nine is on day nine,
+       -- not back on day one. Turning it off clears the date, so turning it on
+       -- again is a deliberate fresh start rather than an accidental jump to
+       -- whatever day the old ramp had reached.
+       warmup_started_at = CASE
+         WHEN $25 IS TRUE AND warmup_started_at IS NULL THEN now()
+         WHEN $25 IS FALSE THEN NULL
+         ELSE warmup_started_at END
      WHERE id=$1`,
     [id, b.name ?? null, b.color ?? null, b.signatureHtml ?? null, b.dailyCap ?? null, b.jitterEnabled ?? null, b.jitterMinS ?? null, b.jitterMaxS ?? null, b.sendWindow ? JSON.stringify(b.sendWindow) : null,
       b.syncLimit ?? null, b.enabled ?? null, b.secret ? encryptSecret(b.secret) : null, b.authUser ?? null, sessionUrl, b.pinOrigin ?? null, b.sendVia ?? null, smtp ? JSON.stringify(smtp) : null, credsChanged, b.voice ?? null, b.vacation ? JSON.stringify(b.vacation) : null,
-      b.retentionEnabled ?? null, b.trashRetentionDays ?? null, b.junkRetentionDays ?? null, b.syncDrafts ?? null],
+      b.retentionEnabled ?? null, b.trashRetentionDays ?? null, b.junkRetentionDays ?? null, b.syncDrafts ?? null,
+      b.warmupEnabled ?? null, b.warmupStartCap ?? null, b.warmupStep ?? null],
   );
   // Turning automatic emptying on or changing its window destroys mail on
   // the next run, so it is worth an audit entry of its own.
@@ -321,9 +337,15 @@ accountsRouter.get('/:id/stats', async (req, res) => {
     [id],
   );
   const now = new Date();
+  const warmup = warmupProgress(acc, now);
   res.json({
     sentToday: today,
-    dailyCap: acc.daily_cap,
+    // What the cap is today, which during a ramp is not the configured one.
+    // The page draws a meter against this, so reporting the ceiling here would
+    // show an account as having plenty of room on a morning it had none.
+    dailyCap: effectiveCap(acc, now),
+    configuredCap: acc.daily_cap,
+    warmup,
     windowOpen: isWindowOpen(acc.send_window, now),
     nextWindowOpen: nextWindowOpen(acc.send_window, now),
     windowText: describeWindow(acc.send_window),

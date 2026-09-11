@@ -1349,9 +1349,122 @@ function AiAdminSettings() {
           <div className="row mt-16"><Input className="input-sm" placeholder="any embedding model, e.g. mxbai-embed-large" value={customEmbed} onChange={(e) => setCustomEmbed(e.target.value)} style={{ maxWidth: 360 }} /><Button size="sm" disabled={!customEmbed.trim() || downloads.isPulling(customEmbed.trim())} onClick={() => { void downloads.start(customEmbed.trim()); setCustomEmbed(''); }}>Pull</Button></div>
         </div>
       )}
+      <VectorIndexCard />
       <AiVoiceCard />
       <AiMediaCard />
       <AiPlayground enabled={Boolean(data.settings.enabled)} />
+    </div>
+  );
+}
+
+// Admin → AI model → The meaning-search index.
+//
+// The index has always been something that happened to an install rather than
+// something anybody could see or steer: it filled in the background, it
+// rebuilt itself when the embedder changed, and when it went wrong the only
+// instrument was a pending count that was not going down. "Qdrant is
+// unreachable", "the embedder moved and everything is being rebuilt" and "this
+// mailbox has simply never been indexed" want three different responses and
+// looked identical from out here.
+//
+// Nothing on this card destroys anything that cannot be made again: vectors
+// are derived from mail that is still in Postgres, so the cost of the reset
+// button is time, not data. That is exactly why it can be a button.
+function VectorIndexCard() {
+  const toast = useToast();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const { data, refetch, isLoading } = useQuery({
+    queryKey: ['ai-vectors'],
+    queryFn: () => api.get<any>('/api/ai/vectors'),
+    // The rebuild moves while somebody watches it, and a pending count that
+    // needs a reload to change reads as a stuck one.
+    refetchInterval: 15_000,
+  });
+
+  async function run(what: string, path: string, body: any, done: (r: any) => string) {
+    setBusy(what);
+    try { toast.success(done(await api.post<any>(path, body))); await refetch(); }
+    catch (e) { toast.error(e); } finally { setBusy(null); setConfirmReset(false); }
+  }
+
+  if (isLoading || !data) return null;
+  const pending = (data.users ?? []).reduce((n: number, u: any) => n + u.pending, 0);
+  const indexed = (data.users ?? []).reduce((n: number, u: any) => n + u.indexed, 0);
+  const stale = (data.collections ?? []).filter((c: any) => c.state === 'superseded' || c.state === 'orphaned');
+
+  return (
+    <div className="card mb-16">
+      <div className="card-title">
+        <h2>Meaning search index</h2>
+        <span className="small muted">{data.url}</span>
+      </div>
+      {!data.reachable
+        ? <Callout kind="danger">The vector index cannot be reached, so meaning search is falling back to matching words. <span className="small">{data.detail}</span></Callout>
+        : <Callout>Vectors live in Qdrant, one collection per person per embedder. <b>{indexed.toLocaleString()}</b> message{indexed === 1 ? '' : 's'} indexed under <b>{data.model}</b>{pending > 0 && <>, <b>{pending.toLocaleString()}</b> waiting to be embedded — the background pass works through them</>}.</Callout>}
+
+      {/* A collection built by an embedder this install no longer uses is not
+          an error — it is swept on the next index pass — but seeing it is how
+          somebody confirms a model change actually took. */}
+      {stale.length > 0 && (
+        <div className="small mb-8" style={{ color: 'var(--warning-text)' }}>
+          {stale.length} collection{stale.length === 1 ? '' : 's'} left over from a previous embedder or a deleted user. They are swept automatically; "Tidy up" does it now.
+        </div>
+      )}
+
+      {(data.users ?? []).length > 0 && (
+        <DataTable rows={data.users} rowKey={(u: any) => u.userId} cardSize="sm" columns={[
+          { key: 'who', header: 'Person', primary: true, cell: (u: any) => u.username },
+          { key: 'indexed', header: 'Indexed', className: 'muted', nowrap: true, cell: (u: any) => u.indexed.toLocaleString() },
+          { key: 'pending', header: 'Waiting', className: 'muted', nowrap: true, cell: (u: any) => u.pending ? <Badge kind="warning">{u.pending.toLocaleString()}</Badge> : <span className="faint">—</span> },
+          { key: 'act', actions: true, cell: (u: any) => (
+            <Button size="sm" loading={busy === `u${u.userId}`} disabled={!data.reachable}
+              onClick={() => run(`u${u.userId}`, '/api/ai/vectors/reset', { scope: 'me', userId: u.userId }, (r) => `Queued ${r.queued.toLocaleString()} messages to be indexed again`)}>
+              Rebuild
+            </Button>
+          ) },
+        ]} />
+      )}
+
+      {(data.collections ?? []).length > 0 && (
+        <div className="mt-16">
+          <div className="small muted mb-8">Collections</div>
+          <DataTable rows={data.collections} rowKey={(c: any) => c.name} cardSize="sm" columns={[
+            { key: 'name', header: 'Collection', primary: true, cell: (c: any) => <span className="mono small">{c.name}</span> },
+            { key: 'points', header: 'Vectors', className: 'muted', nowrap: true, cell: (c: any) => c.points.toLocaleString() },
+            { key: 'dims', header: 'Width', className: 'muted small', nowrap: true, cell: (c: any) => c.dims || '—' },
+            { key: 'state', header: 'State', nowrap: true, cell: (c: any) => c.state === 'current' ? <Badge kind="success">in use</Badge>
+              : c.state === 'superseded' ? <Badge kind="warning">old embedder</Badge>
+                : c.state === 'orphaned' ? <Badge kind="danger">deleted user</Badge>
+                  /* Not ours. Listed so a shared Qdrant is legible, and never
+                     touched by anything on this page. */
+                  : <Badge>not Tern&rsquo;s</Badge> },
+          ]} />
+        </div>
+      )}
+
+      <div className="row gap-4 mt-16 wrap">
+        <Button size="sm" icon={<RefreshCw size={13} />} loading={busy === 'sweep'} disabled={!data.reachable}
+          onClick={() => run('sweep', '/api/ai/vectors/sweep', {}, (r) => r.dropped ? `Dropped ${r.dropped} leftover collection${r.dropped === 1 ? '' : 's'}` : 'Nothing to tidy up')}>
+          Tidy up
+        </Button>
+        <Button size="sm" variant="ghost" style={{ color: 'var(--danger-text)' }} disabled={!data.reachable} onClick={() => setConfirmReset(true)}>
+          Reset the whole index
+        </Button>
+      </div>
+      <div className="help-text mt-8">
+        Rebuilding throws away the vectors and embeds every message again. Nothing is lost that cannot be made again — the mail itself is untouched — but meaning search is thin until the pass finishes, which is overnight on a slow box with a large mailbox. Ordinary word search is unaffected throughout.
+      </div>
+
+      <Confirm
+        open={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        onConfirm={() => run('reset', '/api/ai/vectors/reset', { scope: 'all' }, (r) => `Index cleared; ${r.queued.toLocaleString()} messages queued to be embedded again`)}
+        title="Reset the whole index?"
+        message={<>Every collection Tern owns is dropped and all {indexed.toLocaleString()} indexed messages go back in the queue, for everybody on this install. Meaning search returns little until the background pass catches up. Word search is unaffected, and no mail is touched.</>}
+        confirmLabel="Reset it"
+        danger
+      />
     </div>
   );
 }

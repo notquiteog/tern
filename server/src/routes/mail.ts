@@ -320,7 +320,25 @@ mailRouter.get('/threads/:accountId/:threadId', async (req, res) => {
   const commitments = await allowed(req.user!.id, 'commitments')
     ? await commitmentsForThread(req.user!.id, acc.id, threadId)
     : [];
-  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color, signature_html: acc.signature_html }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, muted: Boolean(muted), drafts, aiPending: pendingJobs?.n ?? 0, commitments });
+  // Whether this conversation is a campaign answering back, and what the
+  // classifier made of it.
+  //
+  // The thread already knew which sends belong to it; what it could not say is
+  // that this is a *reply to a campaign* and that the reply was labelled
+  // interested — which changes what the person should do here and what the
+  // quick replies should sound like. The step's own instructions come with it,
+  // so an answer to a campaign reply sounds like the campaign that started it
+  // rather than like a fresh email from nobody in particular.
+  const campaign = await one<any>(
+    `SELECT s.id, s.name, s.description, l.reply_intent, l.reply_handled_at, st.ai_instructions, st.position
+       FROM send_log l
+       JOIN sequences s ON s.id = l.sequence_id
+       LEFT JOIN sequence_steps st ON st.id = l.step_id
+      WHERE l.user_id=$1 AND l.account_id=$2 AND l.thread_id=$3 AND l.sequence_id IS NOT NULL
+      ORDER BY l.replied_at DESC NULLS LAST, l.sent_at DESC LIMIT 1`,
+    [req.user!.id, acc.id, threadId],
+  );
+  res.json({ account: { id: acc.id, email: acc.email, name: acc.name, color: acc.color, signature_html: acc.signature_html }, messages, mailboxes, contact, enrollments, sends, snoozedUntil: snooze?.until_at ?? null, muted: Boolean(muted), drafts, aiPending: pendingJobs?.n ?? 0, commitments, campaign });
 });
 
 
@@ -676,7 +694,12 @@ async function rememberEdit(userId: number, accountId: number, b: { aiGenerated?
 // finds.
 
 mailRouter.get('/searches', async (req, res) => {
-  const rows = await query<any>('SELECT id, name, query, position FROM saved_searches WHERE user_id=$1 ORDER BY position, id', [req.user!.id]);
+  // `kind` separates a saved mail search from a saved contact segment. They
+  // share this table because they are the same idea with the same storage and
+  // the same sidebar behaviour; they are asked for separately because a mail
+  // sidebar full of contact filters would be noise in both directions.
+  const kind = String(req.query.kind ?? 'mail') === 'contacts' ? 'contacts' : 'mail';
+  const rows = await query<any>('SELECT id, name, query, position FROM saved_searches WHERE user_id=$1 AND kind=$2 ORDER BY position, id', [req.user!.id, kind]);
   const dek = await dataKey(req.user!.id);
   res.json({
     searches: rows
@@ -686,15 +709,15 @@ mailRouter.get('/searches', async (req, res) => {
 });
 
 mailRouter.post('/searches', async (req, res) => {
-  const b = parse(z.object({ name: z.string().min(1).max(60), query: z.string().min(1).max(500) }), req.body);
+  const b = parse(z.object({ name: z.string().min(1).max(60), query: z.string().min(1).max(500), kind: z.enum(['mail', 'contacts']).default('mail') }), req.body);
   const dek = await dataKey(req.user!.id);
-  const n = await one<{ n: number }>('SELECT count(*)::int AS n FROM saved_searches WHERE user_id=$1', [req.user!.id]);
+  const n = await one<{ n: number }>('SELECT count(*)::int AS n FROM saved_searches WHERE user_id=$1 AND kind=$2', [req.user!.id, b.kind]);
   // A cap, because this lives in the sidebar and a sidebar with forty saved
   // searches in it is a sidebar nobody can find the inbox in.
-  if ((n?.n ?? 0) >= 30) throw badRequest('You can keep 30 searches; delete one first');
+  if ((n?.n ?? 0) >= 30) throw badRequest(`You can keep 30 ${b.kind === 'contacts' ? 'segments' : 'searches'}; delete one first`);
   const rows = await query<{ id: number }>(
-    'INSERT INTO saved_searches (user_id, name, query, position) VALUES ($1,$2,$3,$4) RETURNING id',
-    [req.user!.id, sealWith(dek, b.name.trim()), sealWith(dek, b.query.trim()), n?.n ?? 0],
+    'INSERT INTO saved_searches (user_id, name, query, position, kind) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+    [req.user!.id, sealWith(dek, b.name.trim()), sealWith(dek, b.query.trim()), n?.n ?? 0, b.kind],
   );
   res.json({ id: rows[0]!.id });
 });

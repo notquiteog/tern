@@ -357,6 +357,44 @@ export function embedEndpoint(s: AiSettings): ModelEndpoint {
   };
 }
 
+/**
+ * What decides whether two stored vectors are comparable.
+ *
+ * Not the model name. `all-minilm` served by the Ollama next door and
+ * `all-minilm` reached through an OpenAI-compatible gateway are two different
+ * embedders that happen to share a string: different builds, different
+ * pooling, sometimes different normalisation, and always a different vector
+ * for the same sentence. The same is true of the same name on two hosts, and
+ * of `embedProvider: 'same'` when the language model's address moves out from
+ * under it.
+ *
+ * Everything that scopes the index is keyed on this rather than on the name:
+ * the manifest column, the search filter, the collection the vectors are
+ * written to, and the sweep that drops superseded collections. Changing any
+ * part of the connection therefore invalidates and rebuilds, which is what
+ * "the embedding model changed" has to mean if meaning search is not to answer
+ * confidently out of a space nothing else is in any more.
+ *
+ * The origin rather than the whole URL: a path or a trailing slash is not a
+ * different embedder, and a rebuild of every mailbox is too expensive to spend
+ * on one.
+ */
+export function embedIdentity(s: AiSettings, model?: string): string {
+  const t = embedEndpoint(s);
+  // The caller may pass the model the embedder actually answered with, which
+  // is a measurement where the setting is only an intention.
+  const name = model || s.embedModel || DEFAULTS.embedModel;
+  let origin = '';
+  try { origin = t.baseUrl ? new URL(t.baseUrl).host : ''; } catch { origin = String(t.baseUrl ?? ''); }
+  return `${t.provider}|${origin}|${name}`;
+}
+
+/** The human half of an identity, for a page that has to name the embedder. */
+export function modelOfIdentity(identity: string): string {
+  const parts = String(identity ?? '').split('|');
+  return parts.length >= 3 ? parts.slice(2).join('|') : String(identity ?? '');
+}
+
 // Models that still accept `temperature`.
 //
 // The trap the Messages API sets for an adapter written from older

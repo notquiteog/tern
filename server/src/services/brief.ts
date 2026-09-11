@@ -20,6 +20,7 @@ import { openEmails } from './mailVault.js';
 import { htmlToText } from './merge.js';
 import { allowed } from './capabilities.js';
 import { listCommitments, openCount } from './commitments.js';
+import { replyCounts } from './campaignReplies.js';
 import { agendaFor } from './calendar/index.js';
 import { describe as describeGuard, type GuardFlag, type GuardDetail } from './guard.js';
 
@@ -31,6 +32,8 @@ export interface BriefItem {
   accountId?: number;
   threadId?: string;
   emailId?: number;
+  /** A campaign, for the rows that are about one. */
+  sequenceId?: number;
   /** 'needs-you' | 'waiting' | 'warning' | 'bulk' — how the row is drawn. */
   tone?: string;
 }
@@ -169,7 +172,13 @@ export async function generateBrief(userId: number, opts: { tz?: string } = {}):
   const day = await todaySection(userId, safeZone(opts.tz));
   if (day.items.length) sections.push(day);
 
-  // 5. What can go in one action.
+  // 5. What the outreach did. Above the bulk section because somebody saying
+  //    yes is not a housekeeping task, and below commitments because a
+  //    promise you made to a person outranks a reply from a stranger.
+  const out = await outreachSection(userId);
+  if (out.items.length) sections.push(out);
+
+  // 6. What can go in one action.
   const bulk = await bulkSection(userId, from);
   if (bulk.items.length) sections.push(bulk);
 
@@ -289,6 +298,44 @@ async function commitmentSection(userId: number): Promise<BriefSection> {
       tone: c.kind === 'owed' ? 'needs-you' : 'waiting',
     })),
   };
+}
+
+/**
+ * Campaigns: what came back, and what has stopped.
+ *
+ * The brief has had sections for warnings, replies, commitments, today and
+ * bulk since it shipped, and nothing at all for the half of the app that sends
+ * mail. Somebody running a campaign opens this page in the morning and it
+ * could not tell them that three people said yes overnight.
+ *
+ * Deterministic, like every other section. The counts are a query and the
+ * pause reasons are a column; the model writes the paragraph at the top and
+ * does not get to describe these.
+ */
+async function outreachSection(userId: number): Promise<BriefSection> {
+  const items: BriefItem[] = [];
+  const counts = await replyCounts(userId);
+
+  // Interested first and on its own line. It is the only reply that is worth
+  // being interrupted about, and burying it in "six replies" is exactly the
+  // undifferentiated pile the classifier was written to break up.
+  if (counts.interested) items.push({ text: `${counts.interested} interested ${counts.interested === 1 ? 'reply' : 'replies'} waiting`, tone: 'needs-you' });
+  if (counts.question) items.push({ text: `${counts.question} ${counts.question === 1 ? 'question' : 'questions'} to answer`, tone: 'needs-you' });
+  if (counts.wrong_person) items.push({ text: `${counts.wrong_person} pointed at somebody else`, tone: 'waiting' });
+  if (counts.not_now) items.push({ text: `${counts.not_now} said not now`, tone: 'waiting' });
+
+  // A campaign that stopped itself, with the sentence that says why. This is
+  // the one place the reason has ever been readable outside the enrollment
+  // table, and it is the whole point of recording it.
+  const paused = await query<{ id: number; name: string; pause_reason: string }>(
+    `SELECT id, name, pause_reason FROM sequences
+      WHERE user_id=$1 AND status='paused' AND pause_reason IS NOT NULL
+      ORDER BY paused_at DESC NULLS LAST LIMIT 5`,
+    [userId],
+  );
+  for (const p of paused) items.push({ text: `${p.name} is paused: ${p.pause_reason}`, sequenceId: Number(p.id), tone: 'warning' });
+
+  return { title: 'Your campaigns', items };
 }
 
 async function bulkSection(userId: number, from: Date): Promise<BriefSection> {

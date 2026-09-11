@@ -94,6 +94,57 @@ templatesRouter.delete('/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Turn something already written into a template.
+ *
+ * Templates could be generated from a brief and there was no way to go the
+ * other way, although that is the direction somebody actually has evidence
+ * for: the message that worked, the draft that came out right, the
+ * personalised email in a campaign that got the reply. "Save this as a
+ * template" is the thing people expect to exist and it did not.
+ *
+ * The merge fields are put back. A personalised draft has a real name and a
+ * real company in it, and saving that verbatim makes a template addressed for
+ * ever to one person — so the contact's own values are swapped back out for
+ * the fields they came from, which is the same substitution the merge engine
+ * does, run backwards.
+ */
+templatesRouter.post('/from', async (req, res) => {
+  const b = parse(z.object({
+    name: z.string().min(1).max(200),
+    subject: z.string().max(998).default(''),
+    body_html: z.string().min(1).max(500000),
+    category: z.string().max(60).default('outreach'),
+    /** Whose values to turn back into merge fields. */
+    contactId: z.number().int().positive().optional(),
+  }), req.body);
+
+  let subject = b.subject;
+  let body = b.body_html;
+  if (b.contactId) {
+    const c = await one<any>('SELECT * FROM contacts WHERE id=$1 AND user_id=$2', [b.contactId, req.user!.id]);
+    if (c) {
+      // Longest first, so a company called "Dana" does not eat the first name
+      // before the company match is tried.
+      const pairs: [string, string][] = [
+        [c.first_name, 'first_name'], [c.last_name, 'last_name'], [c.company, 'company'],
+        [c.title, 'title'], [c.email, 'email'],
+      ];
+      for (const [k, v] of Object.entries(c.fields ?? {})) if (v) pairs.push([String(v), k]);
+      for (const [value, field] of pairs.filter(([v]) => String(v ?? '').trim().length >= 3).sort((a, x) => String(x[0]).length - String(a[0]).length)) {
+        const re = new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        subject = subject.replace(re, `{{${field}}}`);
+        body = body.replace(re, `{{${field}}}`);
+      }
+    }
+  }
+  const rows = await query<any>(
+    'INSERT INTO templates (user_id, name, subject, body_html, category) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    [req.user!.id, b.name.trim(), subject, body, b.category],
+  );
+  res.json({ template: rows[0] });
+});
+
 templatesRouter.post('/:id/duplicate', async (req, res) => {
   const rows = await query<any>(`INSERT INTO templates (user_id, name, subject, body_html, category, ai_brief, description, include_signature) SELECT user_id, name || ' (copy)', subject, body_html, category, ai_brief, description, include_signature FROM templates WHERE id=$1 AND user_id=$2 RETURNING *`, [idParam(req.params.id), req.user!.id]);
   if (!rows.length) throw notFound('Template not found');

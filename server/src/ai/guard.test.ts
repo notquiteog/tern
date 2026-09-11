@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertSendable, findTemplateArtifacts, TemplateGuardError, findGreetingProblems, findInventedSpecifics, extractSpecifics, findBriefProblems, describeBriefProblems } from './guard.js';
+import { TemplateGuardError, assertSendable, coachBrief, describeBriefProblems, extractSpecifics, findBriefProblems, findGreetingProblems, findInventedSpecifics, findTemplateArtifacts } from './guard.js';
 import { cleanOutput } from './prompts.js';
 
 const kinds = (r: ReturnType<typeof findTemplateArtifacts>) => [...new Set(r.map((h) => h.kind))];
@@ -216,4 +216,62 @@ test('a recurring schedule is a fact, not prose', () => {
     findInventedSpecifics('Nothing is scheduled for the first Monday.', { facts: 'The board meets the second Tuesday.', hasAttachment: true }).map((h) => h.kind),
     ['invented_date'],
   );
+});
+
+// ---------- Reading the brief before a draft is spent on it ----------
+
+const noteKinds = (b: string) => coachBrief(b).map((n) => n.kind).sort();
+
+test('a brief with an ask, a price and a date says nothing at all', () => {
+  // The commonest case has to be silent, or the notes become wallpaper.
+  assert.deepEqual(coachBrief(
+    'Tell them our onboarding is £2,400 and the offer closes on 14 October. Ask if they want a 20 minute call.',
+  ), []);
+});
+
+test('the note the whole idea started from: no ask', () => {
+  assert.ok(noteKinds('We have rebuilt our reporting and it is much faster than it used to be for everyone.').includes('no_ask'));
+  // A question mark is an ask, and so is "let me know".
+  assert.ok(!noteKinds('We rebuilt reporting. Worth a look?').includes('no_ask'));
+  assert.ok(!noteKinds('We rebuilt our reporting this quarter. Let me know if that is useful.').includes('no_ask'));
+});
+
+test('asking for a price without giving one predicts an invented figure', () => {
+  // The guard holds a draft that invents a figure, so this brief mostly
+  // produces held drafts — which is a thing to say before four hundred of
+  // them are queued, not after.
+  assert.ok(noteKinds('Mention our pricing and ask if they want a call.').includes('invented_figure'));
+  // Given the number, there is nothing to invent.
+  assert.ok(!noteKinds('Tell them it is £49 per seat and ask if they want a call.').includes('invented_figure'));
+});
+
+test('mentioning a deadline without a date predicts an invented date', () => {
+  assert.ok(noteKinds('Say the offer has a deadline and ask them to reply.').includes('invented_date'));
+  assert.ok(!noteKinds('Say the offer ends on 3 November and ask them to reply.').includes('invented_date'));
+});
+
+test('a brief that promises an attachment predicts a hold', () => {
+  // Campaign mail carries none, so this one is certain rather than likely.
+  const n = coachBrief('Ask them to look at the attached case study and reply if it is useful.');
+  assert.ok(n.some((x) => x.kind === 'false_attachment'));
+  assert.match(n.find((x) => x.kind === 'false_attachment')!.note, /Link to it instead/);
+});
+
+test('merge fields and placeholders in a brief are named in the guard’s terms', () => {
+  const n = coachBrief('Write to {{first_name}} about [PRODUCT] and ask for a call.');
+  assert.ok(n.some((x) => x.kind === 'merge_field'));
+  assert.ok(n.some((x) => x.kind === 'placeholder'));
+});
+
+test('a brief too short to judge is not judged', () => {
+  // Somebody three words into typing has not written a brief without an ask,
+  // they have written three words.
+  assert.deepEqual(coachBrief('Tell them'), []);
+  assert.deepEqual(coachBrief(''), []);
+});
+
+test('every note carries wording a person can act on', () => {
+  for (const n of coachBrief('Mention the discount before the deadline. See attached. {{company}}')) {
+    assert.ok(n.note.length > 30, `${n.kind} has no useful wording`);
+  }
 });
