@@ -187,6 +187,17 @@ export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<
 export function voiceDefaults(): VoiceSettings { return { ...VOICE_DEFAULTS }; }
 
 /**
+ * The settings as they may leave the server: both keys gone, and only whether
+ * each is set. There are two keys and only one of them is called `apiKey`, so
+ * the routes stripping that one name sent the voice's own key to the admin
+ * page whenever it lived on a server of its own.
+ */
+export function voiceSettingsView(v: VoiceSettings): Omit<VoiceSettings, 'apiKey' | 'speechApiKey'> & { hasApiKey: boolean; hasSpeechApiKey: boolean } {
+  const { apiKey, speechApiKey, ...safe } = v;
+  return { ...safe, hasApiKey: Boolean(apiKey), hasSpeechApiKey: Boolean(speechApiKey) };
+}
+
+/**
  * The transcriber as a connection, in the shape the shared transport wants.
  *
  * Every request in this file goes through it. Before it existed each call used

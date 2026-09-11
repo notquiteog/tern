@@ -60,9 +60,9 @@ export interface DraftInput {
     days: { day: string; busy: string[]; free: string[] }[];
     tz?: string;
   };
-  // How many characters of the conversation may be spent. Derived from the
-  // model's context window by `threadBudgetChars`; the default suits the
-  // 8192-token window Tern ships with.
+  // How many characters of the conversation may be spent. Absent — the usual
+  // case — means the whole thread: no window is imposed here, and the only
+  // callers that set it are the modes that deliberately want less.
   threadChars?: number;
 }
 
@@ -161,18 +161,11 @@ function recipientBlock(r?: DraftInput['recipient']): string {
 // as "what we said at the start", so a reply built from the tail alone
 // invents them or leaves them out.
 //
-// Instead the thread is packed to a character budget from both ends: the
-// newest messages, which are what is being answered, and the opening ones,
-// where the terms were set. Only the middle is dropped, and the prompt says
-// how many messages went, so the model knows the conversation is longer than
-// what it can see rather than assuming it started late.
-// An upper bound rather than the operative limit. It used to be 14,000,
-// which is about 4,400 tokens — below that, `num_ctx` had no effect on how
-// much conversation the model was shown at all, so raising the context
-// window in Admin → AI model changed nothing a reader would notice. The
-// window is the control; this is only here so that a mistaken num_ctx of a
-// million does not try to build a megabyte prompt.
-export const THREAD_CHARS_DEFAULT = 60_000;
+// So the thread goes whole. Nothing here is sized to a context window: Tern
+// sets none, and the model's own default is the only bound. The packing below
+// — newest messages and opening ones, middle dropped with a count — is what
+// happens only where a MODE asks for less, which is the one-line gist and the
+// three quick replies rather than a window's arithmetic.
 const NEWEST_MSG_CHARS = 4_000; // the message being replied to, near enough in full
 const OLDER_MSG_CHARS = 1_400;
 // The share of the budget reserved for the start of the conversation, before
@@ -182,36 +175,20 @@ const OLDER_MSG_CHARS = 1_400;
 // back to as "what we said at the start".
 const OPENING_SHARE = 0.45;
 
-// Characters of thread that fit alongside the instructions and the answer.
-// Roughly 3.2 characters per token, minus room for the prompt scaffolding and
-// whatever the model is about to write.
-export function threadBudgetChars(numCtx: number, maxTokens: number): number {
-  // How much of the window to keep back for the answer and the instructions.
-  //
-  // `maxTokens` of 0 means the generation is uncapped (see llm.ts DEFAULTS),
-  // and there is then no number to reserve against — so this uses an estimate
-  // of what a long reply costs. That estimate is NOT a ceiling and is never
-  // sent anywhere: it only decides how much thread to include, and being
-  // wrong about it makes the thread slightly longer or shorter rather than
-  // truncating anything the model produces.
-  const UNCAPPED_REPLY_ESTIMATE = 1_500;
-  const generation = maxTokens > 0 ? Math.max(400, maxTokens) : UNCAPPED_REPLY_ESTIMATE;
-  const reserve = generation + 600; // generation + instructions, in tokens
-  return Math.max(2_400, Math.min(THREAD_CHARS_DEFAULT, Math.round((numCtx - reserve) * 3.2)));
-}
 
 function trimMessage(text: string, cap: number): string {
   const t = text.trim();
   return t.length <= cap ? t : `${t.slice(0, cap).replace(/\s+\S*$/, '')} […]`;
 }
 
-function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = THREAD_CHARS_DEFAULT): string {
+function threadBlock(t?: DraftInput['thread'], senderEmail?: string, budget = Infinity): string {
   if (!t?.length) return '';
+  const capped = Number.isFinite(budget);
   const mine = (from: string) => Boolean(senderEmail && from.toLowerCase().includes(senderEmail.toLowerCase()));
   const render = (i: number) =>
-    `--- From ${t[i].from}${mine(t[i].from) ? ' (this is the sender, you)' : ''} on ${t[i].date}\n${trimMessage(t[i].text, i === t.length - 1 ? NEWEST_MSG_CHARS : OLDER_MSG_CHARS)}`;
+    `--- From ${t[i].from}${mine(t[i].from) ? ' (this is the sender, you)' : ''} on ${t[i].date}\n${capped ? trimMessage(t[i].text, i === t.length - 1 ? NEWEST_MSG_CHARS : OLDER_MSG_CHARS) : t[i].text.trim()}`;
 
-  const shown = pickThreadMessages(t.map((_, i) => render(i).length), budget);
+  const shown = capped ? pickThreadMessages(t.map((_, i) => render(i).length), budget) : t.map((_, i) => i);
   const parts: string[] = [];
   for (let n = 0; n < shown.length; n++) {
     const gap = n === 0 ? 0 : shown[n] - shown[n - 1] - 1;

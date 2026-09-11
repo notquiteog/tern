@@ -42,9 +42,9 @@ export async function countTokens(text: string, model: string, baseUrl = config.
         messages: [{ role: 'user', content: text }],
         stream: false,
         think: false,
-        // One token out, and a window big enough that a long fixture is
-        // counted rather than truncated before it is counted.
-        options: { num_predict: 1, num_ctx: 131_072 },
+        // One token out. No window is set here either: the model's own is
+        // what decides whether a long fixture is counted whole.
+        options: { num_predict: 1 },
         keep_alive: '5m',
       }),
       signal: AbortSignal.timeout(600_000),

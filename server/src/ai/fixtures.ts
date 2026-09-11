@@ -3,8 +3,8 @@
 // These were rewritten because the old ones were not testing what they
 // claimed to. The whole 24-message "deep thread" was 2,322 characters — 596
 // tokens, 18 words a message — which fits in any context window with room to
-// spare. It never truncated, never exercised `threadBudgetChars` or the
-// pack-from-both-ends logic, and would have passed on a 0.5b model. Every
+// spare. It never truncated, never exercised the pack-from-both-ends logic
+// the capped modes use, and would have passed on a 0.5b model. Every
 // "deep thread" result measured against it was passing for the wrong reason.
 //
 // A real 24-message B2B thread is 8k-20k tokens, and the reason is not that

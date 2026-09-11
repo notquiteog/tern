@@ -126,25 +126,25 @@ test('the advice is one slot per person, as far as the memory goes', () => {
   const perToken = 15_232; // qwen2.5:1.5b with a q8_0 cache
   const gb = 1024 ** 3;
   // Five people, a small model, and room to spare: everyone gets a slot.
-  const roomy = slotAdvice({ users: 5, configured: 2, numCtx: 8192, kvPerToken: perToken, modelBytes: gb, memBudgetBytes: 8 * gb });
+  const roomy = slotAdvice({ users: 5, configured: 2, ctxTokens: 8192, kvPerToken: perToken, modelBytes: gb, memBudgetBytes: 8 * gb });
   assert.equal(roomy.needed, 5);
   assert.equal(roomy.recommended, 5);
   assert.equal(roomy.enough, false, 'two slots for five people is not enough');
   assert.equal(roomy.memoryBound, false);
   // Eight people, a 7b model and a 6 GB limit: the weights leave room for
   // four slots, and memory — not the setting — is what stops the other four.
-  const tight = slotAdvice({ users: 8, configured: 2, numCtx: 8192, kvPerToken: 30_464, modelBytes: Math.round(4.7 * gb), memBudgetBytes: 6 * gb });
+  const tight = slotAdvice({ users: 8, configured: 2, ctxTokens: 8192, kvPerToken: 30_464, modelBytes: Math.round(4.7 * gb), memBudgetBytes: 6 * gb });
   assert.equal(tight.memoryBound, true);
   assert.ok(tight.recommended < 8 && tight.recommended >= 1);
   assert.equal(tight.recommended, tight.affordable);
   // A slot is never priced at nothing, so a box with no room left is told it
   // has one, not none.
-  const nothingLeft = slotAdvice({ users: 5, configured: 4, numCtx: 8192, kvPerToken: perToken, modelBytes: 2 * gb, memBudgetBytes: Math.round(2.3 * gb) });
+  const nothingLeft = slotAdvice({ users: 5, configured: 4, ctxTokens: 8192, kvPerToken: perToken, modelBytes: 2 * gb, memBudgetBytes: Math.round(2.3 * gb) });
   assert.equal(nothingLeft.recommended, 1);
 });
 
 test('with nothing known about memory the advice is still one slot per person', () => {
-  const blind = slotAdvice({ users: 3, configured: 3, numCtx: 8192, kvPerToken: null, modelBytes: 0, memBudgetBytes: 0 });
+  const blind = slotAdvice({ users: 3, configured: 3, ctxTokens: 8192, kvPerToken: null, modelBytes: 0, memBudgetBytes: 0 });
   assert.equal(blind.affordable, null);
   assert.equal(blind.perSlotBytes, null);
   assert.equal(blind.recommended, 3);

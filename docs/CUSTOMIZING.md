@@ -84,7 +84,7 @@ Settings → AI (admins):
   rules here ("never quote prices", "British spelling", "sign off with the
   team name").
 - **Tuning**: temperature, top-p, top-k, repeat penalty, max tokens per
-  reply, context window, and how long the model stays loaded.
+  reply, and how long the model stays loaded.
 - **Playground**: run a draft, reply, rewrite or subject line with the saved
   prompt and tuning to check the effect of a change.
 
@@ -258,11 +258,12 @@ Everything else in the app still goes through the single-turn path unchanged.
   same screen. A deletion is only reported as done once that server's own list
   agrees, so a delete a proxy accepted but did not apply is an error rather
   than a row that quietly comes back on the next refresh.
-- **Temperature** and **context window**: 0.7 and 8192 by default. The
-  conversation given to the model is sized to the context window: a long
-  thread keeps its newest messages and its opening ones, where the dates and
-  the figures were agreed, and drops the middle, saying how many went. A
-  smaller window costs less memory and drops more.
+- **Temperature**: 0.7 by default. The conversation given to the model is not
+  sized to a window at all — Tern sets no context window, so the whole thread
+  goes and the model's own default context is the only bound. A mode that
+  wants less asks for less itself: the one-line gist and the three quick
+  replies.
+
 - **Reply length** and **thinking budget** (both **unlimited by default**):
   ceilings on the answer and on the working-out. Neither is set out of the
   box, and that is deliberate — the prompt is what decides how long an answer
@@ -278,9 +279,8 @@ Everything else in the app still goes through the single-turn path unchanged.
   sends that.
 
   Set either to a number if you want a hard ceiling — for a hosted provider
-  billed by the token, that is a real reason to. What neither can exceed is
-  the context window, which Tern computes and enforces with the model's actual
-  limit.
+  billed by the token, that is a real reason to. Neither is bounded by a
+  window of Tern's: the model's own context is what the server enforces.
 - **Let reasoning models think** (off by default): qwen3 and deepseek-r1
   work an answer out before writing it. The reasoning never reaches a draft
   and is paid for out of its own **thinking budget** on top of the reply
@@ -327,7 +327,7 @@ Everything else in the app still goes through the single-turn path unchanged.
   Both Qwen3.5 presets leave the repeat penalty at 1.0: on that model the
   presence penalty does that job, and stacking the two flattens the writing.
   A preset carries sampling, reply length and the thinking settings only —
-  never the context window, the keep-alive, the provider or the model, which
+  never the keep-alive, the provider or the model, which
   are decisions about the machine rather than about how the assistant writes
   (a preset that resized the context would resize every parallel slot with
   it). The model a preset was written for is shown as a badge, and warns when
@@ -371,9 +371,8 @@ One model is loaded, and everyone shares it. Ollama serves
 `OLLAMA_NUM_PARALLEL` requests per model at the same time and queues the
 rest, so with one slot the second person to ask for a draft waits for the
 first person's whole email with nothing to look at. Each slot holds its own
-context window of KV cache, so slots cost memory: roughly
-`num_ctx × (bytes per token for the model) × slots`, which Admin → AI model
-prices for the model you are running.
+context window of KV cache, so slots cost memory — how much depends on the
+window Ollama gives the model, which Tern no longer sets.
 
 - **Answer several people at once** (Admin → AI model, on by default) is the
   app's side of it: up to one generation per slot, one slot always kept for

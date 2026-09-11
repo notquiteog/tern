@@ -11,7 +11,7 @@ import { evalConsent } from './evalConsent.js';
 // Every case is graded by a deterministic check, never by another model, so
 // the pass rate means the same thing on every run.
 import { chat, getAiSettings, saveAiSettings } from './llm.js';
-import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars, type DraftInput } from './prompts.js';
+import { buildMessages, cleanOutput, finalizeOutput, modeTuning, type DraftInput } from './prompts.js';
 import { findTemplateArtifacts, describeHits, findInventedSpecifics, findGreetingProblems, extractSpecifics } from './guard.js';
 import { resolveRecipient, candidatesFromContact } from './names.js';
 import { threadForPrompt, ALEX as F_ALEX, DANA as F_DANA, PRIYA as F_PRIYA, TOMASZ as F_TOMASZ } from './fixtures.js';
@@ -27,7 +27,6 @@ const MODEL = process.env.MODEL || 'qwen3.5:4b';
 const RUNS = Number(process.env.RUNS || 10);
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const THINK = process.env.THINK; // 'on' | 'off' | unset (leave the stored setting alone)
-const NUM_CTX = process.env.NUM_CTX ? Number(process.env.NUM_CTX) : undefined;
 // The depth sweep: DEPTHS=5,10,20,30,50 runs the thread cases at each depth
 // and prints where quality falls off, per mode.
 const DEPTHS = (process.env.DEPTHS || '').split(',').map((d) => Number(d.trim())).filter((n) => n > 0);
@@ -691,7 +690,7 @@ const CASES: Case[] = [
 
 interface Result { id: string; run: number; ms: number; failures: string[]; output: string; raw?: string; error?: string }
 
-async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: number }, depth?: number): Promise<Result> {
+async function runCase(c: Case, run: number, s: { maxTokens: number }, depth?: number): Promise<Result> {
   const t0 = Date.now();
   try {
     // Exactly what the routes and the scheduler do: per-mode tuning, and a
@@ -703,7 +702,7 @@ async function runCase(c: Case, run: number, s: { numCtx: number; maxTokens: num
     // conversation. Everything else about the case is unchanged, so what the
     // sweep measures is depth and nothing else.
     const thread = depth && c.input.thread ? deepThread(depth) : c.input.thread;
-    const input = { ...c.input, thread, threadChars: Math.min(threadBudgetChars(s.numCtx, maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity) };
+    const input = { ...c.input, thread, threadChars: tuning.threadChars ?? Infinity };
     // A fixed seed per run number, so a grading pass can be repeated and
     // compared: the same case in run 2 asks the model exactly what it asked
     // it in run 2 yesterday. Nothing a person triggers sets a seed — their
@@ -727,11 +726,10 @@ async function main(): Promise<void> {
   const patch: Record<string, unknown> = { model: MODEL, enabled: true };
   if (THINK === 'on') patch.allowThinking = true;
   if (THINK === 'off') patch.allowThinking = false;
-  if (NUM_CTX) patch.numCtx = NUM_CTX;
   if (MAX_TOKENS) patch.maxTokens = MAX_TOKENS;
   await saveAiSettings(patch as any);
   const s = await getAiSettings();
-  console.log(`model=${s.model} think=${s.allowThinking} num_ctx=${s.numCtx} max_tokens=${s.maxTokens} temp=${s.temperature} top_p=${s.topP} top_k=${s.topK} runs=${RUNS}\n`);
+  console.log(`model=${s.model} think=${s.allowThinking} max_tokens=${s.maxTokens} temp=${s.temperature} top_p=${s.topP} top_k=${s.topK} runs=${RUNS}\n`);
 
   const cases = ONLY.length ? CASES.filter((c) => ONLY.some((o) => c.id.includes(o) || c.tags.includes(o))) : CASES;
 
@@ -747,13 +745,11 @@ async function main(): Promise<void> {
   // How big the conversation actually is, in the units the model counts in.
   // Printed because the fixture this replaced was 596 tokens and every "deep
   // thread" result measured against it was passing for the wrong reason.
-  const budget = threadBudgetChars(s.numCtx, s.maxTokens);
-  console.log(`thread budget at num_ctx ${s.numCtx}: ${budget.toLocaleString()} chars`);
   for (const n of DEPTHS.length ? DEPTHS : [24]) {
     const t = deepThread(n);
     const joined = t.map((m) => `--- From ${m.from} on ${m.date}\n${m.text}`).join('\n');
     const tok = await countTokens(joined, s.model);
-    console.log(`  depth ${String(n).padStart(2)}: ${t.length} messages, ${joined.length.toLocaleString()} chars, ${tok < 0 ? '?' : tok.toLocaleString()} tokens${joined.length > budget ? `  (truncated to ${budget.toLocaleString()} — ${Math.round((1 - budget / joined.length) * 100)}% dropped from the middle)` : ''}`);
+    console.log(`  depth ${String(n).padStart(2)}: ${t.length} messages, ${joined.length.toLocaleString()} chars, ${tok < 0 ? '?' : tok.toLocaleString()} tokens`);
   }
   console.log('');
 
@@ -812,7 +808,7 @@ async function main(): Promise<void> {
   console.log(`\ncases fully green: ${passedCases}/${byCase.size}   runs passed: ${totalPass}/${results.length}   avg ${avg.toFixed(1)}s/call`);
   if (process.env.JSON_OUT) {
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(process.env.JSON_OUT, JSON.stringify({ model: s.model, think: s.allowThinking, numCtx: s.numCtx, maxTokens: s.maxTokens, results }, null, 2));
+    writeFileSync(process.env.JSON_OUT, JSON.stringify({ model: s.model, think: s.allowThinking, maxTokens: s.maxTokens, results }, null, 2));
   }
   await pool.end();
   process.exit(totalPass === results.length ? 0 : 1);

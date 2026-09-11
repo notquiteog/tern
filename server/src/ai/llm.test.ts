@@ -104,77 +104,26 @@ test('different models, and empty names, are not the same model', () => {
   assert.equal(sameModel('', 'qwen2.5'), false);
 });
 
-test('the reply and reasoning budget are clamped to what the window can hold', () => {
-  // `num_predict` is not bounded by `num_ctx`. Ask for more than the window
-  // has room for and the generation is cut off by the context limit instead,
-  // which looks exactly like a model that stopped early. A 16,000-token
-  // thinking budget on an 8,192-token window cannot possibly be honoured.
-  const big = predictTokens({ numCtx: 8192, promptChars: 20_000, replyTokens: 700, thinkingTokens: 16_000 });
-  assert.equal(big.clamped, true);
-  assert.ok(big.numPredict !== undefined, 'a clamped result must carry a number');
-  assert.ok(big.numPredict < 16_700, `asked for 16,700 and got ${big.numPredict}`);
-  // 20,000 chars is ~6,250 tokens of prompt by the conservative estimate, so
-  // roughly 1,800 remain.
-  assert.ok(big.numPredict <= 8192 - Math.ceil(20_000 / 3.2), 'must not exceed the window');
-
-  // A window with room for the whole thing passes it straight through.
-  const fits = predictTokens({ numCtx: 32_768, promptChars: 34_000, replyTokens: 700, thinkingTokens: 16_000 });
-  assert.equal(fits.clamped, false);
-  assert.equal(fits.numPredict, 16_700);
-
-  // Thinking off is just the reply.
-  assert.deepEqual(predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 0 }), { numPredict: 700, clamped: false });
-
-  // A prompt that already fills the window still asks for something rather
-  // than a negative number.
-  const full = predictTokens({ numCtx: 4096, promptChars: 40_000, replyTokens: 700, thinkingTokens: 16_000 });
-  assert.equal(full.clamped, true);
-  assert.ok(full.numPredict !== undefined && full.numPredict > 0);
-});
-
 test('uncapped means the parameter is not sent at all', () => {
-  // The default is now 0 for both, meaning "no ceiling". That has to reach the
-  // wire as a MISSING `num_predict`, not as a large one: a big number is still
-  // a ceiling, it is merely a less visible one, and it would be the wrong
-  // ceiling on the next model. `undefined` is what the Ollama path spreads
-  // away, so this is the assertion that keeps the promise honest.
-  assert.deepEqual(
-    predictTokens({ numCtx: 32_768, promptChars: 4_000, replyTokens: 0, thinkingTokens: 0 }),
-    { clamped: false },
-  );
-  // Uncapped does not become capped just because the prompt is enormous.
-  // There is no budget to exceed, so there is nothing to clamp — the context
-  // window is the server's business and it enforces that itself.
-  assert.deepEqual(
-    predictTokens({ numCtx: 4_096, promptChars: 200_000, replyTokens: 0, thinkingTokens: 0 }),
-    { clamped: false },
-  );
+  // 0 means "no ceiling", and that has to reach the wire as a MISSING
+  // `num_predict` rather than a large one: a big number is still a ceiling,
+  // merely a less visible one, and it would be the wrong ceiling on the next
+  // model. `undefined` is what the Ollama path spreads away.
+  assert.deepEqual(predictTokens({ replyTokens: 0, thinkingTokens: 0 }), {});
+  // No window is consulted, so nothing about the prompt can turn an uncapped
+  // reply into a capped one.
+  assert.deepEqual(predictTokens({ replyTokens: 0, thinkingTokens: 16_000 }), {});
 });
 
 test('the reply ceiling is what decides whether anything is sent', () => {
   // `num_predict` bounds reasoning and answer TOGETHER, so a thinking budget
   // cannot be enforced through it while the reply is unbounded — an uncapped
   // reply is an uncapped total, whatever the thinking budget says.
-  //
-  // This is the case that caught a real mistake: written as "send nothing only
-  // when BOTH are 0", an uncapped reply with a thinking budget asked for the
-  // entire remaining window plus the budget, which never fits, so every such
-  // request clamped and logged a warning about a budget nobody had set.
-  assert.deepEqual(
-    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 0, thinkingTokens: 4_000 }),
-    { clamped: false },
-  );
-
-  // A reply ceiling that IS set still gets its number, and the thinking budget
-  // is still added on top so reasoning does not eat the answer's allowance.
-  assert.deepEqual(
-    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 0 }),
-    { numPredict: 700, clamped: false },
-  );
-  assert.deepEqual(
-    predictTokens({ numCtx: 32_768, promptChars: 1_000, replyTokens: 700, thinkingTokens: 4_000 }),
-    { numPredict: 4_700, clamped: false },
-  );
+  assert.deepEqual(predictTokens({ replyTokens: 0, thinkingTokens: 4_000 }), {});
+  // A reply ceiling that IS set still gets its number, and the thinking
+  // budget is added on top so reasoning does not eat the answer's allowance.
+  assert.deepEqual(predictTokens({ replyTokens: 700, thinkingTokens: 0 }), { numPredict: 700 });
+  assert.deepEqual(predictTokens({ replyTokens: 700, thinkingTokens: 4_000 }), { numPredict: 4_700 });
 });
 
 test('each API says "no ceiling" in its own way, and none of them says it with a big number', () => {

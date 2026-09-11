@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   // Nothing here is sent, but the fixture addresses are asserted
   // undeliverable rather than assumed to be.
   assertUndeliverable([THEM.email, CC.email], 'the fixture participants');
-  console.log(`account ${acc.email}  model ${s.model}  num_ctx ${s.numCtx}  think ${s.allowThinking}  thread depth ${DEPTH} of ${maxDepth()}  runs ${RUNS}`);
+  console.log(`account ${acc.email}  model ${s.model}  think ${s.allowThinking}  thread depth ${DEPTH} of ${maxDepth()}  runs ${RUNS}`);
 
   // ---------- seed the thread into the mail cache, sealed as sync would ----------
   const threadId = `respeval${Date.now().toString(36)}`;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureCommitmentDate, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, stripRecipientSignoff, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, THREAD_CHARS_DEFAULT } from './prompts.js';
+import { assertFreshConversation, buildMessages, cleanOutput, cleanRecipientName, ensureCommitmentDate, ensureGreeting, finalizeOutput, firstNameOf, modeTuning, parseQuickReplies, stripRecipientSignoff, writeDate, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
 
 test('cleanOutput strips labels, markdown emphasis and code fences', () => {
   assert.equal(cleanOutput('**Alice:** Sure, I am **all** ears.', 'reply'), 'Sure, I am all ears.');
@@ -142,20 +142,6 @@ test('the newest message is kept at greater length than the older ones', () => {
   const newest = m.slice(m.lastIndexOf('M3'));
   assert.ok(newest.length > 2900, 'the message being replied to is kept nearly whole');
   assert.match(m, /\[…\]/, 'the older ones are trimmed');
-});
-
-test('the thread budget scales with the context window and never goes to nothing', () => {
-  assert.ok(threadBudgetChars(8192, 700) > threadBudgetChars(4096, 700));
-  // The window is the control. The ceiling used to be 14,000 characters,
-  // which is about 4,400 tokens — below that, raising num_ctx past roughly
-  // 5,600 changed nothing at all about how much conversation the model was
-  // shown, so a bigger context window bought an install nothing.
-  assert.ok(threadBudgetChars(32768, 700) > threadBudgetChars(8192, 700), 'a bigger window shows more conversation');
-  assert.equal(threadBudgetChars(8192, 700), Math.round((8192 - 1300) * 3.2));
-  // And it is still bounded, so a mistaken num_ctx cannot build a megabyte prompt.
-  assert.equal(threadBudgetChars(1_000_000, 700), THREAD_CHARS_DEFAULT);
-  assert.ok(threadBudgetChars(2048, 700) >= 2_400);
-  assert.ok(threadBudgetChars(512, 4096) >= 2_400);
 });
 
 test('reasoning left inline in <think> tags never reaches the draft', () => {

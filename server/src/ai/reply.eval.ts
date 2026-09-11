@@ -34,11 +34,11 @@ import { evalConsent } from './evalConsent.js';
 // for any run that lost points: why a reply went wrong is usually sitting in
 // what the model told itself on the way there.
 //
-// Settings it changes (MODEL, THINK, MAX_TOKENS, NUM_CTX) are put back when it
+// Settings it changes (MODEL, THINK, MAX_TOKENS) are put back when it
 // finishes, and the mail and conversations it seeded are deleted unless KEEP=1.
 import { one, pool, query } from '../db.js';
 import { chat, getAiSettings, saveAiSettings, type AiSettings } from './llm.js';
-import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, type DraftInput } from './prompts.js';
+import { buildMessages, finalizeOutput, modeTuning, type DraftInput } from './prompts.js';
 import { sealEmail } from '../services/mailVault.js';
 import { htmlToText } from '../services/merge.js';
 import { getAccount } from '../services/accounts.js';
@@ -70,7 +70,6 @@ async function main(): Promise<void> {
   if (process.env.MAX_TOKENS) patch.maxTokens = Number(process.env.MAX_TOKENS);
   // The assistant's eighteen tool schemas take about 4,400 tokens of the
   // window before anybody says anything, so the window is worth varying.
-  if (process.env.NUM_CTX) patch.numCtx = Number(process.env.NUM_CTX);
   if (Object.keys(patch).length) await saveAiSettings(patch);
   const s = await getAiSettings();
 
@@ -86,7 +85,7 @@ async function main(): Promise<void> {
   const everyone = MAILBOX.flatMap((t) => renderThread(t, me).flatMap((m) => [m.from, ...m.to, ...m.cc]));
   assertUndeliverable([...new Set(everyone.map((p) => p.email).filter((e) => e !== me.email))], 'the fixture mailbox');
 
-  console.log(`account ${acc.email}  model ${s.model}  think ${s.allowThinking}  num_ctx ${s.numCtx}  max_tokens ${s.maxTokens || 'uncapped'}  presence ${s.presencePenalty}  runs ${RUNS}\n`);
+  console.log(`account ${acc.email}  model ${s.model}  think ${s.allowThinking}  max_tokens ${s.maxTokens || 'uncapped'}  presence ${s.presencePenalty}  runs ${RUNS}\n`);
 
   // ---------- the mailbox, sealed as sync would seal it ----------
   const tag = `replyeval${Date.now().toString(36)}`;
@@ -127,7 +126,7 @@ async function main(): Promise<void> {
       senderName: acc.name, senderEmail: acc.email,
       recipient: { name: task.recipient.name, email: task.recipient.email },
       subject: `Re: ${t.subject}`, thread, systemPrompt: s.systemPrompt, voice: acc.voice,
-      threadChars: Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity),
+      threadChars: tuning.threadChars ?? Infinity,
     };
     let thinking = '';
     const t0 = Date.now();
@@ -252,7 +251,7 @@ async function main(): Promise<void> {
 
   if (process.env.JSON_OUT) {
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(process.env.JSON_OUT, JSON.stringify({ model: s.model, think: s.allowThinking, numCtx: s.numCtx, maxTokens: s.maxTokens, results }, null, 2));
+    writeFileSync(process.env.JSON_OUT, JSON.stringify({ model: s.model, think: s.allowThinking, maxTokens: s.maxTokens, results }, null, 2));
   }
   await pool.end();
   process.exit(failed ? 1 : 0);

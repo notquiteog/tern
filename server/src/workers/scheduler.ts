@@ -9,7 +9,7 @@ import { composeAndSend, type ComposeInput } from '../services/compose.js';
 import { contactContext, htmlToText, renderHtml, renderText, textToHtml } from '../services/merge.js';
 import { contactWindowOpen, jitterMs, nextContactWindow, reserveSendSlot, sendingBlocked } from '../services/sending.js';
 import { chat, getAiSettings } from '../ai/llm.js';
-import { buildMessages, cleanOutput, finalizeOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
+import { buildMessages, cleanOutput, finalizeOutput, modeTuning } from '../ai/prompts.js';
 import { describeBriefProblems, describeHits, findBriefProblems, findTemplateArtifacts, type GuardInput } from '../ai/guard.js';
 import { candidatesFromContact, resolveRecipient, type ResolvedName } from '../ai/names.js';
 import { escapeHtml } from '../services/merge.js';
@@ -756,7 +756,6 @@ export async function generateResponderReply(responder: any, acc: AccountRow, em
       ? { name: name.full || undefined, email: contact.email, company: contact.company, title: contact.title, notes: contact.notes, fields: contact.fields }
       : { name: name.full || undefined, email: writer.email },
     thread: thread.map((m) => ({ from: `${m.from_addr?.[0]?.name ?? ''} <${m.from_addr?.[0]?.email ?? ''}>`.trim(), date: new Date(m.received_at).toDateString(), text: (m.body_text || htmlToText(m.body_html || '') || m.preview || '').replace(/\n>.*$/gm, '').trim() })),
-    threadChars: threadBudgetChars(settings.numCtx, settings.maxTokens),
   });
   const replyRecipient = { name: name.full || undefined, email: contact?.email ?? writer.email };
   const text = finalizeOutput(await chat({ messages, maxTokens: settings.maxTokens, stop: modeTuning('reply').stop, background: true, owner: String(acc.user_id), consent: { userId: acc.user_id, capability: 'ai.responders' } }), 'reply', { recipient: replyRecipient, senderName: acc.name, senderEmail: acc.email });

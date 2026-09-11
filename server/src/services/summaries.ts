@@ -12,7 +12,7 @@
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { chat, getAiSettings } from '../ai/llm.js';
-import { buildMessages, cleanOutput, modeTuning, threadBudgetChars } from '../ai/prompts.js';
+import { buildMessages, cleanOutput, modeTuning } from '../ai/prompts.js';
 import { openEmails } from './mailVault.js';
 import { dataKey, openWith, sealWith } from './vault.js';
 import { htmlToText } from './merge.js';
@@ -102,7 +102,7 @@ export async function generateSummary(userId: number, acc: AccountRow, threadId:
   if (thread.every((m: any) => /-----BEGIN PGP MESSAGE-----/.test(m.text))) return await decline(newest.received_at);
 
   const tuning = modeTuning('gist');
-  const threadChars = Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity);
+  const threadChars = tuning.threadChars ?? Infinity;
   const text = cleanOutput(
     await chat({
       messages: buildMessages({ mode: 'gist', thread, subject: newest.subject ?? '', systemPrompt: s.systemPrompt, threadChars }),

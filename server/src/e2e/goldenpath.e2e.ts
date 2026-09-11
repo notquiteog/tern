@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   await saveAiSettings({ enabled: true });
   const s = await getAiSettings();
   await assertNothingCanBeDelivered(acc, ['example.invalid']);
-  console.log(`\nmodel ${s.model}  num_ctx ${s.numCtx}  temp ${s.temperature} top_p ${s.topP} top_k ${s.topK}  account ${acc.email}\n`);
+  console.log(`\nmodel ${s.model}  temp ${s.temperature} top_p ${s.topP} top_k ${s.topK}  account ${acc.email}\n`);
 
   // ---------- 1. import a CSV ----------
   console.log('STEP 1 — import a CSV of contacts');

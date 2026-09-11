@@ -130,7 +130,11 @@ respondersRouter.post('/:id/test', async (req, res) => {
   const accounts = responder.account_id ? [await getUserAccount(req.user!.id, responder.account_id)] : await listAccounts(req.user!.id);
   const accIds = accounts.filter(Boolean).map((a) => a!.id);
   const email = b.emailId
-    ? await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accIds])
+    // Opened, like every other read of a cached message. The row on disk is
+    // ciphertext, and handing it over unopened gave the generator a
+    // `reply_to` that `replyRecipients` could not filter — a 500 from the one
+    // button that exists to try a responder without sending anything.
+    ? await openEmail(req.user!.id, 'ai.responders', await one<any>('SELECT * FROM emails WHERE id=$1 AND account_id = ANY($2)', [b.emailId, accIds]))
     // from_email was a generated column over the plaintext and is gone; the
     // sender is compared after opening instead.
     : await firstNotFromMe(req.user!.id, accIds, accounts.map((a) => a!.email.toLowerCase()));

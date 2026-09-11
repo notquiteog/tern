@@ -170,7 +170,7 @@ Nothing leaves your server except the mail itself.
   edits behind it. It proposes and never writes, the rows are cleared once
   you have decided, and turning writing help off deletes them.
 - **System prompt and tuning in the UI**: edit the standing instructions,
-  temperature, top-p, top-k, min-p, repeat penalty, context window and
+  temperature, top-p, top-k, min-p, repeat penalty and
   length; a playground to try changes; a writing-voice note per account.
 - **Long threads stay in one piece**: the conversation handed to the model is
   packed to fit its context window from both ends — the newest messages and

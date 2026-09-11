@@ -205,14 +205,13 @@ async function main(): Promise<void> {
       try { models = await listModels(); } catch { /* Ollama down: the advice is then people-only */ }
       const kvPerToken = s.provider === 'ollama' ? await modelKvBytesPerToken(s.baseUrl, s.model).catch(() => null) : null;
       const modelBytes = models.find((m) => m.name === s.model || m.name === `${s.model}:latest`)?.size ?? 0;
-      const a = slotAdvice({ users, configured: config.ollamaNumParallel, numCtx: s.numCtx, kvPerToken, modelBytes, memBudgetBytes: config.ollamaMemLimitBytes });
+      const a = slotAdvice({ users, configured: config.ollamaNumParallel, ctxTokens: null, kvPerToken, modelBytes, memBudgetBytes: config.ollamaMemLimitBytes });
       if (process.argv.includes('--quiet')) { console.log(a.recommended); break; }
       const mb = (n: number) => `${Math.round(n / 1024 ** 2)} MB`;
       console.log(`Users who can sign in: ${a.users}`);
       console.log(`OLLAMA_NUM_PARALLEL now: ${a.configured}${a.enough ? ' (a slot each)' : ` (${a.users - a.configured} more people than slots)`}`);
-      if (a.perSlotBytes) console.log(`One slot holds ${s.numCtx} tokens of ${config.ollamaKvCacheType} KV cache: ${mb(a.perSlotBytes)}`);
       if (a.affordable !== null) console.log(`Ollama's memory limit pays for about ${a.affordable} slot(s) beside ${s.model}`);
-      if (a.memoryBound) console.log('Memory, not the setting, is what stops everyone having a slot: raise OLLAMA_MEM_LIMIT, lower the context window, or use a smaller model.');
+      if (a.memoryBound) console.log('Memory, not the setting, is what stops everyone having a slot: raise OLLAMA_MEM_LIMIT or use a smaller model.');
       console.log(`Recommended: ${a.recommended}`);
       break;
     }

@@ -255,7 +255,7 @@ function AuditSettings() {
 
 // This button sits in the Tuning card, so it resets tuning: the provider,
 // model and base URL above it are left alone.
-const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'repeatLastN', 'presencePenalty', 'frequencyPenalty', 'maxTokens', 'numCtx', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
+const TUNING_FIELDS = ['temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'repeatLastN', 'presencePenalty', 'frequencyPenalty', 'maxTokens', 'keepAlive', 'allowThinking', 'thinkEffort', 'thinkingBudget'] as const;
 // What a preset carries: how the model writes, and nothing about the machine.
 // The context window and the keep-alive are deliberately not in here — they
 // are memory decisions, and a preset that resized the context would resize
@@ -361,7 +361,7 @@ function AiMemoryMeter({ provider }: { provider: string }) {
   if (isLoading || !data) return <div className="small muted">Reading memory…</div>;
   const host = data.host as { total: number; available: number; used: number };
   const o = data.ollama as { limitBytes: number | null; resident: number; vram: number; models: any[] };
-  const slots = data.slots as { slots: number; running: number; waiting: number; perSlotBytes: number | null; kvBytes: number | null; kvCacheType: string; numCtx: number };
+  const slots = data.slots as { slots: number; running: number; waiting: number; perSlotBytes: number | null; kvBytes: number | null; kvCacheType: string };
   const gpu = o.vram > 0;
   return (
     <>
@@ -382,7 +382,7 @@ function AiMemoryMeter({ provider }: { provider: string }) {
       {provider === 'ollama' && (
         <div className="small muted">
           {slots.running} of {slots.slots} slot{slots.slots === 1 ? '' : 's'} generating{slots.waiting > 0 && `, ${slots.waiting} waiting`}
-          {slots.kvBytes !== null && <> · slots reserve about {fmtBytes(slots.kvBytes)} of context ({slots.numCtx} tokens each, {slots.kvCacheType} cache)</>}
+          {slots.kvBytes !== null && <> · slots reserve about {fmtBytes(slots.kvBytes)} of context ({slots.kvCacheType} cache)</>}
           {o.models.length > 0 && <> · in memory: {o.models.map((m: any) => `${m.name} ${fmtBytes(m.size || m.sizeVram)}`).join(', ')}</>}
         </div>
       )}
@@ -429,7 +429,7 @@ function AiConcurrencyCard({ data, f, save }: { data: any; f: any; save: (patch:
             : <Callout kind="warning">
                 {c.users} people can sign in and Ollama serves {c.configured} at a time, so the rest queue.
                 {c.memoryBound
-                  ? <> Its memory limit pays for about {c.affordable} slot{c.affordable === 1 ? '' : 's'} beside this model{c.perSlotBytes ? ` (${fmtBytes(c.perSlotBytes)} each at ${f.numCtx} tokens)` : ''}, so raise <code>OLLAMA_MEM_LIMIT</code>, lower the context window, or run a smaller model.</>
+                  ? <> Its memory limit pays for about {c.affordable} slot{c.affordable === 1 ? '' : 's'} beside this model{c.perSlotBytes ? ` (${fmtBytes(c.perSlotBytes)} each)` : ''}, so raise <code>OLLAMA_MEM_LIMIT</code> or run a smaller model.</>
                   : <> Raise it to {c.recommended}{c.perSlotBytes ? `; each slot costs about ${fmtBytes(c.perSlotBytes)}` : ''}.</>}
                 <br />Ollama reads its slot count when it starts, so this is set on the server, not here: <code>./bin/tern ai-slots</code> works out the number, writes it to <code>.env</code> and restarts.
               </Callout>
@@ -1062,7 +1062,6 @@ function AiAdminSettings() {
             />
           </Field>
           <Field label="Temperature" hint="Lower is more literal; 0.7 is a good default for email."><Input type="number" step={0.1} min={0} max={2} value={f.temperature} onChange={(e) => setF({ ...f, temperature: Number(e.target.value) })} /></Field>
-          <Field label="Context window (tokens)" hint={`How much of a conversation the model can see. 8192 holds a long thread; lower it to save memory and a long thread loses its middle. Every parallel slot holds its own, so the memory cost is multiplied by ${data.concurrency?.plan?.slots ?? 1}.`}><Input type="number" min={512} max={131072} value={f.numCtx} onChange={(e) => setF({ ...f, numCtx: Number(e.target.value) })} /></Field>
         </div>
         {/* Off by default and only worth anything when the model is somebody
             else's machine: a rented GPU host learns this server's address from
@@ -1126,7 +1125,7 @@ function AiAdminSettings() {
               string: blank means "leave the stored one alone", and sending ''
               would clear a working credential every time an admin saved an
               unrelated field. */}
-          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, numCtx: f.numCtx, useTor: Boolean(f.useTor), embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined, embedTlsInsecure: Boolean(f.embedTlsInsecure), embedUseTor: Boolean(f.embedUseTor) })}>Save settings</Button>
+          <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: f.apiKey || undefined, tlsInsecure: Boolean(f.tlsInsecure), model: f.model, temperature: f.temperature, useTor: Boolean(f.useTor), embedProvider: f.embedProvider, embedBaseUrl: f.embedBaseUrl, embedApiKey: f.embedApiKey || undefined, embedTlsInsecure: Boolean(f.embedTlsInsecure), embedUseTor: Boolean(f.embedUseTor) })}>Save settings</Button>
           <Button variant="ghost" loading={probing} disabled={!f.baseUrl} onClick={testProvider}>Test connection</Button>
         </div>
       </div>
@@ -1216,7 +1215,7 @@ function AiAdminSettings() {
             </div>
           </div>
         )}
-        <Button className="mt-8" variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget, userThinking: f.userThinking })}>Save tuning</Button>
+        <Button className="mt-8" variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget, userThinking: f.userThinking })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
         <div className="card mb-16">

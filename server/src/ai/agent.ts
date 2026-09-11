@@ -24,7 +24,7 @@ import { openEmails } from '../services/mailVault.js';
 import { allowed } from '../services/capabilities.js';
 import { guardFor, describe as describeGuard } from '../services/guard.js';
 import { query } from '../db.js';
-import { agentRoom, agentStream, getAiSettings, type ChatMessage, type ToolCall } from './llm.js';
+import { agentStream, getAiSettings, type ChatMessage, type ToolCall } from './llm.js';
 import { effectiveSettings } from './thinking.js';
 import { appendMessage, readConversation, transcriptFor } from './conversation.js';
 import { runTool, toolSpecs, toolsFor, type Proposal, type Reference, type ToolContext } from './tools.js';
@@ -119,6 +119,7 @@ How to behave:
 - Call tools without asking permission first. "Shall I search your mail?" wastes a turn; search, then say what you found.
 - When you have looked something up, say what you found in your own words. Do not paste the tool output back.
 - If a tool finds nothing, say so plainly and stop. Do not fill the gap with something plausible.
+- Quote only words that are in front of you in this turn. An earlier question's tool result is replaced by a note saying its text is gone, so before you quote a message, correct a draft against one, or state a figure, date or name from one, call the tool again and read what comes back. Answering that kind of question from memory is how invented quotations happen.
 - Plain sentences. No markdown headings, no bullet symbols unless the answer is genuinely a list, no emoji.
 
 What you cannot do:
@@ -416,10 +417,6 @@ export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
 
     for (const call of calls) {
       yield { type: 'tool', id: call.id, name: call.name, state: 'running' };
-      // How much this result may take before the window overflows — see
-      // `agentRoom` for what overflowing does. Per call, because every result
-      // earlier in the turn has already taken some of the room.
-      ctx.room = await agentRoom(await effectiveSettings(await getAiSettings(), userId), messages, tools);
       const result = await runTool(call.name, ctx, call.arguments);
       results.push({ name: call.name, text: result.text });
       const toolId = await appendMessage(userId, conversationId, {

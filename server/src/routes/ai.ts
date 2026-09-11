@@ -9,7 +9,7 @@ import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { mayChooseThinking, saveThinkingPrefs, thinkingSurfaces, thinkingView } from '../ai/thinking.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
-import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
+import { buildMessages, finalizeOutput, modeTuning, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { EMBED_CATALOGUE, PROVIDER_PRESETS, presetsForSlot } from '../ai/providers.js';
 import {
@@ -31,7 +31,7 @@ import { availabilityFor } from '../services/calendar/index.js';
 import { indexStatus, invalidateVectorsFrom, resetIndex, sweepOrphanedCollections } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
 import { clearEdits, editCount, suggestVoice, MIN_EDITS } from '../services/voiceLearning.js';
-import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings } from '../services/voice.js';
+import { deleteVoiceModel, getVoiceSettings, pullVoiceModel, saveVoiceSettings, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, type VoiceSettings, voiceSettingsView } from '../services/voice.js';
 import { isLocalReach } from '../util/netguard.js';
 import { inspectCertificate, normalizeBaseUrl } from '../util/outbound.js';
 
@@ -129,7 +129,7 @@ async function concurrencyView(s: AiSettings, models: Awaited<ReturnType<typeof 
   const plan = slotPlan(s.concurrency);
   const kvPerToken = s.provider === 'ollama' ? await modelKvBytesPerToken(s.baseUrl, s.model).catch(() => null) : null;
   const modelBytes = models.find((m) => m.name === s.model || m.name === `${s.model}:latest`)?.size ?? 0;
-  const advice = slotAdvice({ users, configured: config.ollamaNumParallel, numCtx: s.numCtx, kvPerToken, modelBytes, memBudgetBytes: config.ollamaMemLimitBytes });
+  const advice = slotAdvice({ users, configured: config.ollamaNumParallel, ctxTokens: null, kvPerToken, modelBytes, memBudgetBytes: config.ollamaMemLimitBytes });
   return { ...advice, plan, kvCacheType: config.ollamaKvCacheType, memLimitBytes: config.ollamaMemLimitBytes || null, stats: slotStats() };
 }
 
@@ -215,13 +215,13 @@ aiRouter.get('/memory', requireAdmin, async (_req, res) => {
   if (s.provider === 'ollama') { try { loaded = await loadedModels(); } catch { /* shown as nothing resident */ } }
   const resident = loaded.reduce((n, m) => n + (m.size ?? 0), 0);
   const vram = loaded.reduce((n, m) => n + (m.sizeVram ?? 0), 0);
-  const kvPerToken = s.provider === 'ollama' ? await modelKvBytesPerToken(s.baseUrl, s.model).catch(() => null) : null;
   const plan = slotPlan(s.concurrency);
-  const perSlotBytes = kvPerToken ? Math.round(kvPerToken * s.numCtx) : null;
+  // Nothing sets a window now, so a slot's KV cache has no size to report.
+  const perSlotBytes: number | null = null;
   res.json({
     host,
     ollama: { limitBytes: config.ollamaMemLimitBytes || null, resident, vram, models: loaded },
-    slots: { ...plan, ...slotStats(), perSlotBytes, kvBytes: perSlotBytes === null ? null : perSlotBytes * plan.slots, kvCacheType: config.ollamaKvCacheType, numCtx: s.numCtx },
+    slots: { ...plan, ...slotStats(), perSlotBytes, kvBytes: perSlotBytes === null ? null : perSlotBytes * plan.slots, kvCacheType: config.ollamaKvCacheType },
   });
 });
 
@@ -293,7 +293,7 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
     // other direction: neither Gemini's embedding API nor Voyage serves chat,
     // and `anthropic` cannot embed. A setting that cannot work should not be
     // storable, whichever end it would fail at.
-    embedProvider: z.enum(['same', 'ollama', 'openai', 'gemini', 'voyage']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), numCtx: z.number().int().min(512).max(131072).optional(), keepAlive: z.string().max(20).optional(),
+    embedProvider: z.enum(['same', 'ollama', 'openai', 'gemini', 'voyage']).optional(), embedTlsInsecure: z.boolean().optional(), embedUseTor: z.boolean().optional(), embedBaseUrl: z.string().max(300).refine((v) => v === '' || httpUrl(v), 'The embedding server URL must start with http:// or https://').optional(), embedApiKey: z.string().max(500).optional(), keepAlive: z.string().max(20).optional(),
     systemPrompt: z.string().max(8000).optional(),
     // Whether anybody but an admin may choose their own reasoning settings.
     // Deliberately not in TUNING_SHAPE and not a preset field: a preset is a
@@ -438,7 +438,6 @@ aiRouter.post('/test', requireAdmin, async (req, res) => {
 // restart.
 aiRouter.get('/voice', requireAdmin, async (_req, res) => {
   const v = await getVoiceSettings();
-  const { apiKey, ...safe } = v;
   const health = v.baseUrl ? await voiceHealth(v) : { ok: false, error: 'No transcriber address is set' };
   // Asked separately, because the two halves fail separately: a speaches
   // container with Whisper pulled and Kokoro not is reachable, authenticated
@@ -446,11 +445,11 @@ aiRouter.get('/voice', requireAdmin, async (_req, res) => {
   // that as working.
   const speechHealthResult = v.speech ? await speechHealth(v) : { ok: false, error: 'The voice is off' };
   res.json({
-    settings: { ...safe, hasApiKey: Boolean(apiKey), hasSpeechApiKey: Boolean(v.speechApiKey) },
+    settings: voiceSettingsView(v),
     health,
     speechHealth: speechHealthResult,
     local: v.baseUrl ? await isLocalReach(v.baseUrl) : true,
-    defaults: (({ apiKey: _k, ...d }) => d)(voiceDefaults()),
+    defaults: (({ apiKey: _k, speechApiKey: _s, ...d }) => d)(voiceDefaults()),
     envUrl: config.whisperUrl || null,
   });
 });
@@ -500,7 +499,6 @@ aiRouter.put('/voice', requireAdmin, async (req, res) => {
   else if (b.speechApiKey) patch.speechApiKey = b.speechApiKey;
   else delete patch.speechApiKey;
   const next = await saveVoiceSettings(patch);
-  const { apiKey, ...safe } = next;
   await query(`INSERT INTO audit_log (user_id, action, details) VALUES ($1,'ai.voice_updated',$2)`, [
     req.user!.id,
     JSON.stringify({
@@ -514,7 +512,7 @@ aiRouter.put('/voice', requireAdmin, async (req, res) => {
   // admin chose. Skipped, and reported as non-local, which is what routing
   // through Tor makes it.
   res.json({
-    settings: { ...safe, hasApiKey: Boolean(apiKey), hasSpeechApiKey: Boolean(next.speechApiKey) },
+    settings: voiceSettingsView(next),
     local: next.useTor ? false : (next.baseUrl ? await isLocalReach(next.baseUrl) : true),
     health: await voiceHealth(next),
     speechHealth: next.speech ? await speechHealth(next) : { ok: false, error: 'The voice is off' },
@@ -1088,7 +1086,7 @@ aiRouter.post('/draft', requireCapability('ai.compose'), powGuard('ai'), rateLim
   // How this mode is tuned, and how much of a conversation it may be given:
   // the same numbers the scheduler uses for responders and campaigns.
   const tuning = modeTuning(b.mode);
-  const threadChars = Math.min(threadBudgetChars(s.numCtx, tuning.maxTokens ?? s.maxTokens), tuning.threadChars ?? Infinity);
+  const threadChars = tuning.threadChars ?? Infinity;
   const input: DraftInput = { mode: b.mode, instruction: b.instruction, tone: b.tone, length: b.length, senderName: acc?.name ?? req.user!.display_name, senderEmail: acc?.email, draft: DRAFT_MODES.has(b.mode) && b.draft ? htmlToText(b.draft) : undefined, subject: b.subject, template: b.template, systemPrompt: s.systemPrompt, voice: acc?.voice, threadChars };
   // What the sender's diary says about the next few working days (F13), for
   // the modes that can commit them to a time. Times only — never a title —

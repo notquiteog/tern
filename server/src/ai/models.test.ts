@@ -3,7 +3,7 @@
 // every tag offered is one the registry will actually resolve.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, isEmbedModel, recommendModel, recommendNumCtx, clampNumCtx, CTX_TIERS } from './models.js';
+import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, isEmbedModel, recommendModel } from './models.js';
 
 test('the models for meaning search are a separate list from the ones that write', () => {
   // They were not, and the consequence was that all-minilm appeared in the
@@ -55,37 +55,3 @@ test('the smallest embedding model stays small enough for the box Tern ships to'
   assert.ok(dflt.needsBytes <= 0.4e9, 'the default embedding model must stay under 400 MB loaded');
 });
 
-test('a tier is picked by what the machine actually has', () => {
-  assert.equal(recommendModel(2 * 1024 ** 3).model, MODEL_TIERS[0].model);
-  assert.equal(recommendModel(8 * 1024 ** 3).model, 'qwen3.5:2b');
-  assert.equal(recommendModel(64 * 1024 ** 3).model, 'gemma4:12b');
-  // The context window scales with the box for the same reason.
-  assert.ok(recommendNumCtx(2 * 1024 ** 3) < recommendNumCtx(32 * 1024 ** 3));
-});
-
-test('the context window is bounded by what the model was trained for', () => {
-  // Ollama accepts a num_ctx larger than the model's training length and
-  // extends it, which costs quality silently rather than failing. The three
-  // models measured here differ by 16x: phi4 is trained to 16k,
-  // mistral-small to 32k, qwen3.5 to 262k — so a default sized from host
-  // memory alone would have run phi4 at double its native window.
-  assert.equal(clampNumCtx(32768, 16384), 16384);   // phi4
-  assert.equal(clampNumCtx(32768, 32768), 32768);   // mistral-small, exactly
-  assert.equal(clampNumCtx(32768, 262144), 32768);  // qwen3.5, plenty of room
-  // A model that does not report a limit is left alone rather than guessed at.
-  assert.equal(clampNumCtx(32768, null), 32768);
-  assert.equal(clampNumCtx(32768, 0), 32768);
-});
-
-test('every context tier can hold a real conversation', () => {
-  // The tiers were raised once num_ctx actually governed how much thread the
-  // model sees. The smallest must still fit the 24-message fixture, which is
-  // about 8,500 tokens.
-  assert.ok(CTX_TIERS[0].numCtx >= 8192, 'the bottom tier must hold a real thread');
-  for (let i = 1; i < CTX_TIERS.length; i++) {
-    assert.ok(CTX_TIERS[i].numCtx > CTX_TIERS[i - 1].numCtx, 'tiers increase');
-    assert.ok(CTX_TIERS[i].minGiB > CTX_TIERS[i - 1].minGiB, 'thresholds increase');
-  }
-  assert.equal(recommendNumCtx(4 * 1024 ** 3), 8192);
-  assert.equal(recommendNumCtx(31 * 1024 ** 3), 32768);
-});

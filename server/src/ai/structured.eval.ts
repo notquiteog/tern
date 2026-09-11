@@ -26,7 +26,6 @@ import { realisticThread, ALEX, DANA, PRIYA } from './fixtures.js';
 const MODEL = process.env.MODEL || 'qwen3.5:4b';
 const RUNS = Number(process.env.RUNS || 10);
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
-const NUM_CTX = process.env.NUM_CTX ? Number(process.env.NUM_CTX) : undefined;
 const THINK = process.env.THINK;
 
 interface Case {
@@ -304,10 +303,9 @@ async function main(): Promise<void> {
   const patch: Record<string, unknown> = { model: MODEL, enabled: true };
   if (THINK === 'on') patch.allowThinking = true;
   if (THINK === 'off') patch.allowThinking = false;
-  if (NUM_CTX) patch.numCtx = NUM_CTX;
   await saveAiSettings(patch as never);
   const s = await getAiSettings();
-  console.log(`model=${s.model} num_ctx=${s.numCtx} think=${s.allowThinking} runs=${RUNS}\n`);
+  console.log(`model=${s.model} think=${s.allowThinking} runs=${RUNS}\n`);
 
   const cases = ONLY.length ? CASES.filter((c) => ONLY.some((o) => c.id.includes(o) || c.tags.includes(o))) : CASES;
   const score = new Map<string, { pass: number; total: number; why: Set<string>; ms: number }>();

@@ -215,10 +215,10 @@ export interface SlotAdvice {
   memoryBound: boolean;
 }
 
-export function slotAdvice(input: { users: number; configured: number; numCtx: number; kvPerToken: number | null; modelBytes: number; memBudgetBytes: number }): SlotAdvice {
+export function slotAdvice(input: { users: number; configured: number; ctxTokens: number | null; kvPerToken: number | null; modelBytes: number; memBudgetBytes: number }): SlotAdvice {
   const users = Math.max(1, Math.floor(input.users) || 1);
   const configured = Math.max(1, Math.floor(input.configured) || 1);
-  const perSlotBytes = input.kvPerToken ? Math.round(input.kvPerToken * Math.max(1, input.numCtx)) : null;
+  const perSlotBytes = input.kvPerToken && input.ctxTokens ? Math.round(input.kvPerToken * Math.max(1, input.ctxTokens)) : null;
   let affordable: number | null = null;
   if (perSlotBytes && input.memBudgetBytes > 0 && input.modelBytes > 0) {
     // What is left after the weights and a little room for the runner itself.

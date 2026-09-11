@@ -222,10 +222,27 @@ export function transcriptFor(system: string, stored: StoredMessage[], turns = H
  * them is in its own answer, which is replayed, and if it needs the source
  * again the tool is one call away — which is what the system prompt already
  * tells it to do before drafting anything.
+ *
+ * ── Why it says more than "not repeated here" ───────────────────────────────
+ *
+ * Because "if this question needs it, call it again" is a judgement, and on a
+ * follow-up that reads conversational — "and what were the two constraints
+ * they gave us at the start?" — the model decided it did not need it and
+ * answered from memory instead. Measured on qwen3.8-flash against a
+ * 24-message thread: two of three follow-ups skipped the re-read, and both of
+ * those invented a verbatim quotation. One attributed dates to the sender that
+ * appear nowhere in the mailbox and then "corrected" the person's open draft
+ * against them; the other quoted, in block quotes, two numbered points from a
+ * different person in a different thread. Re-reading, it was right every time.
+ *
+ * So the stub states the consequence rather than leaving it to be inferred:
+ * the text is gone, and anything said about its contents now is memory. What
+ * it must not do — quote it, correct against it, state a figure or a date from
+ * it — is named, because those are the failures that were actually produced.
  */
 export function earlierResult(name?: string): string {
   const tool = name || 'the tool';
-  return `[What ${tool} returned for an earlier question is not repeated here. If this question needs it, call ${tool} again.]`;
+  return `[${tool} was called for an earlier question. Its result is NOT repeated here and you no longer have that text. Do not quote it, do not correct anything against it, and do not state a figure, date, name or wording from it — call ${tool} again first and answer from what comes back.]`;
 }
 
 /**

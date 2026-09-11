@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   const userId = Number(acc.user_id);
   // Before anything else: prove nothing here can be delivered.
   await assertNothingCanBeDelivered(acc, ['example.invalid']);
-  console.log(`account ${acc.email} (user ${userId})  model ${s.model}  num_ctx ${s.numCtx}  mode ${MODE}  runs ${RUNS}`);
+  console.log(`account ${acc.email} (user ${userId})  model ${s.model}  mode ${MODE}  runs ${RUNS}`);
   console.log(`pacing: cap ${acc.daily_cap}/day, jitter ${acc.jitter_enabled ? `${acc.jitter_min_s}-${acc.jitter_max_s}s` : 'off'}, window ${acc.send_window?.start ?? '-'}-${acc.send_window?.end ?? '-'} ${acc.send_window?.tz ?? ''} (open now: ${isWindowOpen(acc.send_window)})\n`);
 
   const scores = new Map<string, { pass: number; total: number; why: string[] }>();
