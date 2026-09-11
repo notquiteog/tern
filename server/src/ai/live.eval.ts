@@ -72,6 +72,16 @@ const clean: Check = (out) => {
 
 const nonEmpty: Check = (out) => (out.trim().length > 20 ? null : `output too short (${out.trim().length} chars)`);
 
+// A subject line is not a body. The floor above is twenty characters, which
+// is right for an email and wrong here: "New office address" is eighteen and
+// is a perfectly good subject. Once the prompt stopped naming a word count
+// the model started writing shorter ones, and this check failed them. What a
+// subject must not be is empty or a single word.
+const atLeastWords = (n: number): Check => (out) => {
+  const w = out.trim().split(/\s+/).filter(Boolean).length;
+  return w >= n ? null : `only ${w} word${w === 1 ? '' : 's'}: "${out.trim().slice(0, 40)}"`;
+};
+
 // Reasoning that reached the draft. Tags are the easy half; the hard half is
 // a model narrating the task in prose, which is what actually turned up in a
 // campaign preview. The prose half lives in guard.ts so the eval and the send
@@ -387,7 +397,7 @@ const CASES: Case[] = [
       mode: 'subject',
       draft: 'Hi Dana,\n\nThanks for the CSV. The VAT remap on the 1,900 rows starts Monday and should take two days, with a third for Priya to spot check.\n\nAlex',
     },
-    checks: [nonEmpty, exactlyLines(1), wordsUnder(9), matches(/^[^"']/, 'subject is quoted'), matches(/[^.!]$/, 'subject ends with punctuation')],
+    checks: [atLeastWords(2), exactlyLines(1), wordsUnder(9), matches(/^[^"']/, 'subject is quoted'), matches(/[^.!]$/, 'subject ends with punctuation')],
   },
   {
     id: 'polish/typos',
