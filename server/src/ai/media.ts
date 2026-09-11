@@ -54,7 +54,8 @@ import { randomUUID } from 'node:crypto';
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';
-import { explainOutboundError, normalizeBaseUrl, outboundFetch, type OutboundResponse } from '../util/outbound.js';
+import { apiUrl, explainOutboundError, normalizeBaseUrl, outboundFetch, type OutboundResponse } from '../util/outbound.js';
+import { dialectFor } from './reasoning.js';
 import { explainTorError } from '../util/tor.js';
 import { assertPublicUrl } from '../util/netguard.js';
 import { endpointHeaders, notConfigured, transportFor, type ModelEndpoint } from './endpoint.js';
@@ -266,7 +267,8 @@ export function imageRequestBody(m: MediaSettings, prompt: string, size?: string
     prompt,
     n: 1,
     ...(chosen ? { size: chosen } : {}),
-    ...(takesResponseFormat(model) ? { response_format: 'b64_json' } : {}),
+    // OpenRouter's Image API always answers base64 and has no such field.
+    ...(takesResponseFormat(model) && dialectFor(m.baseUrl) !== 'openrouter' ? { response_format: 'b64_json' } : {}),
   };
 }
 
@@ -451,8 +453,11 @@ export async function generateImage(
   if (!m.imageModel.trim()) throw new Error('No image model is named in Admin → Pictures and video.');
   if (m.provider === 'comfyui') return comfyGenerate(e, m, prompt, opts);
 
-  const path = m.provider === 'openai-chat' ? '/v1/chat/completions' : '/v1/images/generations';
-  const res = await outboundFetch(`${e.baseUrl}${path}`, {
+  // OpenRouter's Image API is the path shape on a path of its own: `/images`
+  // rather than `/images/generations`, answering the same `{data:[…]}`.
+  const path = m.provider === 'openai-chat' ? '/v1/chat/completions'
+    : dialectFor(e.baseUrl) === 'openrouter' ? '/v1/images' : '/v1/images/generations';
+  const res = await outboundFetch(apiUrl(e.baseUrl, path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
     body: JSON.stringify(imageRequestBody(m, prompt, opts.size)),
@@ -836,13 +841,21 @@ export async function startVideo(
 
   void (async () => {
     try {
-      const create = await outboundFetch(`${e.baseUrl}/v1/videos`, {
+      const create = await outboundFetch(apiUrl(e.baseUrl, '/v1/videos'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
         // `seconds` goes out as a string: that is what the documented shape
         // asks for, and a host that wants a number parses one out of it,
-        // whereas a host that wants the string refuses a number.
-        body: JSON.stringify({ model: m.videoModel.trim(), prompt, seconds: String(seconds), ...(size ? { size } : {}) }),
+        // whereas a host that wants the string refuses a number. OpenRouter
+        // is the exception: it reads `duration`, a number, and quietly ignores
+        // `seconds`, so the clip came back at the model's default length —
+        // billed by the second — whatever was chosen here.
+        body: JSON.stringify({
+          model: m.videoModel.trim(),
+          prompt,
+          ...(dialectFor(e.baseUrl) === 'openrouter' ? { duration: seconds } : { seconds: String(seconds) }),
+          ...(size ? { size } : {}),
+        }),
         signal: abort.signal,
       }, transportFor(e)).catch((err) => { throw new Error(reachError(e, err)); });
       if (!create.ok) {
@@ -862,7 +875,7 @@ export async function startVideo(
         if (Date.now() > deadline) throw new Error(`That host has not finished in ${Math.round(MAX_WAIT_MS / 60000)} minutes. The generation may still complete there; its id is ${remoteId}.`);
         await sleep(POLL_MS, abort.signal);
         if (abort.signal.aborted) return;
-        const poll = await outboundFetch(`${e.baseUrl}/v1/videos/${encodeURIComponent(remoteId)}`, {
+        const poll = await outboundFetch(apiUrl(e.baseUrl, `/v1/videos/${encodeURIComponent(remoteId)}`), {
           headers: endpointHeaders(e),
           signal: abort.signal,
         }, transportFor(e)).catch((err) => { throw new Error(reachError(e, err)); });
@@ -875,7 +888,7 @@ export async function startVideo(
         if (read.state === 'done') break;
       }
 
-      const content = await outboundFetch(`${e.baseUrl}/v1/videos/${encodeURIComponent(remoteId)}/content`, {
+      const content = await outboundFetch(apiUrl(e.baseUrl, `/v1/videos/${encodeURIComponent(remoteId)}/content`), {
         headers: endpointHeaders(e),
         signal: abort.signal,
       }, transportFor(e)).catch((err) => { throw new Error(reachError(e, err)); });
@@ -934,7 +947,11 @@ export async function mediaHealth(e: ModelEndpoint): Promise<MediaHealth> {
       const names = j?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
       return { ok: true, models: Array.isArray(names) ? names.map(String).slice(0, 200) : undefined };
     }
-    const res = await outboundFetch(`${e.baseUrl}/v1/models`, {
+    // OpenRouter's `/models` is its chat catalogue; the models that draw and
+    // film are listed on paths of their own, in the same envelope.
+    const listing = dialectFor(e.baseUrl) !== 'openrouter' ? '/v1/models'
+      : e.id === 'video' ? '/v1/videos/models' : '/v1/images/models';
+    const res = await outboundFetch(apiUrl(e.baseUrl, listing), {
       headers: endpointHeaders(e),
       signal: AbortSignal.timeout(8000),
     }, transportFor(e));

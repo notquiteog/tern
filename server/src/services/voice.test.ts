@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanTranscript, forgetVoiceCapabilities, listVoiceModels, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, acceptableType, type VoiceSettings } from './voice.js';
+import { cleanTranscript, forgetVoiceCapabilities, listVoiceModels, sniffAudioType, speechHealth, validVoiceModelId, voiceCapabilities, voiceDefaults, voiceHealth, voiceModelView, acceptableType, type VoiceSettings } from './voice.js';
 
 const settings = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({ ...voiceDefaults(), enabled: true, baseUrl: 'http://whisper:8080', ...over });
 
@@ -181,4 +181,46 @@ test('a model id has to look like a repository path', () => {
   for (const bad of ['', '../etc/passwd', 'a/b/c/d/e', 'has space', 'x?y=1', '/leading']) {
     assert.equal(validVoiceModelId(bad), false, bad);
   }
+});
+
+// ---------- Speaking ----------
+
+test('what a voice sent back is read off the bytes, not assumed from what was asked', () => {
+  assert.equal(sniffAudioType(Buffer.from('OggS\0\x02', 'latin1')), 'audio/ogg');
+  assert.equal(sniffAudioType(Buffer.from('ID3\x04\0\0', 'latin1')), 'audio/mpeg');
+  assert.equal(sniffAudioType(Buffer.from([0xff, 0xf3, 0x44, 0xc4])), 'audio/mpeg');
+  assert.equal(sniffAudioType(Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1')), 'audio/wav');
+  assert.equal(sniffAudioType(Buffer.from('{"error":1}')), null);
+});
+
+test('a voice that will not make Opus is asked again for MP3, and no other refusal is retried', async () => {
+  // OpenRouter answers anything but `mp3` or `pcm` with a 400 validation dump
+  // that names the field well past the first two hundred characters, which
+  // left every reply on it unable to speak.
+  const original = globalThis.fetch;
+  const asked: string[] = [];
+  const refusal = JSON.stringify({ success: false, error: { name: 'ZodError', message: `[\n  {\n    "code": "invalid_value",\n    "values": [\n      "mp3",\n      "pcm"\n    ],\n    "path": [\n      "response_format"\n    ]\n  }\n]` } });
+  globalThis.fetch = (async (_url: any, init: any = {}) => {
+    const format = JSON.parse(init.body).response_format;
+    asked.push(format);
+    return format === 'opus'
+      ? new Response(refusal, { status: 400 })
+      : new Response(Buffer.from('ID3\x04\0\0\0\0', 'latin1'), { status: 200 });
+  }) as any;
+  try {
+    assert.deepEqual(await speechHealth(settings({ speechModel: 'hexgrad/kokoro-82m' })), { ok: true });
+    assert.deepEqual(asked, ['opus', 'mp3']);
+
+    // An unknown voice fails the same way in every format, so it is reported
+    // as it came rather than paid for twice.
+    asked.length = 0;
+    globalThis.fetch = (async (_url: any, init: any = {}) => {
+      asked.push(JSON.parse(init.body).response_format);
+      return new Response(JSON.stringify({ error: { message: 'Unknown voice "alloy"' } }), { status: 400 });
+    }) as any;
+    const refused = await speechHealth(settings());
+    assert.equal(refused.ok, false);
+    assert.match(refused.error ?? '', /HTTP 400: .*Unknown voice/);
+    assert.deepEqual(asked, ['opus']);
+  } finally { globalThis.fetch = original; }
 });

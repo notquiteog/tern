@@ -3,7 +3,7 @@ import { one, query } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { parse, z } from '../util/validate.js';
 import { badRequest, forbidden, HttpError, notFound } from '../errors.js';
-import { chatStream, checkProvider, deleteModel, embedIdentity, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
+import { chatStream, checkProvider, deleteModel, embedIdentity, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, modelHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
 import { mayChooseThinking, saveThinkingPrefs, thinkingSurfaces, thinkingView } from '../ai/thinking.js';
@@ -56,7 +56,7 @@ function sse(res: any) {
 // provider address, prompt, tuning and model catalogue are for admins.
 aiRouter.get('/status', async (req, res) => {
   const s = await getAiSettings();
-  const health = await ollamaHealth();
+  const health = await modelHealth();
   let models: Awaited<ReturnType<typeof listModels>> = [];
   let loaded: Awaited<ReturnType<typeof loadedModels>> = [];
   if (health.ok && s.provider === 'ollama') {

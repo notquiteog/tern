@@ -22,10 +22,20 @@ import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability } from './capabilities.js';
 import { badRequest } from '../errors.js';
-import { outboundFetch, type OutboundResponse } from '../util/outbound.js';
+import { apiUrl, outboundFetch, type OutboundResponse } from '../util/outbound.js';
 import { endpointHeaders, transportFor, type ModelEndpoint } from '../ai/endpoint.js';
+import { dialectFor } from '../ai/reasoning.js';
 
 const log = logger('voice');
+
+// Where a transcriber lists its models. OpenRouter's `/models` is its chat
+// catalogue — four hundred models and not one transcriber — which the page
+// showed as "live on the transcriber" while calling the model actually in use
+// "not on this server". Asked for the transcription modality, the same path
+// answers with the ones that can do this job.
+function modelsPath(cfg: VoiceSettings): string {
+  return dialectFor(cfg.baseUrl) === 'openrouter' ? '/v1/models?output_modalities=transcription' : '/v1/models';
+}
 
 // Where the transcriber lives, and how to speak to it.
 //
@@ -247,7 +257,7 @@ async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
   const headers = voiceAuthHeaders(cfg);
   let lists = false;
   try {
-    const res = await outboundFetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
+    const res = await outboundFetch(apiUrl(cfg.baseUrl, modelsPath(cfg)), { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
     if (res.status === 401 || res.status === 403) return { ...none, error: `The transcriber refused the API key (HTTP ${res.status})` };
     lists = res.ok;
   } catch (e) {
@@ -269,7 +279,7 @@ async function probeVoice(cfg: VoiceSettings): Promise<VoiceCapabilities> {
   // model from one that only reports the models it was given.
   let registry = false;
   try {
-    const res = await outboundFetch(`${cfg.baseUrl}/v1/registry?task=automatic-speech-recognition`, { headers, signal: AbortSignal.timeout(8000) }, transportFor(sttEndpoint(cfg)));
+    const res = await outboundFetch(apiUrl(cfg.baseUrl, '/v1/registry?task=automatic-speech-recognition'), { headers, signal: AbortSignal.timeout(8000) }, transportFor(sttEndpoint(cfg)));
     registry = res.ok;
   } catch { /* no registry: listed but not managed */ }
   return { ok: true, lists: true, registry, manages: registry, kind: registry ? 'speaches' : 'openai-shaped' };
@@ -301,7 +311,7 @@ function readModelList(j: any, installed: boolean): VoiceModel[] {
 }
 
 async function voiceJson(cfg: VoiceSettings, path: string, init: RequestInit = {}, timeoutMs = 10_000): Promise<any> {
-  const res = await outboundFetch(`${cfg.baseUrl}${path}`, {
+  const res = await outboundFetch(apiUrl(cfg.baseUrl, path), {
     ...init,
     headers: { ...voiceAuthHeaders(cfg), ...(init.headers ?? {}) },
     signal: init.signal ?? AbortSignal.timeout(timeoutMs),
@@ -316,7 +326,7 @@ async function voiceJson(cfg: VoiceSettings, path: string, init: RequestInit = {
 /** What the transcriber has now. Asked every time; nothing about it is cached. */
 export async function listVoiceModels(s?: VoiceSettings): Promise<VoiceModel[]> {
   const cfg = s ?? (await getVoiceSettings());
-  const j = await voiceJson(cfg, '/v1/models');
+  const j = await voiceJson(cfg, modelsPath(cfg));
   // A server that hosts several tasks lists them all; only the ones that turn
   // speech into text belong on a dictation page.
   return readModelList(j, true).filter((m) => !m.task || m.task === 'automatic-speech-recognition');
@@ -372,7 +382,7 @@ export async function pullVoiceModel(id: string, signal?: AbortSignal): Promise<
   const cfg = await getVoiceSettings();
   const caps = await voiceCapabilities(cfg);
   if (!caps.manages) throw badRequest('That transcriber does not download models: it serves the ones it was started with');
-  const res = await outboundFetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+  const res = await outboundFetch(apiUrl(cfg.baseUrl, `/v1/models/${encodeModelId(id)}`), {
     method: 'POST',
     headers: voiceAuthHeaders(cfg),
     signal: signal ?? AbortSignal.timeout(60 * 60 * 1000),
@@ -395,7 +405,7 @@ export async function deleteVoiceModel(id: string): Promise<VoiceModel[]> {
   const cfg = await getVoiceSettings();
   const caps = await voiceCapabilities(cfg);
   if (!caps.manages) throw badRequest('That transcriber does not manage models from here');
-  const res = await outboundFetch(`${cfg.baseUrl}/v1/models/${encodeModelId(id)}`, {
+  const res = await outboundFetch(apiUrl(cfg.baseUrl, `/v1/models/${encodeModelId(id)}`), {
     method: 'DELETE',
     headers: voiceAuthHeaders(cfg),
     signal: AbortSignal.timeout(60_000),
@@ -444,7 +454,7 @@ export async function voiceHealth(s?: VoiceSettings): Promise<{ ok: boolean; err
   if (!cfg.baseUrl) return { ok: false, error: 'No transcriber address is set' };
   const headers = voiceAuthHeaders(cfg);
   try {
-    const res = await outboundFetch(`${cfg.baseUrl}/v1/models`, { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
+    const res = await outboundFetch(apiUrl(cfg.baseUrl, modelsPath(cfg)), { headers, signal: AbortSignal.timeout(6000) }, transportFor(sttEndpoint(cfg)));
     if (res.ok) {
       const j: any = await res.json().catch(() => null);
       const models = Array.isArray(j?.data) ? j.data.map((m: any) => String(m?.id ?? '')).filter(Boolean) : undefined;
@@ -496,7 +506,7 @@ export async function transcribe(userId: number, audio: Buffer, contentType: str
     // remote server that hosts several needs to be told which.
     if (cfg.model) form.append('model', cfg.model);
 
-    const send = (path: string) => outboundFetch(`${cfg.baseUrl}${path}`, {
+    const send = (path: string) => outboundFetch(apiUrl(cfg.baseUrl, path), {
       method: 'POST',
       headers: voiceAuthHeaders(cfg),
       body: form,
@@ -665,35 +675,72 @@ export async function speak(userId: number, text: string, opts: { signal?: Abort
   if (!say) throw badRequest('There was nothing to say');
 
   const started = Date.now();
-  const e = ttsEndpoint(cfg);
-  const res = await outboundFetch(`${address}/v1/audio/speech`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
-    body: JSON.stringify({
-      // Empty means "whatever the server was started with", which is the
-      // bundled case, exactly as it is for the transcriber's model field.
-      ...(cfg.speechModel ? { model: cfg.speechModel } : { model: 'tts-1' }),
-      input: say.slice(0, MAX_SPEECH_CHARS),
-      ...(cfg.speechVoice ? { voice: cfg.speechVoice } : { voice: 'alloy' }),
-      // Opus in an Ogg container: a quarter the bytes of the WAV these servers
-      // default to, and playable in every browser that can record one.
-      response_format: 'opus',
-      ...(cfg.speechSpeed && cfg.speechSpeed !== 1 ? { speed: cfg.speechSpeed } : {}),
-    }),
-    signal: opts.signal ?? AbortSignal.timeout(120_000),
-  }, transportFor(e)).catch((err) => { throw badRequest(`The voice could not be reached: ${(err as Error).message}`); });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw badRequest(`The voice answered HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
-  }
-  const audio = await readAudio(res);
-  if (!audio.length) throw badRequest('The voice returned nothing');
+  const out = await synthesise(ttsEndpoint(cfg), address, {
+    // Empty means "whatever the server was started with", which is the
+    // bundled case, exactly as it is for the transcriber's model field.
+    model: cfg.speechModel || 'tts-1',
+    input: say.slice(0, MAX_SPEECH_CHARS),
+    voice: cfg.speechVoice || 'alloy',
+    ...(cfg.speechSpeed && cfg.speechSpeed !== 1 ? { speed: cfg.speechSpeed } : {}),
+  }, opts.signal ?? AbortSignal.timeout(120_000));
+  if (!out.ok) throw badRequest(`The voice answered ${out.error}`);
+  if (!out.audio.length) throw badRequest('The voice returned nothing');
   const ms = Date.now() - started;
   // Length, not content — the same line dictation logs, for the same reason.
-  log.info('spoke a reply', { user: userId, chars: say.length, bytes: audio.length, ms });
-  // Stated rather than read back off the response: `opus` was asked for above,
-  // and `OutboundResponse` carries no headers to read it from anyway.
-  return { audio, contentType: 'audio/ogg', ms };
+  log.info('spoke a reply', { user: userId, chars: say.length, bytes: out.audio.length, ms });
+  return { audio: out.audio, contentType: out.contentType, ms };
+}
+
+/**
+ * What kind of audio came back, read from the bytes.
+ *
+ * `OutboundResponse` carries no headers, and the format asked for is not
+ * always the one sent — a host that ignores `response_format` answers in its
+ * own default — so the browser is told what it is playing from this.
+ */
+export function sniffAudioType(b: Buffer): string | null {
+  if (b.length >= 4 && b.toString('latin1', 0, 4) === 'OggS') return 'audio/ogg';
+  if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WAVE') return 'audio/wav';
+  if (b.length >= 4 && b.toString('latin1', 0, 4) === 'fLaC') return 'audio/flac';
+  if (b.length >= 3 && b.toString('latin1', 0, 3) === 'ID3') return 'audio/mpeg';
+  // A bare MPEG audio frame: eleven sync bits, and a layer that is not the reserved 00.
+  if (b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 0x06) !== 0) return 'audio/mpeg';
+  return null;
+}
+
+/**
+ * One synthesis, in Opus where the host makes it and MP3 where it does not.
+ *
+ * Opus in an Ogg container is a quarter the bytes of the WAV these servers
+ * default to, and playable in every browser that can record one, so it is
+ * asked for first. It is not universal: OpenRouter's speech endpoint takes
+ * `mp3` or `pcm` and refuses anything else with a 400, which left every reply
+ * on it unable to speak. A refusal that names the format is asked once more in
+ * MP3, which every synthesiser and every browser share; any other refusal is
+ * reported as it came, since an unknown voice or a missing model fails the
+ * same way in every format.
+ */
+async function synthesise(e: ModelEndpoint, address: string, body: Record<string, unknown>, signal: AbortSignal):
+  Promise<{ ok: true; audio: Buffer; contentType: string } | { ok: false; error: string }> {
+  let error = '';
+  for (const format of ['opus', 'mp3'] as const) {
+    const res = await outboundFetch(apiUrl(address, '/v1/audio/speech'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
+      body: JSON.stringify({ ...body, response_format: format }),
+      signal,
+    }, transportFor(e)).catch((err) => { throw badRequest(`The voice could not be reached: ${(err as Error).message}`); });
+    if (res.ok) {
+      const audio = await readAudio(res);
+      return { ok: true, audio, contentType: sniffAudioType(audio) ?? (format === 'opus' ? 'audio/ogg' : 'audio/mpeg') };
+    }
+    // Read whole before it is cut for the message: OpenRouter's refusal is a
+    // validation dump that names the field about two hundred characters in.
+    const detail = await res.text().catch(() => '');
+    error = `HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`;
+    if ((res.status !== 400 && res.status !== 422) || !/response_format|opus/i.test(detail)) break;
+  }
+  return { ok: false, error };
 }
 
 /** Whether the configured voice answers, for the connection test on the admin page. */
@@ -701,25 +748,17 @@ export async function speechHealth(s?: VoiceSettings): Promise<{ ok: boolean; er
   const cfg = s ?? (await getVoiceSettings());
   const address = speechAddress(cfg);
   if (!address) return { ok: false, error: 'no address' };
-  const e = ttsEndpoint(cfg);
   try {
     // A real synthesis of one word, because reachability is not the question
     // an admin is asking. A server can be up, authenticated and missing the
     // voice model entirely, and only a request that asks it to speak finds out.
-    const res = await outboundFetch(`${address}/v1/audio/speech`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
-      body: JSON.stringify({
-        model: cfg.speechModel || 'tts-1',
-        input: 'Hello.',
-        voice: cfg.speechVoice || 'alloy',
-        response_format: 'opus',
-      }),
-      signal: AbortSignal.timeout(30_000),
-    }, transportFor(e));
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 160)}` };
-    const bytes = (await readAudio(res)).length;
-    return bytes > 0 ? { ok: true } : { ok: false, error: 'answered with no audio' };
+    const out = await synthesise(ttsEndpoint(cfg), address, {
+      model: cfg.speechModel || 'tts-1',
+      input: 'Hello.',
+      voice: cfg.speechVoice || 'alloy',
+    }, AbortSignal.timeout(30_000));
+    if (!out.ok) return { ok: false, error: out.error };
+    return out.audio.length > 0 ? { ok: true } : { ok: false, error: 'answered with no audio' };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }

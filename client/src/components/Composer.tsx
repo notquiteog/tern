@@ -368,7 +368,7 @@ export function Composer({ seed, variant, onClose, onPopOut, onDraftId, onSent, 
         {subjectShown && (
           <div className="subject-row">
             <input value={subject} onChange={(e) => { setSubject(e.target.value); setDirty(true); }} placeholder="Subject" autoFocus={variant === 'window' && Boolean(seed.to?.length) && !seed.subject} />
-            <DictateButton title="Dictate the subject" onText={(t) => { setSubject((v) => (v ? `${v} ${t}` : t)); setDirty(true); }} />
+            <DictateButton className="btn-sm" title="Dictate the subject" onText={(t) => { setSubject((v) => (v ? `${v} ${t}` : t)); setDirty(true); }} />
           </div>
         )}
         <Editor ref={editor} initialHtml={html.current} placeholder={isReply ? 'Write your reply…' : 'Write your message…'} minHeight={variant === 'inline' ? 110 : 120} autoFocus={variant === 'inline' || Boolean(seed.subject && seed.to?.length)}

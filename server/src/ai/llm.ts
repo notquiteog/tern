@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { assertAgentTranscript, assertFreshConversation } from './prompts.js';
 import { effectiveSettings } from './thinking.js';
 import {
-  anthropicReasoning, levelOf, ollamaThink, openAiCompatReasoning, openAiMaxTokensField,
+  anthropicReasoning, dialectFor, levelOf, ollamaThink, openAiCompatReasoning, openAiMaxTokensField,
   openAiTakesSampling, type ThinkEffort,
 } from './reasoning.js';
 import { one, query } from '../db.js';
@@ -17,7 +17,7 @@ import { acquireSlot, busyMessage, kvBytesPerToken, slotPlan } from './slots.js'
 import { assertCapability, type Capability } from '../services/capabilities.js';
 import { beginSession, endSession, onWipe } from './session.js';
 import { logger } from '../log.js';
-import { explainOutboundError, inspectCertificate, normalizeBaseUrl, outboundFetch, type CertInfo, type TlsTrust } from '../util/outbound.js';
+import { apiUrl, explainOutboundError, inspectCertificate, normalizeBaseUrl, outboundFetch, type CertInfo, type TlsTrust } from '../util/outbound.js';
 import { explainTorError, torProxyAddress } from '../util/tor.js';
 import {
   endpointHeaders, notConfigured, transportFor as endpointTransport,
@@ -300,6 +300,7 @@ export async function saveAiSettings(patch: Partial<AiSettings>): Promise<AiSett
   }
   await query(`INSERT INTO settings (key, value, updated_at) VALUES ('ai', $1, now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [JSON.stringify(next)]);
   cache = null;
+  hostedHealth = null;
   return next;
 }
 export function aiDefaults(): AiSettings { return { ...DEFAULTS }; }
@@ -700,7 +701,7 @@ export async function anthropicModelInfo(baseUrl: string, model: string, headers
     // exactly as every other call to this server does. A capability lookup is
     // still a call to the model server, and one written without it would
     // succeed by going direct.
-    const res = await outboundFetch(`${baseUrl}/v1/models/${encodeURIComponent(model)}`, { headers, signal: AbortSignal.timeout(8000) }, trust);
+    const res = await outboundFetch(apiUrl(baseUrl, `/v1/models/${encodeURIComponent(model)}`), { headers, signal: AbortSignal.timeout(8000) }, trust);
     if (res.ok) {
       const body = await res.json() as { max_tokens?: unknown; capabilities?: unknown };
       if (typeof body.max_tokens === 'number' && body.max_tokens > 0) info.maxTokens = body.max_tokens;
@@ -983,7 +984,7 @@ async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions)
     capabilities: info.capabilities, maxTokens: info.maxTokens, takesSampling: anthropicTakesSampling(model),
   });
   const think = r.thinking;
-  const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
+  const res = await outboundFetch(apiUrl(s.baseUrl, '/v1/messages'), {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1076,7 +1077,7 @@ async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): A
   // so one tuning slider took out every draft on gpt-5. They go only where
   // they are taken.
   const tunable = openAiTakesSampling(model);
-  const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
+  const res = await outboundFetch(apiUrl(s.baseUrl, '/v1/chat/completions'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
@@ -1509,7 +1510,7 @@ async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): A
 async function* openaiAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
   const level = levelOf(s);
   const tunable = openAiTakesSampling(model);
-  const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
+  const res = await outboundFetch(apiUrl(s.baseUrl, '/v1/chat/completions'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
@@ -1570,7 +1571,7 @@ async function* anthropicAgent(s: AiSettings, model: string, opts: AgentOptions)
     capabilities: info.capabilities, maxTokens: info.maxTokens, allowDisabled: false,
     takesSampling: anthropicTakesSampling(model),
   });
-  const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
+  const res = await outboundFetch(apiUrl(s.baseUrl, '/v1/messages'), {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1811,7 +1812,7 @@ export async function embed(texts: string[], consent: AiConsent, signal?: AbortS
       return { vectors, model, dims: vectors[0]?.length ?? 0 };
     }
     if (t.provider === 'openai' || t.provider === 'voyage') {
-      const res = await outboundFetch(`${t.baseUrl}/v1/embeddings`, {
+      const res = await outboundFetch(apiUrl(t.baseUrl, '/v1/embeddings'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...endpointHeaders(t) },
         body: JSON.stringify({
@@ -1873,9 +1874,35 @@ export async function ollamaHealth(candidate?: AiSettings): Promise<{ ok: boolea
   }
 }
 
+/**
+ * Whether the drafting model's server answers, whatever kind of server it is.
+ *
+ * `/api/ai/status` asked `ollamaHealth` for every provider, and `/api/version`
+ * is a path only Ollama serves — so every hosted connection (OpenAI,
+ * Anthropic, OpenRouter, Groq…) was reported "not reachable" and the composer
+ * refused to draft on a connection whose own test had just passed. A hosted
+ * server is asked what its connection test asks — whether it lists models —
+ * and the answer is kept for a minute, because every open composer polls this
+ * and OpenRouter's catalogue alone is most of a megabyte. Saving the settings
+ * forgets it.
+ */
+let hostedHealth: { key: string; at: number; value: { ok: boolean; error?: string } } | null = null;
+
+export async function modelHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
+  const s = await getAiSettings();
+  if (s.provider === 'ollama') return ollamaHealth(s);
+  if (!s.baseUrl) return { ok: false, error: 'No address is set for the model server' };
+  const key = `${s.provider}|${s.baseUrl}`;
+  if (hostedHealth?.key === key && Date.now() - hostedHealth.at < (hostedHealth.value.ok ? 60_000 : 10_000)) return hostedHealth.value;
+  const cat = await hostedCatalogue(llmEndpoint(s));
+  const value = cat.ok ? { ok: true } : { ok: false, error: cat.error };
+  hostedHealth = { key, at: Date.now(), value };
+  return value;
+}
+
 // What a refusal from the other end most likely means. Written for the two
 // that a remote model server actually produces: a proxy wanting a token, and
-// a base URL with a path or a trailing slash on it.
+// a base URL with an endpoint's path on the end of it.
 export function httpHint(status: number, s: { provider: string; baseUrl: string }): string {
   // Named for the header that connection actually sends. Telling somebody with
   // a Gemini key to check their bearer token sends them to look at the one
@@ -1885,7 +1912,7 @@ export function httpHint(status: number, s: { provider: string; baseUrl: string 
     : s.provider === 'gemini' ? 'Gemini API'
       : s.provider === 'ollama' ? 'Ollama API' : 'OpenAI-compatible API';
   if (status === 401 || status === 403) return `HTTP ${status}: that server wants authentication. Put its token in the API key field — it is sent as ${header}.`;
-  if (status === 404) return `HTTP 404: nothing is serving the ${api} at ${s.baseUrl}. The base URL is the server's root — no path, no trailing slash.`;
+  if (status === 404) return `HTTP 404: nothing is serving the ${api} at ${s.baseUrl}. The address is the server's root, or the API base its documentation gives ("https://openrouter.ai/api/v1", say) — not the path of an endpoint.`;
   if (status === 502 || status === 503 || status === 504) return `HTTP ${status}: a proxy in front of that server could not reach it.`;
   return `HTTP ${status}`;
 }
@@ -2145,8 +2172,14 @@ async function hostedCatalogue(t: ModelEndpoint): Promise<{ ok: boolean; live: b
   // Anthropic lists models at the same path as the OpenAI shape and returns
   // the same `{data:[{id}]}` envelope, so the two share a branch. What they do
   // not share is the credential header — `endpointHeaders` handles that.
+  //
+  // OpenRouter's `/models` is its chat catalogue alone — four hundred models
+  // and not one embedder — so the embedding picker offered nothing it could
+  // use. Its embedders are listed on a path of their own, in the same
+  // envelope, and that list does say what they are for.
+  const embedders = t.id === 'embed' && dialectFor(t.baseUrl) === 'openrouter';
   try {
-    const res = await outboundFetch(`${t.baseUrl}/v1/models`, {
+    const res = await outboundFetch(apiUrl(t.baseUrl, embedders ? '/v1/embeddings/models' : '/v1/models'), {
       headers: endpointHeaders(t), signal: AbortSignal.timeout(8000),
     }, endpointTransport(t));
     if (!res.ok) return { ok: false, live: true, error: httpHint(res.status, t), models: [] };
@@ -2164,7 +2197,7 @@ async function hostedCatalogue(t: ModelEndpoint): Promise<{ ok: boolean; live: b
         // slot", not "for none". Anthropic's real limitation is encoded
         // elsewhere and more strongly: `EmbedProvider` has no `anthropic`, so
         // its models can never reach the embedding picker at all.
-        capabilities: [],
+        capabilities: embedders ? ['embedding'] : [],
       }));
     return { ok: true, live: true, models };
   } catch (e) {
@@ -2245,9 +2278,10 @@ function ollamaProbeFor(t: ModelEndpoint): Pick<AiSettings, 'provider' | 'baseUr
   // draw pictures through chat completions, and nothing in this file can be
   // pointed at one — but the enum it comes from is shared, so the compiler is
   // right to ask, and answering with a guess rather than a case would be how
-  // an image host's probe quietly became a drafting probe later.
+  // an image host's probe quietly became a drafting probe later. `comfyui` is
+  // the same case a second time: it only ever draws.
   return {
-    provider: t.provider === 'gemini' || t.provider === 'voyage' || t.provider === 'openai-chat' ? 'ollama' : t.provider,
+    provider: t.provider === 'gemini' || t.provider === 'voyage' || t.provider === 'openai-chat' || t.provider === 'comfyui' ? 'ollama' : t.provider,
     baseUrl: t.baseUrl,
     apiKey: t.apiKey,
     tlsInsecure: t.tlsInsecure,

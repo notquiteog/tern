@@ -75,7 +75,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.openai.com/v1',
     slots: ['llm', 'embed', 'stt', 'image', 'video'],
     key: 'required',
-    note: 'Chat, embeddings, Whisper transcription, pictures and video from one key — the only host here that serves all five.',
+    note: 'Chat, embeddings, Whisper transcription, pictures and video from one key.',
   },
   {
     id: 'anthropic',
@@ -103,22 +103,14 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'OpenRouter',
     shape: 'openai',
     baseUrl: 'https://openrouter.ai/api/v1',
-    slots: ['llm', 'embed'],
+    // Every slot on one key. This was two entries, the second sending pictures
+    // through chat completions; OpenRouter's Image API now answers OpenAI's
+    // `{data:[{b64_json}]}` on a path of its own, `/images`, which
+    // `ai/media.ts` knows, and it serves every image model rather than the
+    // handful that can also chat.
+    slots: ['llm', 'embed', 'stt', 'image', 'video'],
     key: 'required',
-    note: 'One key for hundreds of models from every vendor. Model IDs carry a vendor prefix — "openai/gpt-5", "qwen/qwen3-embedding-8b".',
-  },
-  {
-    // The same company twice, because it is genuinely two endpoints. Drafting
-    // and embedding go to `/v1/...` in the ordinary way; pictures come back
-    // out of `/v1/chat/completions` as a data URL, which is a different reply
-    // to parse and cannot be reached by picking the entry above.
-    id: 'openrouter-images',
-    label: 'OpenRouter (pictures)',
-    shape: 'openai-chat',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    slots: ['image'],
-    key: 'required',
-    note: 'Pictures through chat completions, which is how OpenRouter serves them. Model IDs carry a vendor prefix, and it has to be one that returns images.',
+    note: 'One key for hundreds of models from every vendor — drafting, embeddings, transcription, speech, pictures and video. Model IDs carry a vendor prefix — "qwen/qwen3.5-9b", "qwen/qwen3-embedding-4b".',
   },
   {
     id: 'together',

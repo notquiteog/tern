@@ -13,10 +13,23 @@ import {
 import { embeddingText } from './llm.js';
 import { endpointHeaders, type ModelEndpoint } from './endpoint.js';
 import { EMBED_MODELS } from './models.js';
+import { apiUrl } from '../util/outbound.js';
 
 const endpoint = (over: Partial<ModelEndpoint>): ModelEndpoint => ({
   id: 'embed', label: 'embeddings', provider: 'openai', baseUrl: 'https://example',
   apiKey: '', tlsInsecure: false, useTor: false, inheritedFrom: null, ...over,
+});
+
+test('no preset is joined into a doubled version', () => {
+  // Every preset is a host's documented base URL and most of them end in a
+  // version, while every call is spelled from the root. Joined as strings
+  // they were all `/v1/v1/...`, which the admin page reported as a 404 from
+  // a host that was working perfectly.
+  for (const p of PROVIDER_PRESETS) {
+    const url = apiUrl(p.baseUrl, '/v1/models');
+    const versions = new URL(url).pathname.split('/').filter((s) => /^v\d+/i.test(s));
+    assert.equal(versions.length, 1, `${p.id}: ${url}`);
+  }
 });
 
 test('every preset names a shape its slot can actually use', () => {

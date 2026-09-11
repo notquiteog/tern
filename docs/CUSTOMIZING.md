@@ -175,9 +175,18 @@ polish, shorten, expand, subject).
 ### Reasoning, and who decides it
 
 Admin → AI model sets whether reasoning models think before answering
-(`allowThinking`), how hard (`thinkEffort`) and how much room the working-out
-gets (`thinkingBudget`). Those are the server's defaults and, on their own, the
-whole story.
+(`allowThinking`), how hard (`thinkEffort`: low, medium, high, xhigh or max)
+and how much room the working-out gets (`thinkingBudget`). Those are the
+server's defaults and, on their own, the whole story.
+
+The level is one setting whatever the model, and `server/src/ai/reasoning.ts`
+spells it the way each host takes it: an effort ladder that differs per model
+on OpenAI, `reasoning.effort` on OpenRouter, a per-model set on Groq, a switch
+and a token budget on SiliconFlow and Alibaba Cloud, adaptive thinking with an
+effort (or a budget, on Haiku 4.5) on Anthropic, `think` on Ollama. A level a
+model does not have becomes the nearest one below it — `max` on a local model is
+its hardest setting, not an error — and a model that does not reason is sent
+nothing at all. xhigh and max only differ from high on frontier models.
 
 Beside them is **Let people choose their own reasoning settings**, off by
 default. Turning it on lets each person override the first two for themselves,
@@ -190,6 +199,14 @@ time one request occupies the model, and the model is shared: on a 4.5 GB box
 sized for four people, one person choosing "thorough" is felt by the other
 three. Admins can always choose for themselves, since they can change the
 server default anyway.
+
+With it on, **Where a personal choice counts** lists every feature that writes
+with the model. Untick one and it always runs at your setting, whoever it runs
+for — admins included, because it is a rule about the feature rather than the
+person. The ones worth unticking are the ones that run unattended on the shared
+model, like automatic replies and the brief. A person's own settings card names
+the features that are held to the server's setting, so a choice is never shown
+as in force where it is not.
 
 The preference is applied on the server, at the two points every generation
 passes through, so it covers everything that runs in a person's name —
@@ -225,7 +242,9 @@ Everything else in the app still goes through the single-turn path unchanged.
   any OpenAI-compatible endpoint (`/v1/chat/completions`), with an optional
   API key. The **Start from** row above the fields fills in the shape and the
   address for the hosts Tern knows — Ollama, perch, OpenAI, Anthropic, Groq,
-  OpenRouter, Together, Fireworks, NanoGPT and Google. It is a shortcut, not a
+  OpenRouter, Together, Fireworks, SiliconFlow, Alibaba Cloud (Qwen), DeepSeek,
+  Mistral, xAI, NanoGPT and Google, and for embeddings Voyage, Cohere and Jina
+  as well. It is a shortcut, not a
   gate: the setting remains a shape and an address, so an endpoint that is not
   on that list — a vLLM in your own rack, a proxy in front of one of these — is
   configured by typing its address in, exactly as before.
@@ -834,15 +853,29 @@ to it**, and the card and the composer both say so rather than leaving it to
 be inferred from an address only an admin can see. Nothing from anybody's
 mailbox is sent — only the sentence they wrote.
 
-Two shapes, because image generation genuinely arrived twice:
+Three shapes — image generation genuinely arrived twice over OpenAI's shape,
+and ComfyUI is not a request at all:
 
 | Shape | Endpoint | Hosts |
 |---|---|---|
-| `/v1/images/generations` | a path of its own | OpenAI, Together AI, Fireworks, NanoGPT, and a local ComfyUI, SwarmUI or LocalAI behind their OpenAI shims |
-| `/v1/chat/completions` | the picture comes back inside the chat reply, as a data URL | OpenRouter, Google's compatibility layer |
+| `/v1/images/generations` | a path of its own | OpenAI, OpenRouter (its Image API, at `/images`), Together AI, Fireworks, NanoGPT, xAI, and SwarmUI or LocalAI behind their OpenAI shims |
+| `/v1/chat/completions` | the picture comes back inside the chat reply, as a data URL | Google's compatibility layer, and OpenRouter's image-capable chat models |
+| ComfyUI workflow | a graph is queued on `/prompt`, its job read from `/history`, the picture fetched from `/view` | your own ComfyUI, or perch's on 8188 |
 
-They cannot be told apart from the address — OpenRouter serves both on the
-same origin — so the card asks which one the host speaks. **Ollama is
+For ComfyUI the model is a checkpoint file on that machine, and the connection
+test lists the ones it has. With the workflow box empty, Tern runs ComfyUI's
+own default text-to-image graph — core nodes only, so it works with any SD 1.x
+or SDXL checkpoint. For FLUX, a LoRA or anything with custom nodes, export your
+graph with **Save (API format)**, put `%prompt%` where the prompt goes (and
+`%model%`, `%width%`, `%height%`, `%seed%` or `%negative%` if you want those
+filled in), and paste it into the box; a pasted editor layout, or one without
+`%prompt%`, is refused when you save rather than at the first picture.
+
+The two OpenAI shapes cannot be told apart from the address — Google serves
+both on the same origin — so the card asks which one the host speaks.
+OpenRouter is the one host Tern recognises by address: on the path shape it
+asks OpenRouter's Image API at `/images`, and for video it sends the length as
+`duration`, which is what OpenRouter reads. **Ollama is
 deliberately not offered**: it runs vision models that *read* a picture and
 has no endpoint that draws one, so an option for it would be an option that
 cannot work, the same judgement that keeps Anthropic off the embedding list.
@@ -958,12 +991,14 @@ Three things have to be right, and each is wrong in its own way, so there is a
 **Test connection** button beside **Save settings** that asks without saving —
 worth using, because saving unloads whatever model the install was on.
 
-- **The base URL is the server's root.** Scheme, host and port, nothing else:
-  `https://203.0.113.10:40123`, not `.../api` and not with a trailing slash.
-  Every call appends its own path, so a stored slash makes `//api/chat`, which
-  Ollama answers 404 to — health, model list and drafting alike. Tern now
-  trims it on the way in and on the way out, so an address pasted from a copy
-  button works, but it is still the shape to aim for.
+- **The base URL is the server's root, or the API base a host documents.**
+  For Ollama that is scheme, host and port, nothing else:
+  `https://203.0.113.10:40123`, not `.../api`. For a hosted OpenAI-compatible
+  API it can be the base URL its documentation gives —
+  `https://openrouter.ai/api/v1`, `https://api.groq.com/openai/v1` — because
+  a base that already names a version is not given a second one. What it must
+  not be is the path of an endpoint (`.../chat/completions`). A trailing slash
+  is trimmed on the way in and on the way out.
 - **The API key is the proxy's token.** Ollama has no authentication of its
   own, so anything reachable off the box is behind something that does. The
   key is sent as `Authorization: Bearer` on every request, management calls

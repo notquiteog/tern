@@ -4,7 +4,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { explainOutboundError, normalizeBaseUrl, outboundFetch, requestWithTls } from './outbound.js';
+import { apiUrl, explainOutboundError, normalizeBaseUrl, outboundFetch, requestWithTls } from './outbound.js';
+
+test('a base URL that already names its version is not given a second one', () => {
+  // The documented SDK base of every hosted OpenAI-compatible API carries the
+  // version, and every call here is spelled from the root. Joined as strings
+  // that was `/api/v1/v1/chat/completions` — a 404 on OpenRouter, and on every
+  // other preset that ends in a version.
+  assert.equal(apiUrl('https://openrouter.ai/api/v1', '/v1/chat/completions'), 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(apiUrl('https://openrouter.ai/api/v1/', '/v1/models'), 'https://openrouter.ai/api/v1/models');
+  assert.equal(apiUrl('https://api.groq.com/openai/v1', '/v1/audio/transcriptions'), 'https://api.groq.com/openai/v1/audio/transcriptions');
+  assert.equal(apiUrl('https://generativelanguage.googleapis.com/v1beta/openai', '/v1/chat/completions'), 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+  assert.equal(apiUrl('https://api.anthropic.com/v1', '/v1/messages'), 'https://api.anthropic.com/v1/messages');
+  assert.equal(apiUrl('https://openrouter.ai/api/v1', `/v1/videos/${encodeURIComponent('a b')}/content`), 'https://openrouter.ai/api/v1/videos/a%20b/content');
+});
+
+test('a bare origin, or a proxy under a path that is not a version, is joined as it always was', () => {
+  assert.equal(apiUrl('http://127.0.0.1:11434', '/v1/chat/completions'), 'http://127.0.0.1:11434/v1/chat/completions');
+  assert.equal(apiUrl('https://api.anthropic.com', '/v1/messages'), 'https://api.anthropic.com/v1/messages');
+  assert.equal(apiUrl('https://gpu.example.com/ollama', '/v1/embeddings'), 'https://gpu.example.com/ollama/v1/embeddings');
+  // `/v10` and `/v1beta` are versions; `/video` and `/vllm` are not.
+  assert.equal(apiUrl('https://gpu.example.com/vllm', '/v1/models'), 'https://gpu.example.com/vllm/v1/models');
+  // Paths that are not versioned API paths are never touched.
+  assert.equal(apiUrl('https://openrouter.ai/api/v1', '/inference'), 'https://openrouter.ai/api/v1/inference');
+  assert.equal(apiUrl('http://127.0.0.1:11434', '/api/chat'), 'http://127.0.0.1:11434/api/chat');
+  assert.equal(apiUrl('', '/v1/models'), '/v1/models');
+});
 
 test('a trailing slash is taken off, because every call appends a path to this', () => {
   // `${baseUrl}/api/chat` with a stored slash is `//api/chat`, which Ollama

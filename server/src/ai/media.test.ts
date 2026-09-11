@@ -114,6 +114,13 @@ test('the models that refuse response_format are not sent it', () => {
   assert.equal(body.prompt, 'a heron');
 });
 
+test('OpenRouter is not asked for base64, which is all its Image API ever sends', () => {
+  const body = imageRequestBody(settings({ baseUrl: 'https://openrouter.ai/api/v1', imageModel: 'qwen/qwen-image-3' }), 'a heron') as any;
+  assert.ok(!('response_format' in body), 'OpenRouter was sent a field its Image API does not have');
+  assert.equal(body.model, 'qwen/qwen-image-3');
+  assert.equal(body.size, '1024x1024');
+});
+
 test('an empty size is left out rather than sent empty', () => {
   // `size: ""` is not "the host decides", it is a value the host rejects.
   const body = imageRequestBody(settings({ imageSize: '' }), 'a heron') as any;

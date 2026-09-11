@@ -21,6 +21,23 @@ export function normalizeBaseUrl(raw: string): string {
   return String(raw ?? '').trim().replace(/\/+$/, '');
 }
 
+// A hosted OpenAI-compatible API is documented by its SDK base URL, which
+// already carries the version — `https://openrouter.ai/api/v1`,
+// `https://api.groq.com/openai/v1`, `…/v1beta/openai` — while every call here
+// is spelled from a server's root: `/v1/chat/completions`. Joined as strings
+// the two made `/api/v1/v1/chat/completions`, a 404 from every one of those
+// hosts, and `ai/providers.ts` offers exactly those addresses. So a base that
+// already names a version keeps its own and the path drops Tern's; a bare
+// origin, or a proxy mounted under a path that is not a version, is joined as
+// it always was.
+export function apiUrl(baseUrl: string, path: string): string {
+  const base = normalizeBaseUrl(baseUrl);
+  if (!/^\/v1(?=[/?]|$)/.test(path)) return base + path;
+  let segments: string[];
+  try { segments = new URL(base).pathname.split('/'); } catch { return base + path; }
+  return segments.some((s) => /^v\d+(?:(?:alpha|beta)\d*)?$/i.test(s)) ? base + path.slice(3) : base + path;
+}
+
 // Whether to require a certificate this machine can verify. Off is a real
 // choice an admin gets to make — a rented GPU host issues itself a
 // certificate at boot and there is no authority that will vouch for it — but

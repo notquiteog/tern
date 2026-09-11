@@ -10,6 +10,7 @@ import { useToast } from '../state/toast';
 import { useAiModels, useAiStatus, useVoiceModels } from '../lib/queries';
 import { Badge, Button, Callout, ColorPicker, Confirm, Field, IconButton, Input, Modal, PageHeader, Progress, ResetButton, Select, Spinner, Textarea, Toggle, Tabs, Avatar } from '../components/ui';
 import { fmtBytes, fmtDateTime, fmtRelative, cls } from '../lib/format';
+import { mergeSaved } from '../lib/settingsForm';
 import { DataTable } from '../components/DataTable';
 import { AiPlayground, AiStatusLine } from './Settings';
 import { PALETTES, BACKGROUNDS } from '../lib/palettes';
@@ -619,7 +620,9 @@ function AiVoiceCard() {
   async function save(patch: any) {
     try {
       const r = await api.put<any>('/api/ai/voice', patch);
-      setF({ ...r.settings });
+      // What this save sent and what nobody has touched follow the server;
+      // anything typed and not yet saved stays. See lib/settingsForm.
+      setF((cur: any) => mergeSaved(cur, data.settings, r.settings, patch));
       setKey('');
       setTested(null);
       refetch();
@@ -1044,7 +1047,7 @@ function AiAdminSettings() {
         />
         <div className="form-row">
           <Field label="Provider"><Select value={f.provider} onChange={(e) => { setF({ ...f, provider: e.target.value }); setProbe(null); }}><option value="ollama">Ollama (local, default)</option><option value="openai">OpenAI-compatible API</option><option value="anthropic">Anthropic (Messages API)</option></Select></Field>
-          <Field label="Base URL" hint="The server's root — scheme, host and port, with no path and no trailing slash. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : f.provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.example.com'} /></Field>
+          <Field label="Base URL" hint="The server's root — scheme, host and port — or, for a hosted API, the base URL its documentation gives, such as https://openrouter.ai/api/v1. Not the path of an endpoint. A rented GPU box publishes something like https://203.0.113.10:40123."><Input value={f.baseUrl} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setProbe(null); }} placeholder={f.provider === 'ollama' ? 'http://ollama:11434' : f.provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.example.com'} /></Field>
           <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : f.provider === 'ollama' ? 'Only for an Ollama somewhere else: it has no authentication of its own, so a remote one belongs behind a proxy, and this is the bearer token sent to it — as Authorization: Bearer. A hosted box usually calls it an instance or open-button token. The bundled container needs nothing here.' : f.provider === 'anthropic' ? 'Sent as x-api-key, not as a bearer token. Required — the Messages API has no anonymous mode.' : ''}><Input type="password" value={f.apiKey ?? ''} onChange={(e) => { setF({ ...f, apiKey: e.target.value }); setProbe(null); }} /></Field>
           <Field
             label="Model name"
@@ -1296,7 +1299,7 @@ function AiAdminSettings() {
               onPick={(p: any) => setF({ ...f, embedProvider: p.shape, embedBaseUrl: p.baseUrl })}
             />
             <div className="form-row">
-              <Field label="Embedding server URL" hint="The server's root — no path, no trailing slash."><Input value={f.embedBaseUrl ?? ''} onChange={(e) => setF({ ...f, embedBaseUrl: e.target.value })} placeholder={f.embedProvider === 'ollama' ? 'http://ollama:11434' : f.embedProvider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : f.embedProvider === 'voyage' ? 'https://api.voyageai.com/v1' : 'https://api.openai.com/v1'} /></Field>
+              <Field label="Embedding server URL" hint="The server's root, or the base URL a hosted API documents (https://openrouter.ai/api/v1) — not the path of an endpoint."><Input value={f.embedBaseUrl ?? ''} onChange={(e) => setF({ ...f, embedBaseUrl: e.target.value })} placeholder={f.embedProvider === 'ollama' ? 'http://ollama:11434' : f.embedProvider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : f.embedProvider === 'voyage' ? 'https://api.voyageai.com/v1' : 'https://api.openai.com/v1'} /></Field>
               <Field label="Embedding server key" hint={data.settings.hasEmbedApiKey ? 'A key is stored; leave blank to keep it.' : f.embedProvider === 'gemini' ? 'A Google API key. Sent as x-goog-api-key rather than as a bearer token, and never in the URL.' : 'Blank for the bundled Ollama.'}><Input type="password" value={f.embedApiKey ?? ''} onChange={(e) => setF({ ...f, embedApiKey: e.target.value })} /></Field>
             </div>
           </>
@@ -1528,7 +1531,9 @@ function AiMediaCard() {
   async function save(patch: any) {
     try {
       const r = await api.put<any>('/api/ai/media', patch);
-      setF({ ...r.settings });
+      // What this save sent and what nobody has touched follow the server;
+      // anything typed and not yet saved stays. See lib/settingsForm.
+      setF((cur: any) => mergeSaved(cur, data.settings, r.settings, patch));
       setKey(''); setVideoKey(''); setTested({});
       refetch();
       // The composer asks once and keeps the answer for five minutes, so a
@@ -1586,10 +1591,10 @@ function AiMediaCard() {
       <ProviderPresets presets={data.presets?.image ?? []} slot="image" shape={f.provider} baseUrl={f.baseUrl}
         onPick={(p: any) => { setF({ ...f, provider: p.shape, baseUrl: p.baseUrl }); setTested({}); }} />
       <div className="form-row">
-        <Field label="API shape" hint="Where the picture comes back from. Most hosts serve it on a path of its own; OpenRouter and Google answer with it inside a chat reply instead, and the two cannot be told apart from the address. ComfyUI is neither: it takes a whole workflow, queues it, and the picture is collected when the job is done.">
+        <Field label="API shape" hint="Where the picture comes back from. Most hosts serve it on a path of its own — OpenRouter's is /images, which Tern knows from the address; Google answers with it inside a chat reply instead, and the two cannot be told apart from the address. ComfyUI is neither: it takes a whole workflow, queues it, and the picture is collected when the job is done.">
           <Select value={f.provider} onChange={(e) => { setF({ ...f, provider: e.target.value }); setTested({}); }}>
-            <option value="openai">/v1/images/generations (OpenAI, Together, Fireworks, NanoGPT, local servers)</option>
-            <option value="openai-chat">/v1/chat/completions (OpenRouter, Google)</option>
+            <option value="openai">/v1/images/generations (OpenAI, OpenRouter, Together, Fireworks, NanoGPT, local servers)</option>
+            <option value="openai-chat">/v1/chat/completions (Google, and OpenRouter's image-capable chat models)</option>
             <option value="comfyui">ComfyUI workflow (your own ComfyUI, or one behind perch)</option>
           </Select>
         </Field>
