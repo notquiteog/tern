@@ -26,7 +26,7 @@ test('every preset names a shape its slot can actually use', () => {
   const embedShapes = new Set(['ollama', 'openai', 'gemini', 'voyage']);
   // Pictures come back either from a path of their own or out of a chat
   // reply; video only ever from the path shape.
-  const imageShapes = new Set(['openai', 'openai-chat']);
+  const imageShapes = new Set(['openai', 'openai-chat', 'comfyui']);
   const videoShapes = new Set(['openai']);
   for (const p of PROVIDER_PRESETS) {
     assert.doesNotThrow(() => new URL(p.baseUrl), `${p.id}: unusable base URL`);
@@ -55,6 +55,10 @@ test('a host that cannot draw is not offered for drawing', () => {
   const chat = PROVIDER_PRESETS.filter((p) => p.shape === 'openai-chat');
   assert.ok(chat.length > 0, 'the chat-completions image shape is offered nowhere');
   for (const p of chat) assert.deepEqual(p.slots, ['image'], `${p.id} offers openai-chat outside pictures`);
+  // ComfyUI only draws: it takes a graph, not a conversation or a sentence to embed.
+  const comfy = PROVIDER_PRESETS.filter((p) => p.shape === 'comfyui');
+  assert.ok(comfy.length > 0, 'ComfyUI is offered nowhere');
+  for (const p of comfy) assert.deepEqual(p.slots, ['image'], `${p.id} offers ComfyUI outside pictures`);
 
   // Somewhere to start for both new slots, so an admin opening either card
   // finds a host rather than an empty URL box and a guess.

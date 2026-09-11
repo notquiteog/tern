@@ -6,6 +6,10 @@
 import { config } from '../config.js';
 import { assertAgentTranscript, assertFreshConversation } from './prompts.js';
 import { effectiveSettings } from './thinking.js';
+import {
+  anthropicReasoning, levelOf, ollamaThink, openAiCompatReasoning, openAiMaxTokensField,
+  openAiTakesSampling, type ThinkEffort,
+} from './reasoning.js';
 import { one, query } from '../db.js';
 import { clampNumCtx, recommendModel, recommendNumCtx } from './models.js';
 import { defaultTuningFor, matchesPreset, PRESET_FIELDS } from './presets.js';
@@ -72,7 +76,11 @@ export interface AiSettings {
   // A responder answering one message in the background is the case where
   // the trade goes the other way.
   allowThinking: boolean;
-  thinkEffort: 'low' | 'medium' | 'high';
+  // low … max. `xhigh` and `max` are real levels on a frontier model and clamp
+  // to a smaller model's hardest setting, so an install that sets `max` and
+  // later moves to a local model gets that model's best rather than a 400.
+  // `ai/reasoning.ts` is the only place a level is spelled for a host.
+  thinkEffort: ThinkEffort;
   thinkingBudget: number;
   /**
    * Whether anybody other than an admin may override the two settings above
@@ -87,6 +95,20 @@ export interface AiSettings {
    * `ai/thinking.ts` for how the three-way resolution composes.
    */
   userThinking: boolean;
+  /**
+   * Where a personal choice does NOT apply — features that always run at the
+   * install's setting, whoever they run for.
+   *
+   * `userThinking` answers WHETHER people may choose; this answers WHERE.
+   * They are separate because the right answer differs per feature rather
+   * than per person: somebody composing one hard reply is exactly who the
+   * personal setting is for, while automatic replies and the brief run
+   * unattended on a shared model and are where an admin most wants one known
+   * cost. Empty — the default, and what every install had before this
+   * existed — means everywhere. It binds admins too: it is a rule about the
+   * feature, and an admin who wants their own choice there leaves it off.
+   */
+  userThinkingExcept: Capability[];
   systemPrompt: string;
   topP: number;
   topK: number;
@@ -166,6 +188,7 @@ const BASE_DEFAULTS: AiSettings = {
   thinkEffort: 'low',
   // Off: an install that upgrades into this behaves exactly as it did.
   userThinking: false,
+  userThinkingExcept: [],
   // How much reasoning a generation may spend before the ceiling stops it.
   //
   // This was 3,000, and the first attempt at fixing it — 6,000 — was wrong
@@ -641,8 +664,10 @@ export function forgetModelCapabilities(): void { described.clear(); }
 // reports the real figure per model, so it is asked and remembered, exactly as
 // `modelContextLimit` does for the context window.
 
-/** Output ceilings, remembered per base URL and model. */
-const outputLimits = new Map<string, number>();
+/** What the Models API said about one model, remembered per base URL and model. */
+export interface AnthropicModelInfo { maxTokens: number; capabilities: unknown }
+const modelInfo = new Map<string, { info: AnthropicModelInfo; at: number; ttl: number }>();
+const MODEL_INFO_RETRY_MS = 5 * 60_000;
 
 // Only used when the Models API cannot be reached or does not report a
 // ceiling. Conservative on purpose: every current Anthropic model accepts at
@@ -651,17 +676,25 @@ const outputLimits = new Map<string, number>();
 const ANTHROPIC_FALLBACK_MAX_OUTPUT = 8192;
 
 /**
- * The model's own output ceiling, from `GET /v1/models/{id}`.
+ * The model's own output ceiling and capability tree, from `GET /v1/models/{id}`.
  *
  * `max_tokens` on that response is the output cap and `max_input_tokens` is
  * the context window — two different fields, and reading the wrong one would
- * ask for an output eight times the real ceiling.
+ * ask for an output eight times the real ceiling. `capabilities` says which
+ * thinking shapes and effort levels the model takes, which is how a model
+ * released after `ai/reasoning.ts` was written is still asked in a form it
+ * accepts rather than one guessed from its name.
+ *
+ * A success is remembered for good — a model's ceiling does not change. A
+ * failure is remembered for a few minutes, so one timeout does not pin the
+ * conservative fallback for the life of the process.
  */
-export async function anthropicOutputLimit(baseUrl: string, model: string, headers: Record<string, string>, trust: TlsTrust): Promise<number> {
+export async function anthropicModelInfo(baseUrl: string, model: string, headers: Record<string, string>, trust: TlsTrust): Promise<AnthropicModelInfo> {
   const key = `${normalizeBaseUrl(baseUrl)}|${model}`;
-  const known = outputLimits.get(key);
-  if (known !== undefined) return known;
-  let limit = ANTHROPIC_FALLBACK_MAX_OUTPUT;
+  const hit = modelInfo.get(key);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.info;
+  const info: AnthropicModelInfo = { maxTokens: ANTHROPIC_FALLBACK_MAX_OUTPUT, capabilities: null };
+  let ttl = MODEL_INFO_RETRY_MS;
   try {
     // The endpoint's own transport — its proxy rule and certificate trust —
     // exactly as every other call to this server does. A capability lookup is
@@ -669,20 +702,22 @@ export async function anthropicOutputLimit(baseUrl: string, model: string, heade
     // succeed by going direct.
     const res = await outboundFetch(`${baseUrl}/v1/models/${encodeURIComponent(model)}`, { headers, signal: AbortSignal.timeout(8000) }, trust);
     if (res.ok) {
-      const body = await res.json() as { max_tokens?: unknown };
-      if (typeof body.max_tokens === 'number' && body.max_tokens > 0) limit = body.max_tokens;
+      const body = await res.json() as { max_tokens?: unknown; capabilities?: unknown };
+      if (typeof body.max_tokens === 'number' && body.max_tokens > 0) info.maxTokens = body.max_tokens;
       else log.debug('the models API did not report an output ceiling; using the fallback', { model });
+      if (body.capabilities && typeof body.capabilities === 'object') info.capabilities = body.capabilities;
+      ttl = Infinity;
     }
   } catch (err) {
     // A model list that cannot be fetched is not a reason to fail the
     // generation — it is a reason to be conservative about its length.
     log.debug('could not read the model output ceiling; using the fallback', { model, err: String(err) });
   }
-  outputLimits.set(key, limit);
-  return limit;
+  modelInfo.set(key, { info, at: Date.now(), ttl });
+  return info;
 }
 
-export function forgetOutputLimits(): void { outputLimits.clear(); }
+export function forgetOutputLimits(): void { modelInfo.clear(); }
 
 /**
  * `max_tokens` for Anthropic, which requires one.
@@ -703,11 +738,13 @@ export function anthropicMaxTokens(reply: number, thinking: number, limit: numbe
  * that "uncapped" is the absence of the key rather than a value standing in
  * for it.
  */
-export function openAiMaxTokens(reply: number, thinking: number): { max_tokens?: number } {
+export function openAiMaxTokens(reply: number, thinking: number, baseUrl = ''): { max_tokens?: number; max_completion_tokens?: number } {
   // As with `num_predict`, this bounds the whole completion, so an uncapped
   // reply is an uncapped total and the key is simply absent.
   if (reply <= 0) return {};
-  return { max_tokens: reply + Math.max(0, thinking) };
+  // OpenAI itself refuses `max_tokens` on its reasoning models and wants the
+  // newer name; most other servers know only the older one.
+  return { [openAiMaxTokensField(baseUrl)]: reply + Math.max(0, thinking) };
 }
 
 // One model's answers, dropped. Deleting a model and pulling it again gives a
@@ -791,7 +828,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string> {
   // read `allowThinking` or `thinkEffort`. See the header of `ai/thinking.ts`:
   // this is what makes "every interaction honours the setting" a property of
   // the shape rather than of somebody having remembered.
-  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId);
+  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId, opts.consent.capability);
   if (!s.enabled) throw new Error('AI drafting is turned off in Settings → AI');
   const model = opts.model || s.model;
   const session = beginSession();
@@ -872,8 +909,9 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
       // Ollama takes a boolean or an effort level. The reply and the
       // reasoning share one `num_predict`, so a thinking model given only
       // the email's budget spends it all working out loud and returns
-      // nothing: reasoning gets its own allowance on top.
-      think: think ? s.thinkEffort : false,
+      // nothing: reasoning gets its own allowance on top. gpt-oss ignores
+      // `false`, so its least is sent instead — see `ollamaThink`.
+      think: think ? ollamaThink(s.thinkEffort, model) : ollamaThink('off', model),
       keep_alive: keepAliveValue(s.keepAlive),
       options: {
         num_ctx: ctx,
@@ -932,12 +970,19 @@ async function* ollamaStream(s: AiSettings, model: string, opts: ChatOptions, th
 
 async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
   const reply = opts.maxTokens ?? s.maxTokens;
-  const think = !opts.noThink && s.allowThinking;
   const { system, messages } = toAnthropicMessages(opts.messages);
   const headers = { 'Content-Type': 'application/json', ...(await providerHeaders(s)) };
   // Asked once per model and remembered: this API will not take a missing
-  // `max_tokens`, so "no ceiling" has to become the model's real ceiling.
-  const outputLimit = await anthropicOutputLimit(s.baseUrl, model, headers, transportFor(s));
+  // `max_tokens`, so "no ceiling" has to become the model's real ceiling —
+  // and the same answer says which thinking shapes the model accepts.
+  const info = await anthropicModelInfo(s.baseUrl, model, headers, transportFor(s));
+  // Adaptive + effort, a token budget, or no off switch at all, depending on
+  // the family — and whether temperature may ride along, which it may not
+  // while the model thinks. See `ai/reasoning.ts`.
+  const r = anthropicReasoning(model, levelOf(s, opts.noThink), {
+    capabilities: info.capabilities, maxTokens: info.maxTokens, takesSampling: anthropicTakesSampling(model),
+  });
+  const think = r.thinking;
   const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
     method: 'POST',
     headers,
@@ -953,24 +998,22 @@ async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions)
       // As on the other two providers, reasoning gets its own allowance on top
       // rather than eating the email's — but when either is uncapped there is
       // no sum to compute and the model's ceiling is what applies.
-      max_tokens: anthropicMaxTokens(reply, think ? s.thinkingBudget : 0, outputLimit),
-      // `budget_tokens` is a 400 on the current models; depth is `adaptive`
-      // plus an effort level now. `display: 'summarized'` is what makes the
-      // working-out non-empty — without it the composer's thinking panel
-      // would stay blank through a two-minute generation, which is the exact
-      // failure the setting's own comment above describes.
-      ...(think
-        ? { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: s.thinkEffort } }
-        // `{ type: 'disabled' }` is itself refused on the models that always
-        // think, so there the parameter is omitted. Not a silent failure to
-        // honour the setting: with no display asked for, the reasoning comes
-        // back empty and the draft arrives as it always did.
-        : /^claude-(fable|mythos)/i.test(model) ? {} : { thinking: { type: 'disabled' } }),
+      // A budget-only model (Haiku 4.5) refuses a budget that does not fit
+      // under max_tokens, so the budget sets a floor under the ceiling.
+      max_tokens: Math.max(anthropicMaxTokens(reply, think ? s.thinkingBudget : 0, info.maxTokens), r.minMaxTokens ?? 0),
+      // `budget_tokens` is a 400 on the current models and REQUIRED on Haiku
+      // 4.5; `disabled` is refused on the models that always think; 4.6 has
+      // no `xhigh`. `display: 'summarized'` is what makes the working-out
+      // non-empty — without it the composer's thinking panel would stay blank
+      // through a two-minute generation. All of that is `ai/reasoning.ts`.
+      ...r.body,
       // The tuning that crosses over, and only that. `top_k`, `min_p`,
       // `repeat_penalty`, `presence_penalty`, `frequency_penalty` and `seed`
       // have no equivalent here and an unknown parameter is a 400, so they
-      // are dropped rather than guessed at.
-      ...(anthropicTakesSampling(model) ? { temperature: opts.temperature ?? s.temperature, top_p: s.topP } : {}),
+      // are dropped rather than guessed at. `top_p` goes too: the current
+      // models refuse temperature and top_p together, and temperature is the
+      // one an admin is actually tuning.
+      ...(r.sampling ? { temperature: opts.temperature ?? s.temperature } : {}),
       ...(opts.stop?.length ? { stop_sequences: opts.stop } : {}),
     }),
     signal: opts.signal,
@@ -1027,30 +1070,39 @@ async function* anthropicStream(s: AiSettings, model: string, opts: ChatOptions)
 
 async function* openaiStream(s: AiSettings, model: string, opts: ChatOptions): AsyncGenerator<string> {
   const reply = opts.maxTokens ?? s.maxTokens;
+  const level = levelOf(s, opts.noThink);
+  // OpenAI's reasoning models refuse the sampling knobs with a 400 rather
+  // than ignoring them — temperature, top_p, the penalties and `stop` alike —
+  // so one tuning slider took out every draft on gpt-5. They go only where
+  // they are taken.
+  const tunable = openAiTakesSampling(model);
   const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
     body: JSON.stringify({
       model, messages: opts.messages, stream: true,
-      temperature: opts.temperature ?? s.temperature,
+      ...(tunable ? { temperature: opts.temperature ?? s.temperature } : {}),
       // As with Ollama, reasoning is spent out of the same ceiling as the
       // answer, so it gets its own allowance rather than eating the email —
       // and omitted entirely when either is uncapped, which is this API's own
       // way of saying "up to the model's limit". Sending a large number here
       // instead would be a guess that is wrong on every model but one.
-      ...(openAiMaxTokens(reply, !opts.noThink && s.allowThinking ? s.thinkingBudget : 0)),
-      top_p: s.topP,
+      ...(openAiMaxTokens(reply, level !== 'off' ? s.thinkingBudget : 0, s.baseUrl)),
+      ...(tunable ? { top_p: s.topP } : {}),
       // Not an OpenAI parameter, but vLLM, llama.cpp and LM Studio all take
       // it; sent only when set so a stricter endpoint never sees it.
-      ...(s.minP > 0 ? { min_p: s.minP } : {}),
+      ...(tunable && s.minP > 0 ? { min_p: s.minP } : {}),
       // The repetition controls this side understands. `repeat_penalty` and
       // `top_k` are deliberately not sent: real OpenAI answers 400 to an
       // unknown parameter, so the tuning that crosses over is this pair.
-      ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
-      ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
-      ...(opts.stop?.length ? { stop: opts.stop } : {}),
+      ...(tunable && s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
+      ...(tunable && s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
+      ...(tunable && opts.stop?.length ? { stop: opts.stop } : {}),
       ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
-      ...(!opts.noThink && s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
+      // In the spelling this host takes — OpenAI's per-model ladder, Groq's
+      // per-model set, OpenRouter's nesting, SiliconFlow's and Alibaba's
+      // switch and budget — and nothing at all where it would be refused.
+      ...openAiCompatReasoning(level, model, s.baseUrl, { stream: true }),
     }),
     signal: opts.signal,
     // This argument was missing, and its absence was invisible: the Admin →
@@ -1275,7 +1327,7 @@ export async function* agentStream(opts: AgentOptions): AsyncGenerator<AgentChun
   // where the latency/accuracy trade is felt most sharply — a person watching
   // a reply arrive notices seventy seconds of silence in a way that somebody
   // pressing "draft" and looking away does not.
-  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId);
+  const s = await effectiveSettings(await getAiSettings(), opts.consent.userId, opts.consent.capability);
   if (!s.enabled) throw new Error('The assistant is turned off in Admin → AI model');
   const model = s.model;
   const session = beginSession();
@@ -1420,7 +1472,7 @@ async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): A
       messages: toFlatMessages(messages, 'object'),
       ...(opts.tools.length ? { tools: openAiTools(opts.tools) } : {}),
       stream: true,
-      think: think ? s.thinkEffort : false,
+      think: think ? ollamaThink(s.thinkEffort, model) : ollamaThink('off', model),
       keep_alive: keepAliveValue(s.keepAlive),
       options: {
         num_ctx: ctx,
@@ -1455,6 +1507,8 @@ async function* ollamaAgent(s: AiSettings, model: string, opts: AgentOptions): A
 }
 
 async function* openaiAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
+  const level = levelOf(s);
+  const tunable = openAiTakesSampling(model);
   const res = await outboundFetch(`${s.baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await providerHeaders(s)) },
@@ -1463,13 +1517,14 @@ async function* openaiAgent(s: AiSettings, model: string, opts: AgentOptions): A
       messages: toFlatMessages(opts.messages),
       ...(opts.tools.length ? { tools: openAiTools(opts.tools), tool_choice: 'auto' } : {}),
       stream: true,
-      temperature: opts.temperature ?? s.temperature,
-      ...(openAiMaxTokens(s.maxTokens, s.allowThinking ? s.thinkingBudget : 0)),
-      top_p: s.topP,
-      ...(s.minP > 0 ? { min_p: s.minP } : {}),
-      ...(s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
-      ...(s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
-      ...(s.allowThinking ? { reasoning_effort: s.thinkEffort } : {}),
+      // The same rules as `openaiStream`: sampling only where it is taken,
+      // and reasoning in this host's own spelling.
+      ...(tunable ? { temperature: opts.temperature ?? s.temperature, top_p: s.topP } : {}),
+      ...(openAiMaxTokens(s.maxTokens, level !== 'off' ? s.thinkingBudget : 0, s.baseUrl)),
+      ...(tunable && s.minP > 0 ? { min_p: s.minP } : {}),
+      ...(tunable && s.presencePenalty ? { presence_penalty: s.presencePenalty } : {}),
+      ...(tunable && s.frequencyPenalty ? { frequency_penalty: s.frequencyPenalty } : {}),
+      ...openAiCompatReasoning(level, model, s.baseUrl, { stream: true }),
     }),
     signal: opts.signal,
   }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });
@@ -1505,10 +1560,16 @@ async function* openaiAgent(s: AiSettings, model: string, opts: AgentOptions): A
 }
 
 async function* anthropicAgent(s: AiSettings, model: string, opts: AgentOptions): AsyncGenerator<AgentChunk> {
-  const think = s.allowThinking;
   const { system, messages } = toAnthropicAgent(opts.messages);
   const headers = { 'Content-Type': 'application/json', ...(await providerHeaders(s)) };
-  const outputLimit = await anthropicOutputLimit(s.baseUrl, model, headers, transportFor(s));
+  const info = await anthropicModelInfo(s.baseUrl, model, headers, transportFor(s));
+  // `allowDisabled: false` because this is a tool loop: with thinking
+  // disabled the model sometimes writes a tool call into its visible text
+  // instead of a tool_use block, and the turn "succeeds" with nothing run.
+  const r = anthropicReasoning(model, levelOf(s), {
+    capabilities: info.capabilities, maxTokens: info.maxTokens, allowDisabled: false,
+    takesSampling: anthropicTakesSampling(model),
+  });
   const res = await outboundFetch(`${s.baseUrl}/v1/messages`, {
     method: 'POST',
     headers,
@@ -1518,11 +1579,9 @@ async function* anthropicAgent(s: AiSettings, model: string, opts: AgentOptions)
       ...(system ? { system } : {}),
       ...(opts.tools.length ? { tools: opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}),
       stream: true,
-      max_tokens: anthropicMaxTokens(s.maxTokens, think ? s.thinkingBudget : 0, outputLimit),
-      ...(think
-        ? { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: s.thinkEffort } }
-        : /^claude-(fable|mythos)/i.test(model) ? {} : { thinking: { type: 'disabled' } }),
-      ...(anthropicTakesSampling(model) ? { temperature: opts.temperature ?? s.temperature, top_p: s.topP } : {}),
+      max_tokens: Math.max(anthropicMaxTokens(s.maxTokens, r.thinking ? s.thinkingBudget : 0, info.maxTokens), r.minMaxTokens ?? 0),
+      ...r.body,
+      ...(r.sampling ? { temperature: opts.temperature ?? s.temperature } : {}),
     }),
     signal: opts.signal,
   }, transportFor(s)).catch((e) => { throw new Error(reachError(s, e)); });

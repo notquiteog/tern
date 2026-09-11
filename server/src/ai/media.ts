@@ -50,6 +50,7 @@
 // So the invariant survives intact and is narrower than its first wording: no
 // picture reaches a stranger without a human having seen it. What changed is
 // that "a human saw it" no longer implies "a composer made it".
+import { randomUUID } from 'node:crypto';
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
 import { assertCapability, type Capability } from '../services/capabilities.js';
@@ -61,10 +62,12 @@ import { endpointHeaders, notConfigured, transportFor, type ModelEndpoint } from
 const log = logger('media');
 
 /**
- * The two wire shapes that draw a picture. See `ApiShape` for why there are
- * two of them rather than one.
+ * The wire shapes that draw a picture. See `ApiShape` for why the two OpenAI
+ * ones are two rather than one. ComfyUI's is a queue instead of a request: a
+ * graph goes in, a job id comes out, and the picture is collected once the
+ * job says it is done — see `comfyGenerate`.
  */
-export type MediaShape = 'openai' | 'openai-chat';
+export type MediaShape = 'openai' | 'openai-chat' | 'comfyui';
 
 /** Video is only ever asked for over the path shape; see `startVideo`. */
 export type VideoShape = 'openai';
@@ -92,6 +95,13 @@ export interface MediaSettings {
   imageModel: string;
   /** `1024x1024`, or empty for whatever the host defaults to. */
   imageSize: string;
+  /**
+   * The graph ComfyUI runs, as its "Save (API format)" JSON with the prompt
+   * written `%prompt%` wherever it belongs. Empty means the built-in one —
+   * ComfyUI's own default text-to-image graph, which runs any SD 1.x or SDXL
+   * checkpoint with nothing but core nodes. Read only on the `comfyui` shape.
+   */
+  comfyWorkflow: string;
 
   // ---- The connection that films ----
   /** `same` takes the image connection whole — address, key, certificate rule and proxy. */
@@ -118,6 +128,7 @@ const DEFAULTS: MediaSettings = {
   useTor: false,
   imageModel: '',
   imageSize: '1024x1024',
+  comfyWorkflow: '',
   videoProvider: 'same',
   videoBaseUrl: '',
   videoApiKey: '',
@@ -438,6 +449,7 @@ export async function generateImage(
   const e = imageEndpoint(m);
   assertConfigured(e, 'images');
   if (!m.imageModel.trim()) throw new Error('No image model is named in Admin → Pictures and video.');
+  if (m.provider === 'comfyui') return comfyGenerate(e, m, prompt, opts);
 
   const path = m.provider === 'openai-chat' ? '/v1/chat/completions' : '/v1/images/generations';
   const res = await outboundFetch(`${e.baseUrl}${path}`, {
@@ -473,6 +485,193 @@ export async function generateImage(
     model: m.imageModel,
     revisedPrompt: reply.revisedPrompt,
   };
+}
+
+// ---------- ComfyUI ----------
+//
+// ComfyUI does not take a prompt. It takes a graph — nodes wired together,
+// with the prompt a string inside one of them — queues it, and hands back a
+// job id; the picture is collected from its history once the job says it is
+// done. So this is a small job runner rather than a request, and the graph is
+// either the admin's own (exported with "Save (API format)", the prompt
+// marked `%prompt%`) or the built-in one below.
+
+/**
+ * ComfyUI's own default text-to-image graph, in API format.
+ *
+ * Built in because it is the one graph that runs on any install: every node
+ * is a core node, and it takes any SD 1.x or SDXL checkpoint — which is what
+ * `imageModel` names on this shape. Anything fancier (FLUX's separate
+ * loaders, an upscaler, a LoRA) depends on what that particular ComfyUI has
+ * installed, which is exactly what the workflow field is for.
+ */
+export function defaultComfyGraph(): Record<string, unknown> {
+  return {
+    3: { class_type: 'KSampler', inputs: { seed: '%seed%', steps: 25, cfg: 7, sampler_name: 'euler', scheduler: 'normal', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] } },
+    4: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: '%model%' } },
+    5: { class_type: 'EmptyLatentImage', inputs: { width: '%width%', height: '%height%', batch_size: 1 } },
+    6: { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%', clip: ['4', 1] } },
+    7: { class_type: 'CLIPTextEncode', inputs: { text: '%negative%', clip: ['4', 1] } },
+    8: { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
+    9: { class_type: 'SaveImage', inputs: { filename_prefix: 'tern', images: ['8', 0] } },
+  };
+}
+
+const COMFY_TOKENS = ['prompt', 'negative', 'seed', 'width', 'height', 'model'] as const;
+type ComfyToken = (typeof COMFY_TOKENS)[number];
+
+/** `1024x768` → [1024, 768], rounded down to the multiple of 8 a latent needs. */
+export function comfySize(size: string): [number, number] {
+  const m = /^(\d{2,5})x(\d{2,5})$/.exec(String(size ?? '').trim());
+  const [w, h] = m ? [Number(m[1]), Number(m[2])] : [1024, 1024];
+  return [Math.max(64, w - (w % 8)), Math.max(64, h - (h % 8))];
+}
+
+/**
+ * The graph to queue — the admin's or the built-in one — with its tokens
+ * filled in.
+ *
+ * A token that is a whole value becomes a real number where one belongs:
+ * ComfyUI validates input types and refuses `"1024"` for a width. One inside a
+ * longer string is substituted as text, so `"%prompt%, film grain"` works.
+ */
+export function buildComfyGraph(workflow: string, values: Record<ComfyToken, string | number>): Record<string, unknown> {
+  const graph: unknown = workflow.trim() ? JSON.parse(workflow) : defaultComfyGraph();
+  const fill = (v: unknown): unknown => {
+    if (typeof v === 'string') {
+      const whole = /^%([a-z]+)%$/.exec(v);
+      if (whole && (COMFY_TOKENS as readonly string[]).includes(whole[1]!)) return values[whole[1] as ComfyToken];
+      return v.replace(/%([a-z]+)%/g, (all, k: string) => ((COMFY_TOKENS as readonly string[]).includes(k) ? String(values[k as ComfyToken]) : all));
+    }
+    if (Array.isArray(v)) return v.map(fill);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
+    return v;
+  };
+  return fill(graph) as Record<string, unknown>;
+}
+
+/**
+ * Why a pasted workflow will not run, or null when it will — checked when it
+ * is saved, so the failure is a sentence on the settings page rather than a
+ * refused job the first time somebody asks for a picture.
+ */
+export function comfyWorkflowProblem(text: string): string | null {
+  if (!text.trim()) return null;
+  let graph: unknown;
+  try { graph = JSON.parse(text); } catch { return 'That workflow is not JSON. Export it from ComfyUI with "Save (API format)".'; }
+  if (!graph || typeof graph !== 'object' || Array.isArray(graph)) return 'That workflow is not a ComfyUI graph.';
+  const nodes = Object.values(graph as Record<string, unknown>);
+  if (!nodes.length || !nodes.every((n) => Boolean(n) && typeof (n as { class_type?: unknown }).class_type === 'string')) {
+    // The editor's own "Save" writes a layout — nodes, links, positions —
+    // which ComfyUI's API refuses. Easy to confuse, so it is named.
+    return 'That is the editor’s layout rather than the graph. Use "Save (API format)" in ComfyUI.';
+  }
+  if (!text.includes('%prompt%')) return 'Put %prompt% where the prompt goes, or every picture will ignore what was asked for.';
+  return null;
+}
+
+export type ComfyOutcome =
+  | { state: 'running' }
+  | { state: 'error'; error: string }
+  | { state: 'done'; image: { filename: string; subfolder: string; type: string } | null };
+
+/**
+ * What one job's history entry says. ComfyUI only writes the entry once the
+ * job has run, so no entry means still queued or running; an entry with an
+ * `execution_error` carries the node's own exception, which is what an admin
+ * needs to see.
+ */
+export function readComfyHistory(entry: any): ComfyOutcome {
+  if (!entry || typeof entry !== 'object') return { state: 'running' };
+  const status = entry.status ?? {};
+  if (status.status_str === 'error') {
+    const reason = (Array.isArray(status.messages) ? status.messages : [])
+      .map((m: any) => (Array.isArray(m) && m[0] === 'execution_error' ? m[1]?.exception_message : null))
+      .find(Boolean);
+    return { state: 'error', error: String(reason || 'ComfyUI reported the job failed') };
+  }
+  const images = Object.values(entry.outputs ?? {}).flatMap((o: any) => (Array.isArray(o?.images) ? o.images : []));
+  // `output` is SaveImage's; `temp` is a preview node's, kept only as a fallback.
+  const pick = images.find((i: any) => i?.type === 'output') ?? images[0];
+  if (!pick && !status.completed) return { state: 'running' };
+  return {
+    state: 'done',
+    image: pick ? { filename: String(pick.filename), subfolder: String(pick.subfolder ?? ''), type: String(pick.type ?? 'output') } : null,
+  };
+}
+
+/** ComfyUI's validation reply in one sentence: which node refused what. */
+export function comfyRefusal(body: string): string {
+  try {
+    const j = JSON.parse(body);
+    const node = Object.values(j?.node_errors ?? {})[0] as any;
+    const first = node?.errors?.[0];
+    if (first) return `${node.class_type ?? 'a node'}: ${first.message}${first.details ? ` — ${first.details}` : ''}`;
+    if (j?.error?.message) return String(j.error.message);
+  } catch { /* not JSON */ }
+  return body.slice(0, 200) || 'no reason given';
+}
+
+/** How often ComfyUI is asked about the job, and when to stop asking. */
+const COMFY_POLL_MS = 1_500;
+const COMFY_MAX_WAIT_MS = 10 * 60_000;
+
+async function comfyGenerate(e: ModelEndpoint, m: MediaSettings, prompt: string, opts: { size?: string; signal?: AbortSignal }): Promise<GeneratedMedia> {
+  const [width, height] = comfySize(opts.size || m.imageSize || '');
+  const graph = buildComfyGraph(m.comfyWorkflow ?? '', {
+    prompt, negative: '', model: m.imageModel.trim(), width, height, seed: Math.floor(Math.random() * 2 ** 32),
+  });
+  const queued = await outboundFetch(`${e.baseUrl}/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...endpointHeaders(e) },
+    body: JSON.stringify({ prompt: graph, client_id: `tern-${randomUUID()}` }),
+    signal: opts.signal,
+  }, transportFor(e)).catch((err) => { throw new Error(reachError(e, err)); });
+  if (!queued.ok) {
+    // The validation reply names the node and the input it refused — usually
+    // a checkpoint that is not on that machine — which is the fix.
+    throw new Error(`ComfyUI refused the job (HTTP ${queued.status}): ${comfyRefusal(await queued.text().catch(() => ''))}`);
+  }
+  const id = String(((await queued.json().catch(() => null)) as { prompt_id?: unknown } | null)?.prompt_id ?? '');
+  if (!id) throw new Error('ComfyUI accepted the job but gave it no id.');
+
+  // `/history/{id}` is the obvious way to ask about one job, and perch's
+  // allowlist matches exact paths, so through perch it is refused. Bare
+  // `/history` returns the recent jobs keyed by id; it is used from the first
+  // time the precise path is refused, and works on both.
+  let bare = false;
+  const deadline = Date.now() + COMFY_MAX_WAIT_MS;
+  for (;;) {
+    if (opts.signal?.aborted) throw new Error('The picture was cancelled.');
+    if (Date.now() > deadline) {
+      throw new Error(`ComfyUI had not finished after ${COMFY_MAX_WAIT_MS / 60_000} minutes. Job ${id} may still finish there.`);
+    }
+    await sleep(COMFY_POLL_MS, opts.signal ?? new AbortController().signal);
+    const res = await outboundFetch(bare ? `${e.baseUrl}/history?max_items=64` : `${e.baseUrl}/history/${encodeURIComponent(id)}`, {
+      headers: endpointHeaders(e), signal: opts.signal,
+    }, transportFor(e)).catch((err) => { throw new Error(reachError(e, err)); });
+    if (!bare && (res.status === 404 || res.status === 403)) { bare = true; continue; }
+    if (!res.ok) throw new Error(`ComfyUI answered HTTP ${res.status} while the picture was being made.`);
+    const outcome = readComfyHistory(((await res.json().catch(() => null)) as Record<string, unknown> | null)?.[id]);
+    if (outcome.state === 'running') continue;
+    if (outcome.state === 'error') throw new Error(`ComfyUI could not make that picture: ${outcome.error}`);
+    if (!outcome.image) throw new Error('ComfyUI finished the job without saving a picture. The workflow needs a SaveImage node.');
+
+    const q = new URLSearchParams(outcome.image);
+    const file = await outboundFetch(`${e.baseUrl}/view?${q}`, { headers: endpointHeaders(e), signal: opts.signal }, transportFor(e))
+      .catch((err) => { throw new Error(reachError(e, err)); });
+    if (!file.ok) throw new Error(`ComfyUI made the picture but would not hand it over (HTTP ${file.status}).`);
+    const data = await readAllBytes(file);
+    const contentType = sniffMediaType(data) ?? 'application/octet-stream';
+    if (!contentType.startsWith('image/')) throw new Error('ComfyUI sent back something that is not a picture.');
+    log.info('image generated', { model: m.imageModel, bytes: data.length, type: contentType, via: 'comfyui' });
+    return {
+      data,
+      contentType,
+      filename: `generated.${contentType.split('/')[1]!.replace('jpeg', 'jpg')}`,
+      model: m.imageModel,
+    };
+  }
 }
 
 // ---------- Filming ----------
@@ -724,6 +923,17 @@ export interface MediaHealth { ok: boolean; error?: string; models?: string[] }
 export async function mediaHealth(e: ModelEndpoint): Promise<MediaHealth> {
   if (!e.baseUrl) return { ok: false, error: notConfigured(e) };
   try {
+    if (e.provider === 'comfyui') {
+      // No /v1/models here. `/system_stats` answers on every build, and the
+      // checkpoint list is what an admin is choosing a model from.
+      const res = await outboundFetch(`${e.baseUrl}/system_stats`, { headers: endpointHeaders(e), signal: AbortSignal.timeout(8000) }, transportFor(e));
+      if (res.status === 401 || res.status === 403) return { ok: false, error: `That host refused the key (HTTP ${res.status})` };
+      if (!res.ok) return { ok: false, error: `That host answered HTTP ${res.status}` };
+      const info = await outboundFetch(`${e.baseUrl}/object_info/CheckpointLoaderSimple`, { headers: endpointHeaders(e), signal: AbortSignal.timeout(8000) }, transportFor(e)).catch(() => null);
+      const j: any = info?.ok ? await info.json().catch(() => null) : null;
+      const names = j?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
+      return { ok: true, models: Array.isArray(names) ? names.map(String).slice(0, 200) : undefined };
+    }
     const res = await outboundFetch(`${e.baseUrl}/v1/models`, {
       headers: endpointHeaders(e),
       signal: AbortSignal.timeout(8000),

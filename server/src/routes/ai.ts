@@ -6,14 +6,14 @@ import { badRequest, forbidden, HttpError, notFound } from '../errors.js';
 import { chatStream, checkProvider, deleteModel, embedIdentity, forgetModelCapabilities, getAiSettings, isValidKeepAlive, listModels, liveModels, loadedModels, modelCanThink, modelKvBytesPerToken, ollamaHealth, pullModel, releaseReplacedModel, saveAiSettings, unloadModel, aiDefaults, type AiSettings } from '../ai/llm.js';
 import { cancelPull, listPulls, startPull, watchPull, type PullView } from '../ai/pulls.js';
 import { slotAdvice, slotPlan, slotStats } from '../ai/slots.js';
-import { mayChooseThinking, saveThinkingPrefs, thinkingView } from '../ai/thinking.js';
+import { mayChooseThinking, saveThinkingPrefs, thinkingSurfaces, thinkingView } from '../ai/thinking.js';
 import { hostMemory } from '../ai/memory.js';
 import { createPreset, deletePreset, listPresets, updatePreset, PRESET_FIELDS } from '../ai/presets.js';
 import { buildMessages, finalizeOutput, modeTuning, threadBudgetChars, writeDate, DEFAULT_SYSTEM_PROMPT, type DraftInput } from '../ai/prompts.js';
 import { CURATED_MODELS, EMBED_MODELS, MODEL_TIERS, recommendModel } from '../ai/models.js';
 import { EMBED_CATALOGUE, PROVIDER_PRESETS, presetsForSlot } from '../ai/providers.js';
 import {
-  generateImage, getMediaSettings, imageEndpoint, isValidSize, mediaDefaults, mediaHealth,
+  comfyWorkflowProblem, generateImage, getMediaSettings, imageEndpoint, isValidSize, mediaDefaults, mediaHealth,
   saveMediaSettings, startVideo, videoEndpoint, cancelVideoJob, getVideoJob, listVideoJobs,
   watchVideoJob, type DeliveredUpload, type GeneratedMedia, type MediaSettings,
 } from '../ai/media.js';
@@ -26,7 +26,7 @@ import { rateLimit } from '../util/rateLimit.js';
 import { logger } from '../log.js';
 import { threadForDraft } from '../services/draftThread.js';
 import { cachedSummaries, generateSummary, MAX_PER_REQUEST } from '../services/summaries.js';
-import { adminEnabled, requireCapability } from '../services/capabilities.js';
+import { adminEnabled, requireCapability, CAPABILITIES } from '../services/capabilities.js';
 import { availabilityFor } from '../services/calendar/index.js';
 import { indexStatus, invalidateVectorsFrom, resetIndex, sweepOrphanedCollections } from '../services/semantic.js';
 import { powGuard } from '../services/workGuard.js';
@@ -105,6 +105,9 @@ aiRouter.get('/status', async (req, res) => {
     embedCatalogue: EMBED_CATALOGUE,
     modelInstalled,
     modelCanThink: canThink,
+    // The features an admin can keep on the install's reasoning setting
+    // whoever they run for — the WHERE half of the personal-choice gate.
+    thinkingSurfaces: thinkingSurfaces(),
     recommended: recommendModel(config.totalMemBytes),
     tiers: MODEL_TIERS,
     curated: CURATED_MODELS,
@@ -146,7 +149,7 @@ aiRouter.get('/thinking', async (req, res) => {
 aiRouter.put('/thinking', async (req, res) => {
   const b = parse(z.object({
     thinking: z.enum(['default', 'off', 'on']).optional(),
-    effort: z.enum(['default', 'low', 'medium', 'high']).optional(),
+    effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   }), req.body);
   const s = await getAiSettings();
   // Checked here and not only in the browser. A person who could still POST
@@ -245,7 +248,7 @@ const TUNING_SHAPE = {
   // number rather than a guess made here.
   maxTokens: z.number().int().min(0).optional(),
   allowThinking: z.boolean().optional(),
-  thinkEffort: z.enum(['low', 'medium', 'high']).optional(),
+  thinkEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   // Same, and this one was a live inconsistency: the default was 16000 and
   // this rejected anything above 8192.
   thinkingBudget: z.number().int().min(0).optional(),
@@ -296,6 +299,10 @@ aiRouter.put('/settings', requireAdmin, async (req, res) => {
     // Deliberately not in TUNING_SHAPE and not a preset field: a preset is a
     // set of sampling values for a model, and this is a policy about people.
     userThinking: z.boolean().optional(),
+    // And WHERE a personal choice counts: features listed here always run at
+    // the install's setting. Unknown ids are refused rather than stored, so a
+    // typo cannot silently leave a feature on personal settings.
+    userThinkingExcept: z.array(z.enum(CAPABILITIES)).max(CAPABILITIES.length).optional(),
     concurrency: z.boolean().optional() }), req.body);
   // Caught here rather than at the model: Ollama refuses a bare number as a
   // duration, so "-1" has to be recognised as seconds before it is stored.
@@ -598,8 +605,12 @@ aiRouter.get('/media', requireAdmin, async (_req, res) => {
 const mediaBody = z.object({
   images: z.boolean().optional(),
   videos: z.boolean().optional(),
-  provider: z.enum(['openai', 'openai-chat']).optional(),
+  provider: z.enum(['openai', 'openai-chat', 'comfyui']).optional(),
   baseUrl: z.string().url().max(300).refine(httpUrl, 'The address must start with http:// or https://').or(z.literal('')).optional(),
+  // ComfyUI's graph, when not the built-in one. Checked for shape in the
+  // route, so a pasted editor layout is refused here rather than at the first
+  // picture somebody asks for.
+  comfyWorkflow: z.string().max(500_000).optional(),
   // Blank leaves the stored key alone; clearing one is asking for it to be
   // cleared, which is what `null` says here.
   apiKey: z.string().max(500).nullable().optional(),
@@ -628,6 +639,10 @@ function keyPatch(patch: Record<string, unknown>, field: string, value: string |
 
 aiRouter.put('/media', requireAdmin, async (req, res) => {
   const b = parse(mediaBody, req.body);
+  if (b.comfyWorkflow !== undefined) {
+    const problem = comfyWorkflowProblem(b.comfyWorkflow);
+    if (problem) throw badRequest(problem);
+  }
   const patch: Partial<MediaSettings> = { ...b, apiKey: undefined, videoApiKey: undefined };
   keyPatch(patch as Record<string, unknown>, 'apiKey', b.apiKey);
   keyPatch(patch as Record<string, unknown>, 'videoApiKey', b.videoApiKey);

@@ -148,6 +148,57 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     note: 'Pay per request rather than per month, and it takes cryptocurrency — worth knowing for an install that would rather not put a card on file to draft email, and the one host here where that pairs sensibly with reaching it over Tor.',
   },
   {
+    id: 'siliconflow',
+    label: 'SiliconFlow',
+    shape: 'openai',
+    baseUrl: 'https://api.siliconflow.com/v1',
+    // Drafting and embedding only. Its picture endpoint answers `{images}`
+    // rather than OpenAI's `{data}`, which is a reply Tern does not parse, so
+    // offering it for pictures would be a choice that cannot work.
+    slots: ['llm', 'embed'],
+    key: 'required',
+    note: 'Open-weight models hosted — Qwen3, DeepSeek, GLM, Kimi — and the Qwen3 embedders at full width. Reasoning here is a switch and a token budget rather than a level; Tern translates. A mainland-China account uses https://api.siliconflow.cn/v1, and its keys are not accepted on the .com site.',
+  },
+  {
+    id: 'alibaba',
+    label: 'Alibaba Cloud (Qwen)',
+    shape: 'openai',
+    // Model Studio's OpenAI-compatible mode. The console hands out
+    // per-workspace addresses under maas.aliyuncs.com now; the regional ones
+    // still answer, and either kind works here.
+    baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    slots: ['llm', 'embed'],
+    key: 'required',
+    note: 'Qwen from the people who train it, and text-embedding-v4 for meaning search. Keys are per region: this is Singapore; Virginia is https://dashscope-us.aliyuncs.com/compatible-mode/v1 and Beijing https://dashscope.aliyuncs.com/compatible-mode/v1, and a workspace address from the console works in place of any of them.',
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    shape: 'openai',
+    baseUrl: 'https://api.deepseek.com/v1',
+    slots: ['llm'],
+    key: 'required',
+    note: 'DeepSeek’s own API. It reasons by model rather than by setting — deepseek-reasoner thinks, deepseek-chat does not — so the reasoning setting decides only whether the working-out is shown.',
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    shape: 'openai',
+    baseUrl: 'https://api.mistral.ai/v1',
+    slots: ['llm', 'embed'],
+    key: 'required',
+    note: 'Mistral and Magistral for drafting, mistral-embed for meaning search, on one key.',
+  },
+  {
+    id: 'xai',
+    label: 'xAI',
+    shape: 'openai',
+    baseUrl: 'https://api.x.ai/v1',
+    slots: ['llm', 'image'],
+    key: 'required',
+    note: 'Grok for drafting, and its image model on the OpenAI-shaped pictures path.',
+  },
+  {
     id: 'google',
     label: 'Google (Gemini)',
     // Drafting goes through Google's OpenAI-compatible endpoint rather than
@@ -188,6 +239,49 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     slots: ['embed'],
     key: 'required',
     note: 'Retrieval embeddings, and the only host here that is told whether it is embedding a search or a message.',
+  },
+  {
+    id: 'cohere',
+    label: 'Cohere (embeddings)',
+    // Cohere's compatibility endpoint, which speaks the OpenAI embeddings shape.
+    shape: 'openai',
+    baseUrl: 'https://api.cohere.ai/compatibility/v1',
+    slots: ['embed'],
+    key: 'required',
+    note: 'Embed v4 through Cohere’s OpenAI-compatible endpoint — multilingual, with a window long enough for a whole thread.',
+  },
+  {
+    id: 'jina',
+    label: 'Jina AI',
+    shape: 'openai',
+    baseUrl: 'https://api.jina.ai/v1',
+    slots: ['embed'],
+    key: 'required',
+    note: 'Multilingual retrieval embeddings in the OpenAI shape.',
+  },
+  {
+    id: 'whispercpp',
+    label: 'whisper.cpp',
+    shape: 'openai',
+    // compose.voice.yml's container is reached through WHISPER_URL; this is
+    // for one running anywhere else. A whisper.cpp started without
+    // `--inference-path` answers on `/inference` instead of the OpenAI path,
+    // which `services/voice.ts` tries when the OpenAI path is not there.
+    baseUrl: 'http://127.0.0.1:8080',
+    slots: ['stt'],
+    key: 'none',
+    note: 'A whisper.cpp server on this box or another. It is started with one model and ignores the model field, so the name below is only a label.',
+  },
+  {
+    id: 'comfyui',
+    label: 'ComfyUI',
+    shape: 'comfyui',
+    // ComfyUI's own default port. A perch host serves one on the same port
+    // behind its token, which is why the key is optional rather than absent.
+    baseUrl: 'http://127.0.0.1:8188',
+    slots: ['image'],
+    key: 'none',
+    note: 'A ComfyUI of your own — on this box, across the LAN or behind perch. The model is a checkpoint file on that machine, and a workflow exported from ComfyUI can replace the built-in text-to-image graph.',
   },
 ];
 
@@ -282,7 +376,7 @@ export const EMBED_CATALOGUE: EmbedCatalogueEntry[] = [
     name: 'bge-m3',
     label: 'BGE-M3',
     shapes: ['ollama', 'openai'],
-    alternateNames: ['BAAI/bge-m3', 'baai/bge-m3'],
+    alternateNames: ['BAAI/bge-m3', 'baai/bge-m3', 'Pro/BAAI/bge-m3'],
     dims: 1024,
     contextTokens: 8192,
     note: 'Multilingual retrieval over a hundred languages, and a long window for its size. The usual choice for a mailbox that is not mostly English but has no GPU to give Qwen3.',
@@ -342,9 +436,42 @@ export const EMBED_CATALOGUE: EmbedCatalogueEntry[] = [
     note: 'A fifth of the price of the large one and most of the quality. The right first choice on OpenAI.',
   },
   {
+    name: 'text-embedding-v4',
+    label: 'Alibaba text-embedding-v4',
+    shapes: ['openai'],
+    dims: 1024,
+    contextTokens: 8192,
+    note: 'Qwen3-Embedding behind Alibaba Cloud’s API. 1024 wide by default, and it will answer anywhere from 64 to 2048 if asked.',
+  },
+  {
+    name: 'mistral-embed',
+    label: 'Mistral Embed',
+    shapes: ['openai'],
+    dims: 1024,
+    contextTokens: 8192,
+    note: 'Mistral’s general-purpose embedder, on the same key as its drafting models.',
+  },
+  {
+    name: 'embed-v4.0',
+    label: 'Cohere Embed v4',
+    shapes: ['openai'],
+    dims: 1536,
+    contextTokens: 128000,
+    note: 'Multilingual, and a window long enough that a whole thread is one vector. 1536 wide by default.',
+  },
+  {
+    name: 'jina-embeddings-v3',
+    label: 'Jina Embeddings v3',
+    shapes: ['openai'],
+    dims: 1024,
+    contextTokens: 8192,
+    note: 'Multilingual retrieval, Matryoshka-trained down to 32.',
+  },
+  {
     name: 'gemini-embedding-2',
     label: 'Gemini Embedding 2',
     shapes: ['gemini'],
+    alternateNames: ['gemini-embedding-2-preview'],
     dims: 3072,
     contextTokens: 8192,
     note: 'Google’s multimodal embedder. Unlike the 001 generation it takes no task type at all, so a search is marked as one by instructing it in the text — which Tern does.',
@@ -356,6 +483,30 @@ export const EMBED_CATALOGUE: EmbedCatalogueEntry[] = [
     dims: 1024,
     contextTokens: 32000,
     note: 'Built for retrieval rather than general similarity, and told on every call whether it is embedding a search or a message. 1024 wide by default; it will return 256, 512 or 2048 if asked.',
+  },
+  {
+    name: 'voyage-3.5',
+    label: 'Voyage voyage-3.5',
+    shapes: ['voyage'],
+    dims: 1024,
+    contextTokens: 32000,
+    note: 'Most of voyage-3-large’s quality at a lower price, with the same search/message distinction.',
+  },
+  {
+    name: 'voyage-3.5-lite',
+    label: 'Voyage voyage-3.5-lite',
+    shapes: ['voyage'],
+    dims: 1024,
+    contextTokens: 32000,
+    note: 'The cheapest Voyage embedder, for a large mailbox re-indexed often.',
+  },
+  {
+    name: 'gemini-embedding-001',
+    label: 'Gemini Embedding 001',
+    shapes: ['gemini'],
+    dims: 3072,
+    contextTokens: 2048,
+    note: 'The previous Gemini embedder, text only. Kept because an index built with it stays searchable only with it.',
   },
 ];
 

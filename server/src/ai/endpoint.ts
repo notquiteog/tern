@@ -53,8 +53,12 @@ import { torAgent } from '../util/tor.js';
  * bearer token, different endpoint and different reply — so a host that draws
  * pictures has to be told which of the two it is, and there is no way to
  * infer it from the address.
+ *
+ * `comfyui` draws too, and is a shape for the opposite reason: it is not a
+ * request at all. It takes a whole graph, queues it and answers with a job id,
+ * and the picture is collected from its history afterwards — see `ai/media.ts`.
  */
-export type ApiShape = 'ollama' | 'openai' | 'openai-chat' | 'anthropic' | 'gemini' | 'voyage';
+export type ApiShape = 'ollama' | 'openai' | 'openai-chat' | 'anthropic' | 'gemini' | 'voyage' | 'comfyui';
 
 /** Everything needed to reach one model server, and nothing about the model. */
 export interface ModelEndpoint {

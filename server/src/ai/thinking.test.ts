@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
-import { resolveThinking, THINKING_DEFAULTS, type ThinkingPrefs } from './thinking.js';
+import { appliesHere, resolveThinking, THINKING_DEFAULTS, THINKING_SURFACES, type ThinkingPrefs } from './thinking.js';
 import { aiDefaults, type AiSettings } from './llm.js';
+import { CAPABILITY_META } from '../services/capabilities.js';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 function read(rel: string): string {
@@ -81,7 +82,59 @@ test('nothing else about the settings is disturbed', () => {
   assert.equal(out.model, 'x');
 });
 
+test('the five levels survive resolution, including the two frontier ones', () => {
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+    const out = resolveThinking(install({ allowThinking: true, thinkEffort: 'low' }), prefs({ effort }), true);
+    assert.equal(out.thinkEffort, effort, effort);
+  }
+});
+
+// ---------- Where a choice counts ----------
+
+test('an excepted feature runs at the install setting, whoever it runs for', () => {
+  // The WHERE half of the gate. Positive control in the same test: the same
+  // person, the same preference, on a feature that is NOT excepted, is
+  // honoured — so "not honoured" cannot be what a dead check looks like.
+  const s = install({ userThinking: true, userThinkingExcept: ['ai.responders'] });
+  assert.equal(appliesHere(s, 'ai.responders'), false);
+  assert.equal(appliesHere(s, 'ai.compose'), true);
+  const chosen = prefs({ thinking: 'on', effort: 'max' });
+  assert.equal(resolveThinking(s, chosen, appliesHere(s, 'ai.responders')).allowThinking, false);
+  assert.equal(resolveThinking(s, chosen, appliesHere(s, 'ai.compose')).allowThinking, true);
+});
+
+test('no exceptions — the default — means everywhere, and an unnamed caller is everywhere', () => {
+  const s = install({ userThinking: true });
+  assert.deepEqual(s.userThinkingExcept, [], 'the default must be empty, or an upgrade changes behaviour');
+  for (const cap of THINKING_SURFACES) assert.equal(appliesHere(s, cap), true, cap);
+  assert.equal(appliesHere(install({ userThinkingExcept: ['ai.compose'] })), true);
+});
+
+test('the surfaces offered are exactly the features that write with a model', () => {
+  // The list is derived from `usesAi`, so this checks the derivation: a floor
+  // so it cannot silently empty, writers that must be there (the positive
+  // control), and model-less or non-writing features that must not — the
+  // first hand-written list named four of those, and this is what caught it.
+  assert.ok(THINKING_SURFACES.length >= 6, 'the surface list has shrunk to almost nothing');
+  for (const cap of ['ai.compose', 'ai.assistant', 'ai.responders', 'brief'] as const) {
+    assert.ok(THINKING_SURFACES.includes(cap), `${cap} writes with the model and is missing`);
+  }
+  for (const cap of THINKING_SURFACES) assert.equal(CAPABILITY_META[cap].usesAi, true, cap);
+  for (const cap of ['semantic', 'ai.media', 'voice', 'triage', 'calendar', 'attachments'] as const) {
+    assert.ok(!THINKING_SURFACES.includes(cap), `${cap} does not write with a model and must not be offered`);
+  }
+});
+
 // ---------- The wiring ----------
+
+test('both entry points tell the resolver which feature is asking', () => {
+  // Without the capability the WHERE half is inert: `appliesHere` treats an
+  // unnamed caller as everywhere, so an exception an admin set would be shown
+  // as in force and never applied.
+  const llm = read('llm.ts');
+  const calls = [...llm.matchAll(/effectiveSettings\(await getAiSettings\(\), opts\.consent\.userId, opts\.consent\.capability\)/g)].length;
+  assert.equal(calls, 2, `expected both entry points to pass the capability, found ${calls}`);
+});
 
 test('every path to a model resolves the person’s setting first', () => {
   // This is the check the feature actually rests on.

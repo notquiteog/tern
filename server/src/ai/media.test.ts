@@ -9,12 +9,80 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  imageRequestBody, isValidSize, mediaDefaults, readImageReply, readVideoStatus,
-  sniffMediaType, takesResponseFormat, type MediaSettings,
+  buildComfyGraph, comfyRefusal, comfySize, comfyWorkflowProblem, imageRequestBody, isValidSize,
+  mediaDefaults, readComfyHistory, readImageReply, readVideoStatus, sniffMediaType, takesResponseFormat,
+  type MediaSettings,
 } from './media.js';
 
 const settings = (over: Partial<MediaSettings> = {}): MediaSettings => ({
   ...mediaDefaults(), baseUrl: 'https://draw.example', imageModel: 'dall-e-3', ...over,
+});
+
+// ---------- ComfyUI ----------
+
+const values = { prompt: 'a heron', negative: '', model: 'sd_xl_base_1.0.safetensors', width: 1024, height: 768, seed: 42 };
+
+test('the built-in graph fills its tokens, with real numbers where numbers belong', () => {
+  const g: any = buildComfyGraph('', values);
+  assert.equal(g['4'].inputs.ckpt_name, 'sd_xl_base_1.0.safetensors');
+  assert.equal(g['6'].inputs.text, 'a heron');
+  // ComfyUI validates input types: the string "1024" for a width is refused.
+  assert.equal(g['5'].inputs.width, 1024);
+  assert.equal(g['5'].inputs.height, 768);
+  assert.equal(g['3'].inputs.seed, 42);
+  assert.ok(!JSON.stringify(g).includes('%'), 'a token survived into the graph that would be queued');
+});
+
+test('an admin’s workflow keeps its own nodes and fills tokens inside longer strings', () => {
+  const wf = JSON.stringify({
+    1: { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%, film grain' } },
+    2: { class_type: 'KSampler', inputs: { seed: '%seed%', steps: 30, note: '%unknown%' } },
+  });
+  const g: any = buildComfyGraph(wf, { ...values, seed: 7 });
+  assert.equal(g['1'].inputs.text, 'a heron, film grain');
+  assert.equal(g['2'].inputs.seed, 7);
+  assert.equal(g['2'].inputs.steps, 30);
+  assert.equal(g['2'].inputs.note, '%unknown%', 'a token this does not know is left alone rather than blanked');
+});
+
+test('a size becomes latent dimensions, and nonsense falls back rather than failing', () => {
+  assert.deepEqual(comfySize('1024x768'), [1024, 768]);
+  assert.deepEqual(comfySize('1023x769'), [1016, 768]);
+  assert.deepEqual(comfySize(''), [1024, 1024]);
+});
+
+test('a pasted workflow is refused when it could not run, and accepted when it could', () => {
+  assert.equal(comfyWorkflowProblem(''), null, 'empty means the built-in graph');
+  assert.match(comfyWorkflowProblem('{not json') ?? '', /not JSON/);
+  assert.match(comfyWorkflowProblem(JSON.stringify({ nodes: [], links: [] })) ?? '', /layout/);
+  assert.match(comfyWorkflowProblem(JSON.stringify({ 1: { class_type: 'KSampler', inputs: {} } })) ?? '', /%prompt%/);
+  assert.equal(comfyWorkflowProblem(JSON.stringify({ 1: { class_type: 'CLIPTextEncode', inputs: { text: '%prompt%' } } })), null);
+});
+
+test('a job is running until its history says otherwise, and a failure carries the node’s own reason', () => {
+  assert.deepEqual(readComfyHistory(undefined), { state: 'running' });
+  assert.deepEqual(
+    readComfyHistory({ status: { status_str: 'success', completed: true }, outputs: { 9: { images: [{ filename: 'tern_0001.png', subfolder: '', type: 'output' }] } } }),
+    { state: 'done', image: { filename: 'tern_0001.png', subfolder: '', type: 'output' } },
+  );
+  assert.deepEqual(
+    readComfyHistory({ status: { status_str: 'error', completed: false, messages: [['execution_error', { exception_message: 'CUDA out of memory' }]] } }),
+    { state: 'error', error: 'CUDA out of memory' },
+  );
+  assert.deepEqual(
+    readComfyHistory({ status: { status_str: 'success', completed: true }, outputs: {} }),
+    { state: 'done', image: null },
+    'finished with no picture is not "still running" — that would poll until the deadline',
+  );
+});
+
+test('a refused job says which node refused what', () => {
+  const body = JSON.stringify({
+    error: { message: 'Prompt outputs failed validation' },
+    node_errors: { 4: { class_type: 'CheckpointLoaderSimple', errors: [{ message: 'Value not in list', details: "ckpt_name: 'nope.safetensors'" }] } },
+  });
+  assert.equal(comfyRefusal(body), "CheckpointLoaderSimple: Value not in list — ckpt_name: 'nope.safetensors'");
+  assert.equal(comfyRefusal('plain text'), 'plain text');
 });
 
 // ---------- What goes out ----------

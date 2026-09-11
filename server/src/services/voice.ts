@@ -496,12 +496,24 @@ export async function transcribe(userId: number, audio: Buffer, contentType: str
     // remote server that hosts several needs to be told which.
     if (cfg.model) form.append('model', cfg.model);
 
-    const res = await outboundFetch(`${cfg.baseUrl}/v1/audio/transcriptions`, {
+    const send = (path: string) => outboundFetch(`${cfg.baseUrl}${path}`, {
       method: 'POST',
       headers: voiceAuthHeaders(cfg),
       body: form,
       signal: opts.signal ?? AbortSignal.timeout(180_000),
     }, transportFor(sttEndpoint(cfg)));
+    let res = await send('/v1/audio/transcriptions');
+    // whisper.cpp's own server answers on `/inference` unless it was started
+    // with `--inference-path`. The bundled container is, so the OpenAI path is
+    // tried first; one started from a release binary on another box is not,
+    // and "the transcriber answered HTTP 404" about a server that works would
+    // send an admin to fix the one thing that is fine. Same form, same fields:
+    // `/inference` takes `file`, `response_format` and `temperature` exactly
+    // as the OpenAI path does, and answers `{ text }` the same way.
+    if (res.status === 404) {
+      await res.text().catch(() => '');
+      res = await send('/inference');
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw badRequest(`The transcriber answered HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);

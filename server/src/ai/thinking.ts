@@ -26,6 +26,10 @@
 //   3. The **person** may then choose `off`, `on`, or a level — but only while
 //      (2) is on. `default` means "whatever the install says", and is what
 //      every account holds until somebody changes it.
+//   4. And the admin decides WHERE a choice counts: `userThinkingExcept` lists
+//      features that always run at the install's setting whoever they run
+//      for — the automatic replies, say, which run unattended on a shared
+//      model. (2) is WHO; this is WHERE; they compose as AND.
 //
 // The gate is re-read on every generation rather than only when a preference
 // is saved, and that is the load-bearing part. An admin who turns `userThinking`
@@ -50,13 +54,15 @@
 // inherits the behaviour without knowing this file exists.
 import { one, query } from '../db.js';
 import { logger } from '../log.js';
+import { CAPABILITIES, CAPABILITY_META, type Capability } from '../services/capabilities.js';
 import type { AiSettings } from './llm.js';
+import { isEffort, type ThinkEffort } from './reasoning.js';
 
 const log = logger('thinking');
 
 /** What a person may choose. `default` defers to the install. */
 export type ThinkingChoice = 'default' | 'off' | 'on';
-export type EffortChoice = 'default' | 'low' | 'medium' | 'high';
+export type EffortChoice = 'default' | ThinkEffort;
 
 export interface ThinkingPrefs { thinking: ThinkingChoice; effort: EffortChoice }
 
@@ -65,7 +71,7 @@ export const THINKING_DEFAULTS: ThinkingPrefs = { thinking: 'default', effort: '
 function readPrefs(raw: unknown): ThinkingPrefs {
   const v = (raw ?? {}) as Record<string, unknown>;
   const thinking = v.thinking === 'off' || v.thinking === 'on' ? v.thinking : 'default';
-  const effort = v.effort === 'low' || v.effort === 'medium' || v.effort === 'high' ? v.effort : 'default';
+  const effort = isEffort(v.effort) ? v.effort : 'default';
   return { thinking, effort };
 }
 
@@ -165,10 +171,41 @@ export function resolveThinking(s: AiSettings, prefs: ThinkingPrefs, allowed: bo
   };
 }
 
-export async function effectiveSettings(s: AiSettings, userId: number): Promise<AiSettings> {
+/**
+ * The features that write with the language model, and so have a reasoning
+ * setting to honour — the list an admin picks exceptions from.
+ *
+ * Derived rather than listed. It was a list, and the first version named
+ * triage, the impersonation guard, calendar and attachment search — all of
+ * which `CAPABILITY_META` records as never reaching a model, so each would
+ * have been a checkbox that did nothing. `usesAi` is where that fact already
+ * lives. Of the features that do use a model, three do not WRITE with it —
+ * meaning search embeds, pictures draw, dictation transcribes — and a
+ * reasoning switch beside those would be the same empty control.
+ */
+const NOT_WRITING: readonly Capability[] = ['semantic', 'ai.media', 'voice'];
+export const THINKING_SURFACES: readonly Capability[] = CAPABILITIES
+  .filter((c) => CAPABILITY_META[c].usesAi && !NOT_WRITING.includes(c));
+
+/** The same, with the names people see. */
+export function thinkingSurfaces(): { id: Capability; label: string }[] {
+  return THINKING_SURFACES.map((id) => ({ id, label: CAPABILITY_META[id].label }));
+}
+
+/**
+ * Whether a personal choice may apply to this feature at all — the WHERE half
+ * of the gate, beside `mayChooseThinking`'s WHO. A caller that names no
+ * feature is treated as everywhere, which is what every install had before
+ * this existed.
+ */
+export function appliesHere(s: Pick<AiSettings, 'userThinkingExcept'>, capability?: Capability): boolean {
+  return !capability || !(s.userThinkingExcept ?? []).includes(capability);
+}
+
+export async function effectiveSettings(s: AiSettings, userId: number, capability?: Capability): Promise<AiSettings> {
   try {
     const { prefs, admin } = await load(userId);
-    return resolveThinking(s, prefs, s.userThinking || admin);
+    return resolveThinking(s, prefs, (s.userThinking || admin) && appliesHere(s, capability));
   } catch (err) {
     // A preference lookup that fails must not cost somebody their draft. The
     // install default is a correct answer, just not a personalised one.
@@ -190,9 +227,15 @@ export interface ThinkingView {
   /** Whether this person's choice is being honoured at all. */
   allowed: boolean;
   /** What the install would give them on its own. */
-  installDefault: { thinking: boolean; effort: 'low' | 'medium' | 'high' };
+  installDefault: { thinking: boolean; effort: ThinkEffort };
   /** What they are actually getting, once everything is resolved. */
-  effective: { thinking: boolean; effort: 'low' | 'medium' | 'high' };
+  effective: { thinking: boolean; effort: ThinkEffort };
+  /**
+   * Features where the install's setting applies whatever they choose, named
+   * — so the card can say so rather than showing a choice that is quietly not
+   * in force there.
+   */
+  except: { id: Capability; label: string }[];
 }
 
 export async function thinkingView(s: AiSettings, userId: number): Promise<ThinkingView> {
@@ -204,5 +247,6 @@ export async function thinkingView(s: AiSettings, userId: number): Promise<Think
     allowed,
     installDefault: { thinking: s.allowThinking, effort: s.thinkEffort },
     effective: { thinking: resolved.allowThinking, effort: resolved.thinkEffort },
+    except: (s.userThinkingExcept ?? []).map((id) => ({ id, label: CAPABILITY_META[id]?.label ?? id })),
   };
 }

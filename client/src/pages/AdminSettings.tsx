@@ -1160,7 +1160,7 @@ function AiAdminSettings() {
         </div>
         {f.allowThinking && (
           <div className="form-row mb-8">
-            <Field label="How hard to think" hint="Passed to the model as its reasoning effort."><Select value={f.thinkEffort ?? 'low'} onChange={(e) => setF({ ...f, thinkEffort: e.target.value })}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></Select></Field>
+            <Field label="How hard to think" hint="Sent in whatever form this model's host takes — an effort level, a switch and a token budget, or an allowance. xhigh and max are real levels on frontier models (Claude, GPT-5.6 and later); a model without them uses its hardest setting instead of refusing."><Select value={f.thinkEffort ?? 'low'} onChange={(e) => setF({ ...f, thinkEffort: e.target.value })}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></Select></Field>
             <Field label="Thinking budget (tokens)" hint="Room for the working-out, on top of the reply length. If the model spends it all and writes nothing, Tern asks again with thinking off rather than showing an error, and the log says how much reasoning it wanted."><Input type="number" min={0} max={8192} value={f.thinkingBudget ?? 1500} onChange={(e) => setF({ ...f, thinkingBudget: Number(e.target.value) })} /></Field>
           </div>
         )}
@@ -1183,6 +1183,36 @@ function AiAdminSettings() {
             </div>
           </div>
         </div>
+        {/* WHERE a personal choice counts. Shown only while personal choices
+            are on, because it narrows them — with them off it would be a
+            control about something that is not happening. */}
+        {f.userThinking && Array.isArray(data.thinkingSurfaces) && (
+          <div className="mt-8">
+            <div className="strong small">Where a personal choice counts</div>
+            <div className="help-text">
+              Untick a feature to keep it on your setting above, whoever it runs for — admins included.
+              Worth doing for the ones that run unattended on the shared model, like automatic replies
+              and the brief, where one person&rsquo;s &ldquo;think hard&rdquo; is everybody else&rsquo;s wait.
+            </div>
+            <div className="mt-8" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+              {data.thinkingSurfaces.map((c: { id: string; label: string }) => {
+                const except: string[] = f.userThinkingExcept ?? [];
+                return (
+                  <Toggle
+                    key={c.id}
+                    checked={!except.includes(c.id)}
+                    label={c.label}
+                    onChange={(on: boolean) => {
+                      const next = on ? except.filter((x) => x !== c.id) : [...except, c.id];
+                      setF({ ...f, userThinkingExcept: next });
+                      void save({ userThinkingExcept: next });
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        )}
         <Button className="mt-8" variant="primary" onClick={() => save({ temperature: f.temperature, topP: f.topP, topK: f.topK, minP: f.minP, repeatPenalty: f.repeatPenalty, repeatLastN: f.repeatLastN, presencePenalty: f.presencePenalty, frequencyPenalty: f.frequencyPenalty, maxTokens: f.maxTokens, numCtx: f.numCtx, keepAlive: f.keepAlive, allowThinking: f.allowThinking, thinkEffort: f.thinkEffort, thinkingBudget: f.thinkingBudget, userThinking: f.userThinking })}>Save tuning</Button>
       </div>
       {f.provider === 'ollama' && (
@@ -1556,25 +1586,33 @@ function AiMediaCard() {
       <ProviderPresets presets={data.presets?.image ?? []} slot="image" shape={f.provider} baseUrl={f.baseUrl}
         onPick={(p: any) => { setF({ ...f, provider: p.shape, baseUrl: p.baseUrl }); setTested({}); }} />
       <div className="form-row">
-        <Field label="API shape" hint="Where the picture comes back from. Most hosts serve it on a path of its own; OpenRouter and Google answer with it inside a chat reply instead, and the two cannot be told apart from the address.">
+        <Field label="API shape" hint="Where the picture comes back from. Most hosts serve it on a path of its own; OpenRouter and Google answer with it inside a chat reply instead, and the two cannot be told apart from the address. ComfyUI is neither: it takes a whole workflow, queues it, and the picture is collected when the job is done.">
           <Select value={f.provider} onChange={(e) => { setF({ ...f, provider: e.target.value }); setTested({}); }}>
             <option value="openai">/v1/images/generations (OpenAI, Together, Fireworks, NanoGPT, local servers)</option>
             <option value="openai-chat">/v1/chat/completions (OpenRouter, Google)</option>
+            <option value="comfyui">ComfyUI workflow (your own ComfyUI, or one behind perch)</option>
           </Select>
         </Field>
-        <Field label="Address" hint="Anything speaking one of those two shapes. Clearing this turns pictures off.">
-          <Input value={f.baseUrl ?? ''} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setTested({}); }} placeholder="https://api.openai.com/v1" />
+        <Field label="Address" hint="Anything speaking one of those shapes. Clearing this turns pictures off.">
+          <Input value={f.baseUrl ?? ''} onChange={(e) => { setF({ ...f, baseUrl: e.target.value }); setTested({}); }} placeholder={f.provider === 'comfyui' ? 'http://127.0.0.1:8188' : 'https://api.openai.com/v1'} />
         </Field>
         <Field label="API key" hint={data.settings.hasApiKey ? 'A key is stored; leave blank to keep it.' : 'Whatever that host wants as a bearer token.'}>
           <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={data.settings.hasApiKey ? '••••••••' : ''} />
         </Field>
-        <Field label="Model" hint="Exactly as that host names it — “gpt-image-1”, “black-forest-labs/FLUX.1-schnell”, an “accounts/…/models/…” path on Fireworks.">
-          <Input value={f.imageModel ?? ''} onChange={(e) => setF({ ...f, imageModel: e.target.value })} placeholder="gpt-image-1" />
+        <Field label="Model" hint={f.provider === 'comfyui'
+          ? 'The checkpoint file on that machine, as ComfyUI lists it — “sd_xl_base_1.0.safetensors”. Test the connection to see the ones it has.'
+          : 'Exactly as that host names it — “gpt-image-1”, “black-forest-labs/FLUX.1-schnell”, an “accounts/…/models/…” path on Fireworks.'}>
+          <Input value={f.imageModel ?? ''} onChange={(e) => setF({ ...f, imageModel: e.target.value })} placeholder={f.provider === 'comfyui' ? 'sd_xl_base_1.0.safetensors' : 'gpt-image-1'} />
         </Field>
         <Field label="Default size" hint="What the composer asks for unless somebody types something else. Empty means whatever the host defaults to; not every model accepts every size.">
           <Input value={f.imageSize ?? ''} onChange={(e) => setF({ ...f, imageSize: e.target.value })} placeholder="1024x1024" />
         </Field>
       </div>
+      {f.provider === 'comfyui' && (
+        <Field label="Workflow (optional)" hint="A graph exported from ComfyUI with “Save (API format)”, with %prompt% where the prompt goes — and %model%, %width%, %height%, %seed% or %negative% wherever you want those filled in. Empty runs ComfyUI’s own default text-to-image graph with the checkpoint above, which works for any SD 1.x or SDXL model; FLUX and anything with custom nodes needs its own.">
+          <Textarea value={f.comfyWorkflow ?? ''} onChange={(e) => setF({ ...f, comfyWorkflow: e.target.value })} placeholder='{"3": {"class_type": "KSampler", "inputs": {"seed": "%seed%", …}}, …}' style={{ minHeight: 120, fontFamily: 'monospace' }} />
+        </Field>
+      )}
       <div className="mt-8">
         {/^https:/i.test(f.baseUrl ?? '') && (
           <div className="row">
@@ -1596,7 +1634,7 @@ function AiMediaCard() {
         </p>
       </div>
       <div className="row mt-8 gap-8">
-        <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: key || undefined, imageModel: f.imageModel, imageSize: f.imageSize, tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) })}>Save</Button>
+        <Button variant="primary" onClick={() => save({ provider: f.provider, baseUrl: f.baseUrl, apiKey: key || undefined, imageModel: f.imageModel, imageSize: f.imageSize, comfyWorkflow: f.comfyWorkflow ?? '', tlsInsecure: Boolean(f.tlsInsecure), useTor: Boolean(f.useTor) })}>Save</Button>
         <Button variant="ghost" loading={testing === 'image'} disabled={!f.baseUrl} onClick={() => test('image')}>Test connection</Button>
         {data.settings.hasApiKey && <Button size="sm" variant="ghost" onClick={() => save({ apiKey: null })}>Clear key</Button>}
         <Health which="image" />

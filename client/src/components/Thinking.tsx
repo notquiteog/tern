@@ -26,15 +26,27 @@ import { useToast } from '../state/toast';
 import { Menu, MenuItem, Segmented, Toggle } from './ui';
 
 export type ThinkingChoice = 'default' | 'off' | 'on';
-export type EffortChoice = 'default' | 'low' | 'medium' | 'high';
+export type EffortChoice = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+type Effort = Exclude<EffortChoice, 'default'>;
 
 export interface ThinkingView {
   prefs: { thinking: ThinkingChoice; effort: EffortChoice };
   /** Whether this person's choice counts at all. */
   allowed: boolean;
-  installDefault: { thinking: boolean; effort: 'low' | 'medium' | 'high' };
-  effective: { thinking: boolean; effort: 'low' | 'medium' | 'high' };
+  installDefault: { thinking: boolean; effort: Effort };
+  effective: { thinking: boolean; effort: Effort };
+  /** Features where the server's setting applies whatever is chosen here. */
+  except?: { id: string; label: string }[];
 }
+
+/** "Except automatic replies and the brief, which follow the server." — or nothing. */
+function exceptNote(v: ThinkingView): string {
+  const names = (v.except ?? []).map((c) => c.label);
+  return names.length ? ` Except ${names.join(', ')}, which always follow the server's setting.` : '';
+}
+
+/** Every level, lowest first. The top two only differ on frontier models. */
+const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export function useThinking(enabled = true) {
   return useQuery({
@@ -57,7 +69,7 @@ export function useSetThinking() {
 }
 
 const EFFORT_LABEL: Record<EffortChoice, string> = {
-  default: 'Server default', low: 'Brief', medium: 'Balanced', high: 'Thorough',
+  default: 'Server default', low: 'Brief', medium: 'Balanced', high: 'Thorough', xhigh: 'Very thorough', max: 'Exhaustive',
 };
 
 /** What the person is actually getting, in one line. */
@@ -114,7 +126,7 @@ export function ThinkingButton({ className }: { className?: string }) {
             <>
               <div className="menu-sep" />
               <div className="menu-label">How hard</div>
-              {(['default', 'low', 'medium', 'high'] as EffortChoice[]).map((choice) => (
+              {(['default', ...EFFORTS] as EffortChoice[]).map((choice) => (
                 <MenuItem
                   key={choice}
                   active={data.prefs.effort === choice}
@@ -127,7 +139,7 @@ export function ThinkingButton({ className }: { className?: string }) {
             </>
           )}
           <div className="menu-sep" />
-          <div className="menu-note">Applies to every AI feature that runs in your name, not just this one — including replies sent while you are away.</div>
+          <div className="menu-note">Applies to every AI feature that runs in your name, not just this one — including replies sent while you are away.{exceptNote(data)}</div>
         </>
       )}
     </Menu>
@@ -193,12 +205,7 @@ export function ThinkingCard() {
               <Segmented
                 value={data.prefs.effort}
                 onChange={(v) => set.mutate({ effort: v })}
-                options={[
-                  { value: 'default' as const, label: 'Server default' },
-                  { value: 'low' as const, label: 'Brief' },
-                  { value: 'medium' as const, label: 'Balanced' },
-                  { value: 'high' as const, label: 'Thorough' },
-                ]}
+                options={(['default', ...EFFORTS] as EffortChoice[]).map((value) => ({ value, label: EFFORT_LABEL[value] }))}
               />
             </div>
           )}
@@ -206,7 +213,8 @@ export function ThinkingCard() {
             Applies to everything the model does <b>on your behalf</b> — drafts, replies, summaries, the
             daily brief, rules described out loud, conversations with the assistant, and the automatic
             replies and sequences that run in your name while you are away. Work done for somebody else
-            uses their setting, not yours.
+            uses their setting, not yours.{exceptNote(data)} The two highest levels only differ on
+            frontier models; a smaller model uses its hardest setting instead.
           </div>
         </>
       )}
